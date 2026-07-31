@@ -3,75 +3,161 @@
 These apply to every repo robbie reviews. The repo's own review command adds to
 them; where both speak, follow both.
 
-Cite `file:line` from the diff for every finding. If you cannot point at a
-changed line, you are guessing — drop the finding or put it in the summary.
+Cite `file:line` from the diff for every finding. If you cannot point at a changed
+line, you are guessing — drop it or move it to the summary.
 
 ---
 
-## Tests
+## 1. Reachability comes before everything else
 
-A PR that changes behavior and does not change its tests is the normal case worth
-questioning. A PR that changes both is where the interesting failures hide.
+**A mechanism existing is not a bug. A finding is real only once a live code path
+is traced to it.** This is the rule that protects the whole review: a fix for an
+unreachable state is speculative complexity, and presenting it as a live bug
+erodes trust in every other finding you wrote.
 
-### 1. Did the test get weaker in the same PR as the code it guards?
+Before reporting anything, answer in one sentence: **what concrete user action,
+job, webhook or rake task reaches this line?** Name it. Grep callers up to an
+entry point — controller, mutation, job, CLI. If the honest answer is "a state
+only a test constructs" or "manual SQL", say so and classify it as
+defense-in-depth, not a bug.
 
-You can see the diff, so you can see this. It is the highest-value check here.
+Three ways this goes wrong, all observed:
 
-Flag when a test changed such that **it would now pass with or without the
-production change**:
+- **An input the UI cannot produce.** A backdating bug is not reachable if every
+  date picker's `minDate` is today.
+- **A guard that runs first.** Verifying that a branch computes the wrong value
+  proves nothing if an early return upstream means the branch is never entered.
+  Trace the call chain to the line, not just to the file.
+- **A count from an incomplete dataset.** Never conclude a path is unreachable
+  or a state is absent from a low or zero count in a local, trimmed, or sampled
+  database. Check whether the table is trimmed by grouping by year first; a cliff
+  means trimming, not absence. Reason from the code path instead.
 
-- an assertion loosened — exact value → `be_present` / `not_to be_nil`, `eq(3)`
-  → `be >= 0`, a literal string → a permissive regex, a specific error class →
-  `StandardError`
-- an expectation, assertion or whole example deleted while the behavior it
-  covered still exists
-- `skip`, `xit`, `pending`, `.only`, a commented-out example, or an exclusion
-  added to a test that was previously running
+Domain context from a human overrides code-shaped inference. If a reviewer tells
+you a flow is impossible in practice, they are describing production and you are
+describing syntax.
+
+## 2. Severity
+
+Spend these carefully. Every Must-fix blocks a merge and pulls the author off
+other work, so inflation makes the whole review ignorable.
+
+| | |
+|---|---|
+| **Critical** | Data loss or corruption; a privilege or authorization bypass; a PR bundling 2+ unrelated major features; a global mutation in tests that can break unrelated tests; a test deleted or skipped in a way that hides a real failure. |
+| **Must-fix** | A wrong result on a reachable path; money or destructive operations without a test; a bug fix with no test that fails before the fix; an assertion weakened in the same PR as the code it guarded. |
+| **Should-fix** | Avoidable complexity; a stub standing in for logic this codebase owns; an untested new branch; control flow inside a test; a linter-appeasing change with a behavior side effect. |
+| **Nitpick** | Naming, formatting, placement. Say it once and move on. |
+
+If you cannot name the concrete failure — the input, the state, the wrong output
+— it is not Must-fix. Downgrade it or drop it.
+
+## 3. Engineering judgment: the cheapest change that works
+
+The best code is the code not written. Read a diff asking whether each piece
+needs to exist at all:
+
+- **Speculative generality.** An interface with one implementation, a factory for
+  one product, a config value that never changes, an abstraction "for when we
+  add more". Flag it and name what would justify it later.
+- **Hand-rolled over built-in.** A helper the standard library, the framework, or
+  an already-installed dependency provides. A new dependency for something a few
+  lines cover. A platform feature ignored in favour of application code — a DB
+  constraint written as a callback, a native input rebuilt in JS.
+- **Deletion missed.** A change that adds a path without removing the one it
+  replaces. Dead code left behind after a rename or a migration.
+- **Clever over boring.** Optimize for the person paged at 3am, not the person
+  writing it today.
+
+**Never simplify away** — and flag when a PR does: validation at trust
+boundaries, error handling that prevents data loss, security checks,
+accessibility basics, or anything the PR description explicitly asked for.
+
+**A change made only to satisfy a linter can still change behavior.** Check the
+option a cop demanded actually matches intent — a `dependent:` added for a cop
+fired on soft-destroy and permanently nulled financial foreign keys. Prefer the
+explicit no-op form over whatever silences the warning.
+
+**A "dead" reference may have been renamed.** Before agreeing that a route,
+endpoint or file can be deleted, grep for the feature under a likely new name.
+Deleting a renamed thing silently drops coverage of something that still exists.
+
+## 4. Comments in the diff
+
+Default to zero. A comment is at most two lines, ever.
+
+Flag every comment that narrates: `# Fix for X bug`, `# This test verifies…`,
+`# Called from controller Y`, a reference to a task, issue or PR number. The team
+reads code, not commentary; that context belongs in the commit message and the PR
+description.
+
+A comment earns its place only for a *why* that is invisible in the code: a
+hidden constraint, a subtle invariant, a workaround for a specific bug, a
+non-intuitive business rule. If a change seems to need a longer comment, the code
+is the problem — say that instead.
+
+## 5. PR scope
+
+A PR should carry one major feature or a cohesive set of related changes. **2+
+unrelated major features is Critical, with a recommendation to split** — not a
+warning in passing. Still review the whole thing, but the verdict is
+changes-requested with scope as a blocking reason.
+
+Do not flag: a PR of several unrelated bugfixes, or a small necessary fix bundled
+alongside a feature.
+
+## 6. Tests
+
+A PR that changes behavior without touching tests is worth questioning. A PR that
+changes both is where the interesting failures hide.
+
+### Did the test get weaker in the same PR as the code it guards?
+
+You can see the diff, so you can see this. Highest-value check here. Flag when a
+test changed such that **it would now pass with or without the production
+change**:
+
+- an assertion loosened — exact value → `be_present`, `eq(3)` → `be >= 0`, a
+  literal → a permissive regex, a specific error class → `StandardError`
+- an expectation, assertion or example deleted while the behavior still exists
+- `skip`, `xit`, `pending`, `.only`, a commented-out example, or a new exclusion
 - setup changed so the branch that used to be exercised no longer is — a factory
   trait dropped, a guard-triggering value replaced with a benign one
-- a snapshot or fixture regenerated with no explanation of why the new shape is
-  correct
+- a snapshot or fixture regenerated with no argument for why the new shape is right
 
-The question to ask each changed test: **would this have failed before the
-production change in this PR?** If not, the test is decoration. Say so, quote the
-before and after, and ask for the assertion that actually pins the new behavior.
+The question for each changed test: **would this have failed before the
+production change in this PR?** If not, it is decoration. Quote before and after,
+and ask for the assertion that pins the new behavior.
 
-### 2. Stubs replacing logic instead of boundaries
+### Stubs replacing logic instead of boundaries
 
 The discriminator is ownership, not the mocking library:
 
-- **Legitimate**: things you do not control or cannot run — HTTP calls, payment
-  gateways, mail delivery, the clock, randomness, a third-party SDK, another
-  service's API.
-- **Suspect**: a class in this codebase, stubbed to avoid setting it up. That
-  test no longer proves the two halves fit together, and it keeps passing after
-  the real collaborator's contract changes.
-- **Always wrong**: stubbing the object under test, or stubbing the very method
-  the PR changed.
+- **Legitimate** — what you do not control or cannot run: HTTP, payment
+  gateways, mail, the clock, randomness, a third-party SDK.
+- **Suspect** — a class in this codebase, stubbed to avoid setting it up. That
+  test stops proving the two halves fit, and keeps passing after the real
+  collaborator's contract changes.
+- **Always wrong** — stubbing the object under test, or the very method the PR
+  changed.
 
-Prefer the real flow: exercise the service, the graph resolver, the job, the
-interactor end to end with real records from factories. A test that walks the
-main path is worth several that assert on a mock's arguments.
+Prefer the real flow: drive the service, the resolver, the job end to end with
+real records. One test walking the main path is worth several asserting on a
+mock's arguments.
 
-Also flag, with the same weight:
+Same weight: a stub whose **return shape cannot be traced to what the real method
+returns** (invented hashes drift from reality and pass forever); a stub that makes
+a branch **unreachable in production** (see §1 — the branch may be dead); and
+`allow(…).to receive(…)` with no assertion that the interaction matters.
 
-- a stub whose **return shape cannot be traced to what the real method actually
-  returns**. Invented hashes drift from reality silently and the test passes
-  forever. Check the real method's return before accepting the stub's shape.
-- a stub that makes a branch **unreachable in production** — if the only way to
-  reach that code is a value the real collaborator never returns, the test is
-  proving nothing and the branch may be dead.
-- `allow(...).to receive(...)` with no corresponding assertion that the
-  interaction matters.
+### Global state that leaks into other tests
 
-### 3. Global state that leaks into other tests
-
-The sharp rule: **anything global a test mutates must be restored by the same
-construct that mutated it** — the block form, or an `ensure` / `after` hook.
-A restore written as a trailing line in the example body is **not** safe: a
-failing assertion above it raises, the line never runs, and every later test in
-that process is poisoned. That is a Critical, not a style note, because the
-damage lands on unrelated tests and the failure looks random.
+**Anything global a test mutates must be restored by the same construct that
+mutated it** — the block form, or an `ensure` / `after` / `teardown` hook. A
+restore written as a trailing line in the example body is **not** safe: a failing
+assertion above it raises, the line never runs, and every later test in that
+process is poisoned. Critical, not style: the damage lands on unrelated tests and
+the failure looks random.
 
 ```ruby
 # leaks on failure — the return never runs if the expectation raises
@@ -80,74 +166,128 @@ expect(subject.due_on).to eq(...)
 Timecop.return
 
 # safe
-Timecop.freeze(Time.zone.parse("2026-01-01")) do
-  expect(subject.due_on).to eq(...)
-end
+Timecop.freeze(Time.zone.parse("2026-01-01")) { expect(subject.due_on).to eq(...) }
 ```
 
-Watch for all of these, in any language:
+Every one of these has actually shipped and cost days of debugging:
 
-- time: `Timecop.freeze/travel`, `travel_to`, `freeze_time`, fake timers
-- constants and config: raw reassignment instead of `stub_const`, mutated
-  `ENV`, feature flags left enabled, changed class-level attributes or
-  `mattr_accessor`
-- request state: `session`, `cookies`, headers, `Current.*`, `Thread.current`,
-  `RequestStore`
-- infrastructure: `Rails.cache` writes, Sidekiq/ActiveJob queues left full,
-  `ActionMailer::Base.deliveries` not cleared, files written outside a tmpdir,
-  rows created outside the transaction, a changed default locale or timezone
-- test doubles that outlive the example, and `before(:all)` / `before(:context)`
-  setup that later examples then mutate
+- **the clock** — a bare `Timecop.freeze` with no `return`. Downstream, a service
+  that compares `created_at < Time.current` sees both collapse to one instant and
+  silently returns empty buckets.
+- **request state** — `RequestStore[:current_user]` set in a service test with
+  nothing to clear it; an audit log in an unrelated test attributed a guest
+  action to the leaked admin.
+- **`ENV`** — set in `setup`, no teardown. Every later test in the same container
+  took a different code path and hit a live third-party API.
+- **browser storage** — a session-persisted store that `reset_sessions!` does not
+  clear, rehydrating a previous test's cart into the next one.
+- **infrastructure** — cache writes, queues left full, mail deliveries not
+  cleared, files outside a tmpdir, rows created outside the transaction, a changed
+  default locale or timezone, constants reassigned instead of stubbed.
 
-A related signal: if a test only passes in a particular order, it is already
-broken. Flag anything that reads as order-dependent even when it currently
-passes.
+Order dependence is the tell. **A test that only passes in a particular order is
+already broken**, even while it is green.
 
-### 4. Structure
+### There is no such thing as a flaky test
 
-- one behavior per example; an example asserting eight unrelated things cannot
-  tell you which one broke
-- the name states the behavior and the condition, not the method name — "returns
-  nil when the reservation is already cancelled", not "test cancel"
-- no control flow in a test. An `if`, a loop or a `rescue` in an example means
-  you cannot tell from a pass what actually ran. Loops over cases belong in a
-  parametrized/table form where each case reports separately.
-- setup visible near the assertion. Deep shared `let` chains and far-away
-  `before` blocks make a failure unreadable; prefer explicit setup even when it
-  repeats.
-- assert on behavior and observable output, not on private methods or internal
-  call sequences — those tests break on every refactor and prove nothing.
+A test that fails sometimes is a real bug: a race, a shared-state leak, a timing
+assumption, or a masked error. Never accept "known flake", "pre-existing",
+"intermittent" or "infra" as a reason to skip it — in a diff, flag a PR that adds
+a retry, a `sleep`, a wait bump, or a skip in place of a diagnosis.
 
-### 5. Coverage, judged by consequence and not by percentage
+The inverse holds too: **do not ask for changes to a green test.** If a checklist
+or a hunch says a test is weak, the correct output for one that passes and is
+unchanged from the base branch is "not PR-attributable". Hardening a passing test
+is churn.
+
+### Coverage by consequence, never by percentage
 
 Never ask for a coverage number. Ask: **if this code broke, would a test tell
 us?** Then:
 
 - a **bug fix with no test that fails before the fix** — Must-fix. Name the test
-  you would expect and what it should assert. This is the single most common real
-  gap.
-- **new public behavior** — a service, endpoint, job, resolver, or a new branch
-  in one — with no test at all: Must-fix.
-- a **new conditional, guard clause, early return or error path** with no case
-  covering it: Should-fix, and name the input that reaches it.
-- **destructive or money-touching paths** (deletes, refunds, payment state,
-  bulk updates) with no test: Must-fix regardless of size.
+  you expect and what it asserts. The most common real gap.
+- **new public behavior** — service, endpoint, job, resolver, or a new branch in
+  one — with no test: Must-fix.
+- a **new conditional, guard clause, early return or error path** untested:
+  Should-fix, and name the input that reaches it.
+- **destructive or money-touching paths** (deletes, refunds, payment state, bulk
+  updates) untested: Must-fix regardless of size.
 
-Do **not** demand tests for trivial delegation, generated code, pure config, or
-a rename. Padding a review with those buries the findings that matter.
+Do **not** demand tests for trivial delegation, generated code, pure config, or a
+rename. Padding a review with those buries what matters.
 
-### Severity for test findings
+### Structure
 
-- **Critical** — a global mutation that can break unrelated tests; a test
-  deleted or skipped in a way that hides a real failure.
-- **Must-fix** — a bug fix with no failing-first regression test; new public or
-  destructive behavior untested; an assertion weakened in the same PR as the code
-  it guarded.
-- **Should-fix** — a stub standing in for logic this codebase owns; a stub whose
-  shape does not match reality; an untested new branch; control flow inside a
-  test.
-- **Nitpick** — naming, structure and placement preferences that do not change
-  what the test proves.
+One behavior per example. A name that states behavior and condition, not the
+method. **No control flow in a test** — an `if`, a loop or a `rescue` means a pass
+does not tell you what ran; table-driven cases belong in a parametrized form where
+each case reports separately. Setup visible near the assertion; deep shared `let`
+chains make a failure unreadable. Assert on observable behavior, not private
+methods or internal call sequences.
 
-Do not inflate. Every Must-fix blocks a merge and pulls the author away from
-other work, so spend them where the test genuinely fails to protect the code.
+## 7. Recurring bug families worth checking every time
+
+**Check-then-act against a unique constraint.** `find_or_create_by`, or
+`find_by` then `create!`, on a uniquely-indexed column, is a race that surfaces as
+`RecordNotUnique` under concurrency. The fix leans on the index — rescue and
+re-fetch the winner — not a new lock.
+
+The sharper signal: **a find keyed on a volatile field** (`Time.current`,
+`to_json`, an object rather than an id) can never match an existing row, so it
+degrades to always-create and collides *deterministically* on any duplicate
+input, no concurrency needed. Key the find on the unique columns only.
+
+**Privilege derived from client input.** Any authorization decision that reads a
+flag, role or id from a request parameter, GraphQL argument or header rather than
+from the authenticated session. A client-supplied "is admin" argument copied into
+context let owners bypass a refund cap. Ask where every privileged branch's
+condition originates; if the client can set it, it is Critical.
+
+**Lock contention on a shared row.** A counter cache, sequence or settings row
+that every concurrent request updates serializes them behind one lock and shows up
+as a timeout, not as a deadlock.
+
+**Silently dropped options.** A framework helper that forwards only a known list
+of keys, so an option passed at the wrong nesting level does nothing and no error
+is raised.
+
+## 8. Writing the review
+
+Lead with the verdict. Cap prose at ~5 lines plus one code block or table — a
+finding buried in paragraphs does not get fixed. Evidence goes in a fenced block,
+not in narration. No preamble, no restating the PR, no "it is worth noting that".
+
+Say each thing once, inline or in the summary, never both. Be concrete over
+diplomatic: "this returns nil when the reservation is already cancelled, at
+`app/x.rb:42`" beats "consider reviewing the nil handling". Warm, direct, never
+scolding — the author is a colleague, and a review that reads as an attack gets
+argued with instead of applied.
+
+---
+
+## Rails specifics
+
+Skip this section for other stacks.
+
+- **Prefer ActiveRecord helpers over raw SQL**, in migrations and app code:
+  `add_index` takes `where:`, `unique:`, `algorithm:`, `if_not_exists:`;
+  `group(...).having('count(*) > 1').count` for dedupe checks; `update_all` for
+  bulk writes. Raw `execute <<~SQL` is for PostgreSQL DDL with no helper
+  (`CREATE EXTENSION`, expression constraints) — and then only for the part that
+  needs it. Flag avoidable heredocs.
+- **Dense argument style.** Pack arguments, kwargs and JSX props on one line up to
+  115 characters; wrap only past it, fitting as many per continuation line as
+  possible. Do not flag inline calls as unreadable, and do flag new
+  one-argument-per-line formatting.
+- **Soft delete changes the meaning of `dependent:`.** On a paranoid model
+  `dependent: :nullify` fires on soft-destroy and is unrecoverable. Prefer
+  `dependent: nil` when a destroy side effect is unwanted on a financial FK.
+- **`form_with` forwards only `id`, `class`, `multipart`, `method` and `data` at
+  the top level.** Anything else — `target:`, `novalidate:` — must be nested under
+  `html:` or it is silently dropped.
+- **Slugs, not numeric ids, in URLs and route templates.**
+- **No `{' '}` JSX space literals** — use margin utilities or a template-string
+  text node.
+- **`update_columns` vs `update!`** matters where an `after_commit` broadcasts:
+  bulk backfills should skip the callback deliberately, not by accident.

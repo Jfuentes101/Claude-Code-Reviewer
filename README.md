@@ -167,9 +167,36 @@ Three layers, and which one owns a rule is not arbitrary:
 `policy/` is mounted read-only into every reviewer and copied to its user scope,
 which the CLI loads on its own. That means it costs no prompt tokens, the model
 cannot forget to read it, and editing a file changes the next review — no
-rebuild, no restart. `policy/CLAUDE.md` currently holds the test-review
-standards: weakened assertions, stubs standing in for owned logic, global state
-that leaks between tests, structure, and coverage judged by consequence.
+rebuild, no restart.
+
+`policy/CLAUDE.md` is distilled from review corrections a human actually made,
+which is why it leads with the rule that kills false positives rather than with
+style:
+
+1. **Reachability first** — a mechanism existing is not a bug; trace a live path
+   or classify it as defense-in-depth. A fix for an unreachable state is
+   speculative complexity, and shipping one as a live bug discredits every other
+   finding in the review. Includes the trap of concluding absence from a count in
+   a trimmed or stale dataset.
+2. **Severity discipline** — a table plus the test "if you cannot name the input,
+   the state and the wrong output, it is not Must-fix". Inflation makes the whole
+   review ignorable, and it jams the needs-work label brake.
+3. **Cheapest change that works** — speculative generality, hand-rolled over
+   built-in, deletion missed, and the note that a change made only to satisfy a
+   linter can still change behavior.
+4. **Comment hygiene** — zero by default, two lines maximum, and no narration of
+   fixes, tests, callers or ticket numbers.
+5. **PR scope** — 2+ unrelated major features is Critical with a split
+   recommendation, and the exceptions that must not be flagged.
+6. **Tests** — weakened assertions in the same PR as the code they guard, stubs
+   standing in for owned logic rather than boundaries, global state restored by a
+   trailing line a raised assertion skips, "no such thing as a flaky test" and its
+   inverse "do not touch a green test", coverage judged by consequence.
+7. **Recurring bug families** — check-then-act against a unique constraint
+   (including the volatile-key variant that collides deterministically),
+   privilege derived from client input, shared-row lock contention, silently
+   dropped options.
+8. **How to write it** — lead with the verdict, cap prose, evidence in a block.
 
 **The criteria are read from the base branch, never from the checkout.** A PR is
 under review; the rules it is judged by are not up for negotiation by it.

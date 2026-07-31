@@ -152,6 +152,15 @@ def test_truncation_never_leaves_a_half_character():
     assert len(out.encode("utf-8")) < MAX_BYTES + 200
 
 
+def test_the_shipped_policy_is_present_and_whole():
+    """policy/ is edited live on the host, so a truncation ships silently."""
+    text = Path("policy/CLAUDE.md").read_text(encoding="utf-8")
+    for heading in ("Reachability", "Severity", "Comments in the diff", "PR scope",
+                    "Tests", "Recurring bug families", "Writing the review"):
+        assert heading in text, heading
+    assert len(text) > 6000, "policy looks truncated"
+
+
 # ----- config -------------------------------------------------------------
 
 
