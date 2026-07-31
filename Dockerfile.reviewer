@@ -1,0 +1,33 @@
+# The review agent. Ephemeral: one container per PR, --rm, no host writes.
+#
+# Repos that want their own linters run locally (rubocop, eslint, haml-lint…)
+# should build a child image FROM this one and point `image:` at it in the
+# config. Keeping the toolchain out of here is what keeps the base small.
+FROM node:22-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg git jq ripgrep less \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
+
+RUN useradd --create-home --shell /bin/bash robbie \
+ && mkdir -p /work /home/robbie/.claude \
+ && chown -R robbie:robbie /work /home/robbie
+
+COPY reviewer/entrypoint.sh /usr/local/bin/review
+RUN chmod +x /usr/local/bin/review
+
+USER robbie
+WORKDIR /work
+# the mirror is bind-mounted from the host, so its uid will not match ours and
+# git refuses to read it without this
+RUN git config --global --add safe.directory '*'
+
+ENTRYPOINT ["/usr/local/bin/review"]

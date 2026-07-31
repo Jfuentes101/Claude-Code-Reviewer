@@ -1,0 +1,44 @@
+# robbie on a VPS.
+#
+# The one thing that will bite you: the orchestrator spawns SIBLING containers,
+# so every `-v` it builds is resolved by the host docker daemon. `repos.bare` in
+# the config must therefore be a HOST path, and it is mounted here at the exact
+# same path inside the orchestrator so both agree. Change one, change the other.
+#
+#   cp .env.example .env && edit it
+#   ./scripts/mirror-sync              # once per repo, then on a timer
+#   docker compose build
+#   docker compose up -d
+
+services:
+  robbie:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    image: robbie-orchestrator:latest
+    restart: unless-stopped
+    # SIGTERM finishes the tick in flight; a review can legitimately take 30 min
+    stop_grace_period: 35m
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config:/etc/robbie:ro
+      - robbie-state:/var/lib/robbie
+      - ${ROBBIE_MIRRORS:-/srv/robbie/repos}:${ROBBIE_MIRRORS:-/srv/robbie/repos}:ro
+    depends_on:
+      reviewer-image:
+        condition: service_completed_successfully
+
+  # not a service: builds the reviewer image so `compose up` can't start the
+  # orchestrator before the image its containers need exists
+  reviewer-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.reviewer
+    image: robbie-reviewer:latest
+    command: ["--version"]
+    entrypoint: ["claude"]
+    restart: "no"
+
+volumes:
+  robbie-state:

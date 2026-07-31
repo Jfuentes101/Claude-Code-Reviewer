@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Create or refresh the bare mirrors the reviewers clone from.
+#
+#   scripts/mirror-sync                     refresh every mirror in ROBBIE_MIRRORS
+#   scripts/mirror-sync owner/repo          create it if missing, then refresh
+#
+# Run it on a timer (systemd, cron, whatever the VPS uses). A reviewer works
+# fine against a stale mirror — gh fetches the PR head itself — so a missed run
+# costs a slower clone, not a wrong review.
+set -euo pipefail
+
+MIRRORS="${ROBBIE_MIRRORS:-/srv/robbie/repos}"
+mkdir -p "$MIRRORS"
+
+bootstrap() {  # $1 = owner/repo
+  local slug="$1" path="$MIRRORS/${1##*/}.git"
+  if [[ -f "$path/HEAD" ]]; then
+    echo "[mirror-sync] $slug already at $path"
+  else
+    echo "[mirror-sync] cloning $slug → $path"
+    # --mirror sets a +refs/*:refs/* refspec, so later fetches update branches
+    # in place; a plain --bare leaves it empty and fetch becomes a no-op
+    git clone --mirror --quiet "https://github.com/$slug.git" "$path"
+  fi
+  # nothing here should ever push; make an accident loud instead of silent
+  git -C "$path" remote set-url --push origin "do-not-push.invalid"
+  printf '#!/bin/sh\necho "pre-push: robbie mirrors are read-only." >&2\nexit 1\n' \
+    > "$path/hooks/pre-push"
+  chmod +x "$path/hooks/pre-push"
+}
+
+if [[ $# -gt 0 ]]; then
+  bootstrap "$1"
+  exit 0
+fi
+
+shopt -s nullglob
+found=0
+for path in "$MIRRORS"/*.git; do
+  found=1
+  echo "[mirror-sync] fetching $path"
+  git -C "$path" fetch --prune --tags --quiet origin
+done
+[[ "$found" == 1 ]] || echo "[mirror-sync] no mirrors in $MIRRORS; pass owner/repo to create one"

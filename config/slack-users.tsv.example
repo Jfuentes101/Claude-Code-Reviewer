@@ -1,0 +1,7 @@
+# github login <TAB> slack member id     — trailing # comments are allowed
+#
+# An author only gets a DM if they are listed here. A GitHub login is not a
+# Slack user, so an unmapped author gets no DM and the operator is told once.
+# Find an id in Slack: profile → ⋮ → Copy member ID.
+#
+# octocat	U01234567	# Example Person

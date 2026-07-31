@@ -1,0 +1,39 @@
+# robbie config. Everything non-secret lives here; secrets come from the env.
+# Copy to config/robbie.yaml. Unknown keys are a startup error, not a warning.
+
+backend: api            # api = ANTHROPIC_API_KEY | oauth = CLAUDE_CREDENTIALS
+poll_interval_s: 600
+max_concurrent_reviews: 3
+state_dir: /var/lib/robbie
+review_effort: high     # the interactive default is richer than a review loop needs
+stale_review_days: 7    # `robbie digest` threshold
+
+# passed to every reviewer as --mcp-config. Empty = no MCP servers at all.
+# A code graph earns its place on a large repo; everything else is startup cost.
+# review_mcp: '{"mcpServers":{"codegraph":{"type":"stdio","command":"codegraph","args":["serve","--mcp"]}}}'
+
+docker:
+  cpus: "2"
+  memory: 4g
+  pids_limit: 512
+  timeout_s: 1800       # per-review cap
+
+budget:
+  daily_usd: 20.0       # backend=api: measured from each run's reported cost
+  stop_pct: 70          # backend=oauth: pause at this % of the 5h window
+
+slack:
+  owner_id: U01234567           # gets briefings, holds and operator warnings
+  users_file: /etc/robbie/slack-users.tsv
+
+repos:
+  - slug: acme/webapp
+    reviewer_login: robbie-bot    # whose pending review request defines the queue
+    # HOST path — the orchestrator hands this to the host docker daemon
+    bare: /srv/robbie/repos/webapp.git
+    label: "Code Review"
+    needs_work_label: "❌ NEEDS WORK! ❌"
+    review_command: .claude/commands/code-review.md
+    slack_channel: C01234567
+    image: robbie-reviewer:latest
+    ignore_checks: ["CodeRabbit"]
