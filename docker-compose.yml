@@ -55,16 +55,31 @@ services:
   # deterministic Python making one HTTP POST, and MCP would only add a
   # handshake and a service to babysit. Slack lives in slack.py.
   #
-  # To enable one: uncomment, then point `review_mcp` in robbie.yaml at it:
+  # Enable one by pointing `review_mcp` in robbie.yaml at it:
   #   review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
-  #
-  # mcp-sentry:
-  #   image: robbie-mcp-sentry:latest
-  #   restart: unless-stopped
-  #   networks: [robbie]
-  #   environment:
-  #     - SENTRY_TOKEN            # read-only scope, and only this service holds it
-  #     - SENTRY_ORG_SLUG
+
+  mcp-sentry:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-sentry
+    image: robbie-mcp-sentry:latest
+    restart: unless-stopped
+    networks: [robbie]
+    environment:
+      # read-only scopes (event:read, project:read) — only this service holds it
+      - SENTRY_TOKEN
+      - SENTRY_ORG_SLUG
+      - SENTRY_PROJECTS
+      # the reviewer's Host header is this service name; DNS rebinding
+      # protection rejects it unless listed
+      - MCP_ALLOWED_HOSTS=mcp-sentry:8080,mcp-sentry
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   robbie:

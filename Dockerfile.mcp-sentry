@@ -1,0 +1,21 @@
+# Sentry read tools for the review model.
+#
+# Long-lived and tiny: it exists so the Sentry token lives here instead of in a
+# reviewer container that runs a model with bypassPermissions.
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src/robbie_mcp ./src/robbie_mcp
+RUN pip install --no-cache-dir "mcp>=2.0" "httpx>=0.27" "uvicorn>=0.30"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    MCP_HOST=0.0.0.0 \
+    MCP_PORT=8080
+
+RUN useradd --create-home mcp
+USER mcp
+EXPOSE 8080
+
+ENTRYPOINT ["python", "-m", "robbie_mcp.sentry"]

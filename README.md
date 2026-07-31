@@ -49,6 +49,37 @@ A sidecar beats stdio-inside-the-image for one concrete reason: the token stays
 in the sidecar, and the container running a model with `bypassPermissions` never
 sees it. Same reasoning as `GH_TOKEN_REVIEWER`.
 
+### mcp-sentry
+
+Ships enabled. It answers one question that changes review outcomes: **is the
+code this PR touches already failing in production?** A dropped nil guard on a
+line throwing 4k times a day is not a nitpick.
+
+| tool | for |
+|---|---|
+| `issues_for_paths` | the changed files → unresolved prod errors in their stack traces |
+| `search_issues` | Sentry query syntax, when a diff or PR body names an error |
+| `issue_detail` | one issue + the in-app frames of its latest event |
+
+`issues_for_paths` tries each path as an exact stack filename first, then as a
+wildcard on the basename, because Sentry indexes filenames as the stack trace
+spells them — which for bundled or relocated code is not the repo-relative path.
+Without the fallback it answers "nothing" for most real PRs. The response carries
+`match` so the model knows a wildcard hit may be a different file with the same
+name, and `truncated` when a PR changed more files than the cap.
+
+Needs `SENTRY_TOKEN` (read-only: `event:read`, `project:read`) and
+`SENTRY_ORG_SLUG`; `SENTRY_PROJECTS` optionally narrows it. To drop it, delete
+the service from `docker-compose.yml` and clear `review_mcp`.
+
+`MCP_ALLOWED_HOSTS` is load-bearing, not decoration: the SDK's DNS rebinding
+protection validates the `Host` header, and a reviewer connecting to
+`http://mcp-sentry:8080/mcp` sends `Host: mcp-sentry:8080`. Unlisted hosts get a
+421 and every tool call fails. Rename the service, update this too.
+
+No auth between reviewer and sidecar: it's a private compose network exposing
+read-only tools, which is exactly what the reviewer is allowed to read anyway.
+
 ## When a PR gets reviewed
 
 All of these have to hold:

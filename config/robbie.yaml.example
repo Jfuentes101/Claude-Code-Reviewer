@@ -12,7 +12,7 @@ stale_review_days: 7    # `robbie digest` threshold
 # `stdio` runs inside the reviewer image; `http` reaches a compose sidecar, which
 # is how a token stays out of a container running bypassPermissions.
 # Not for robbie's own notifications — those are plain HTTP from the orchestrator.
-# review_mcp: '{"mcpServers":{"codegraph":{"type":"stdio","command":"codegraph","args":["serve","--mcp"]},"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
+review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
 
 docker:
   cpus: "2"
