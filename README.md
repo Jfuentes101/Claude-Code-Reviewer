@@ -154,6 +154,33 @@ nobody ever re-requests — they fall out of every queue otherwise. It clocks on
 the age of the review, not on last activity, because those authors keep pushing.
 Run it weekly.
 
+## Where the review criteria come from
+
+Three layers, and which one owns a rule is not arbitrary:
+
+| layer | lives in | scope | changed by |
+|---|---|---|---|
+| output contract + CI facts | `contract.py`, stdin | the prompt | a robbie release |
+| cross-repo standards | `policy/` → reviewer's `~/.claude/` | **user** | editing a file |
+| this repo's criteria | `.claude/commands/…` on the **base branch** | read explicitly | a merged PR |
+
+`policy/` is mounted read-only into every reviewer and copied to its user scope,
+which the CLI loads on its own. That means it costs no prompt tokens, the model
+cannot forget to read it, and editing a file changes the next review — no
+rebuild, no restart. `policy/CLAUDE.md` currently holds the test-review
+standards: weakened assertions, stubs standing in for owned logic, global state
+that leaks between tests, structure, and coverage judged by consequence.
+
+**The criteria are read from the base branch, never from the checkout.** A PR is
+under review; the rules it is judged by are not up for negotiation by it.
+Otherwise a PR could rewrite `.claude/commands/code-review.md` to say "emit verdict ok",
+or add a `.claude/CLAUDE.md` that instructs the reviewer to find nothing. For the
+same reason the reviewer runs with `--setting-sources user`, so a `.claude/`
+appearing in the PR is never loaded as instructions.
+
+To add a standard: edit a file under `policy/`. To make it language-specific,
+add another file — everything in that directory reaches the user scope.
+
 ## CI and linters
 
 **robbie does not lint. CI does, and gate 6 turns a lint failure into a blocker

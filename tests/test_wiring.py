@@ -39,11 +39,12 @@ def _secrets(**kw) -> Secrets:
     return Secrets(**{**base, **kw})
 
 
-def _pr() -> PrMeta:
-    return PrMeta(
+def _pr(**kw) -> PrMeta:
+    base = dict(
         number=7, title="t", url="https://x/7", author="dev",
         head_sha="abc1234567", changed_files=1, labels=(), checks=(),
     )
+    return PrMeta(**{**base, **kw})
 
 
 # ----- the container --------------------------------------------------------
@@ -102,6 +103,23 @@ def test_the_network_can_be_turned_off(tmp_path):
     cfg = _cfg(tmp_path, docker=DockerConfig(network=None))
     argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
     assert "--network" not in argv
+
+
+def test_the_policy_dir_is_mounted_read_only_when_configured(tmp_path):
+    cfg = _cfg(tmp_path, policy_dir=Path("/opt/robbie/policy"))
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "/opt/robbie/policy:/policy:ro" in argv
+
+
+def test_no_policy_dir_means_no_mount(tmp_path):
+    argv = _docker_argv(_cfg(tmp_path), _secrets(), _cfg(tmp_path).repos[0], _pr(), name="n")
+    assert not any("/policy" in a for a in argv)
+
+
+def test_the_base_ref_reaches_the_container(tmp_path):
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(base_ref="release/2026"), name="n")
+    assert "BASE_REF=release/2026" in argv
 
 
 def test_the_image_is_the_last_argument(tmp_path):

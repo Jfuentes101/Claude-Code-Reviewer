@@ -36,6 +36,7 @@ class PrMeta:
     changed_files: int
     labels: tuple[str, ...]
     checks: tuple[dict[str, Any], ...]
+    base_ref: str = "main"
 
     def has_label(self, name: str) -> bool:
         return name in self.labels
@@ -83,11 +84,12 @@ async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
 async def pr_meta(repo: str, pr: int) -> PrMeta:
     data = await _gh_json(
         "pr", "view", str(pr), "--repo", repo, "--json",
-        "number,title,url,author,headRefOid,changedFiles,labels,statusCheckRollup",
+        "number,title,url,author,headRefOid,changedFiles,labels,statusCheckRollup,baseRefName",
     )
     if not data:
         raise GhError(f"could not fetch {repo}#{pr}")
     return PrMeta(
+        base_ref=data.get("baseRefName") or "main",
         number=int(data["number"]),
         title=data.get("title") or "",
         url=data.get("url") or "",

@@ -8,6 +8,12 @@ state_dir: /var/lib/robbie
 review_effort: high     # the interactive default is richer than a review loop needs
 stale_review_days: 7    # `robbie digest` threshold
 
+# HOST path to robbie's cross-repo review standards. Mounted read-only into every
+# reviewer and copied to its user scope, where the CLI loads it unprompted — so
+# it costs no prompt tokens and the model cannot skip it. A PR cannot touch it.
+# Edit the files and the next review uses them; no rebuild, no restart.
+policy_dir: /opt/robbie/policy
+
 # Read-only context the REVIEW MODEL may pull while judging. Empty = none.
 # `stdio` runs inside the reviewer image; `http` reaches a compose sidecar, which
 # is how a token stays out of a container running bypassPermissions.

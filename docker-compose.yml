@@ -29,6 +29,9 @@ services:
       - ./config:/etc/robbie:ro
       - robbie-state:/var/lib/robbie
       - ${ROBBIE_MIRRORS:-/srv/robbie/repos}:${ROBBIE_MIRRORS:-/srv/robbie/repos}:ro
+      # same host-path rule as the mirrors: the orchestrator hands this to the
+      # host daemon when it spawns a reviewer
+      - ${ROBBIE_POLICY:-/opt/robbie/policy}:${ROBBIE_POLICY:-/opt/robbie/policy}:ro
     depends_on:
       reviewer-image:
         condition: service_completed_successfully

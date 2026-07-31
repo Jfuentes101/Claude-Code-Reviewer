@@ -69,6 +69,9 @@ class Config(_Strict):
     state_dir: Path = Path("/var/lib/robbie")
     review_effort: str = "high"
     stale_review_days: int = 7  # --digest threshold
+    # HOST path, mounted read-only into every reviewer and copied to its user
+    # scope, where the CLI loads it without being asked. A PR cannot touch it.
+    policy_dir: Path | None = None
     # passed to the reviewer as --mcp-config; empty means no MCP servers at all
     review_mcp: str = ""
     docker: DockerConfig = DockerConfig()

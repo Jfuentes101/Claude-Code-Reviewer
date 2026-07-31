@@ -130,9 +130,12 @@ def _docker_argv(
         "-e", f"PR_URL={meta.url}",
         "-e", f"REVIEW_COMMAND={repo.review_command}",
         "-e", f"REVIEW_EFFORT={cfg.review_effort}",
+        "-e", f"BASE_REF={meta.base_ref}",
     ]
     if cfg.docker.network:
         argv += ["--network", cfg.docker.network]
+    if cfg.policy_dir:
+        argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
     if cfg.backend == "api":
         argv += ["-e", f"ANTHROPIC_API_KEY={secrets.anthropic_api_key}"]
     else:
