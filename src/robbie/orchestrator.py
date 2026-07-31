@@ -30,6 +30,7 @@ from robbie.github import (
     pr_meta,
     queue,
     review_still_requested,
+    summarize_checks,
 )
 from robbie.runner import run_review
 from robbie.slack import Slack
@@ -213,7 +214,10 @@ class Orchestrator:
             )
             run = await run_review(
                 self.cfg, self.secrets, repo, meta,
-                prompt=preamble(author=meta.author, title=meta.title, url=meta.url),
+                prompt=preamble(
+                    author=meta.author, title=meta.title, url=meta.url,
+                    ci=summarize_checks(meta).as_prompt(),
+                ),
             )
 
         if not run.ok:

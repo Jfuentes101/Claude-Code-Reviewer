@@ -159,6 +159,60 @@ def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
     return sorted(set(out))
 
 
+@dataclass(frozen=True)
+class CheckSummary:
+    """What CI says about the head commit, bucketed.
+
+    The reviewer container has no CI-provider credentials, so this is the only
+    CI truth it gets — and it is the same data gate 6 judged, which is why the
+    model's "CI & linters" line can never contradict the decision to review.
+    """
+
+    passing: tuple[str, ...] = ()
+    failing: tuple[str, ...] = ()
+    running: tuple[str, ...] = ()
+    other: tuple[str, ...] = ()
+
+    def as_prompt(self) -> str:
+        if not (self.passing or self.failing or self.running or self.other):
+            return "No CI checks are reporting on this commit."
+        parts = []
+        if self.passing:
+            parts.append(f"passing ({len(self.passing)}): {', '.join(self.passing)}")
+        if self.running:
+            parts.append(f"STILL RUNNING: {', '.join(self.running)}")
+        if self.failing:
+            parts.append(f"FAILING: {', '.join(self.failing)}")
+        if self.other:
+            parts.append(f"neutral/skipped: {', '.join(self.other)}")
+        return " · ".join(parts)
+
+
+def summarize_checks(meta: PrMeta) -> CheckSummary:
+    """Bucket every check on the head commit, including the ones gate 6 ignores."""
+    passing, failing, running, other = [], [], [], []
+    for check in meta.checks:
+        name = check.get("context") or check.get("name") or "check"
+        state = (check.get("state") or check.get("conclusion") or "").upper()
+        status = (check.get("status") or "").upper()
+        if state == "SUCCESS":
+            passing.append(name)
+        elif state in {"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}:
+            failing.append(name)
+        elif state in {"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED", "WAITING"} or (
+            not state and status in {"IN_PROGRESS", "QUEUED", "PENDING"}
+        ):
+            running.append(name)
+        else:
+            other.append(f"{name}={state or status or '?'}")
+    return CheckSummary(
+        passing=tuple(sorted(set(passing))),
+        failing=tuple(sorted(set(failing))),
+        running=tuple(sorted(set(running))),
+        other=tuple(sorted(set(other))),
+    )
+
+
 async def review_still_requested(repo: str, pr: int, reviewer: str) -> bool:
     logins = await _gh_json(
         "pr", "view", str(pr), "--repo", repo, "--json", "reviewRequests",

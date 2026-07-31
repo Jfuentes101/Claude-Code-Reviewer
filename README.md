@@ -154,6 +154,42 @@ nobody ever re-requests — they fall out of every queue otherwise. It clocks on
 the age of the review, not on last activity, because those authors keep pushing.
 Run it weekly.
 
+## CI and linters
+
+**robbie does not lint. CI does, and gate 6 turns a lint failure into a blocker
+instead of something robbie rediscovers.** If the team's CI runs rubocop and
+eslint, then by the time a PR reaches a review its linters are already green —
+running them again in the reviewer to learn that is pure cost, and it would need
+the whole language toolchain in the image plus a `bundle install` per branch.
+
+What the reviewer gets instead is the check state, injected into its prompt as
+data by the wrapper — from the same `statusCheckRollup` gate 6 judged:
+
+```
+CI state on the head commit, as the wrapper read it moments ago:
+  passing (2): ci/circleci: build, rubocop · STILL RUNNING: rspec · FAILING: CodeRabbit
+```
+
+Three things follow, and each closes a failure mode:
+
+- The model's `*CI & linters:*` line cannot contradict the gate that let the
+  review happen, because both read the same bytes.
+- It never shells out to discover CI state and never waits for a running check.
+  It has no CI-provider credentials anyway.
+- A linter that is not installed in the image is declared **expected**, not a
+  gap. Without that, a review command asking for `bundle exec rubocop` produces
+  "Linters: skipped, unavailable" — noise that reads like the review was
+  incomplete.
+
+Checks that gate 6 ignores (`ignore_checks`, CodeRabbit by default) still appear
+as failing, since the model should know a reviewer bot is unhappy even though it
+isn't a broken build.
+
+**If you do want local linting** for a repo, the escape hatch needs no config:
+put the toolchain in a child image, point that repo's `image:` at it, and say so
+in that repo's own review command file. The review criteria live in the repo
+being reviewed, which is where a per-repo lint policy belongs.
+
 ## Cost
 
 `backend: api` (default) uses `ANTHROPIC_API_KEY` and reads the per-run cost the
