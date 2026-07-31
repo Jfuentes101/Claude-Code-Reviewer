@@ -45,6 +45,9 @@ class DockerConfig(_Strict):
     memory: str = "4g"
     pids_limit: int = 512
     timeout_s: int = 1800
+    # reviewers are spawned over the docker socket, so they are not on the
+    # compose network by default and cannot resolve the mcp sidecars by name
+    network: str | None = "robbie"
 
 
 class BudgetConfig(_Strict):

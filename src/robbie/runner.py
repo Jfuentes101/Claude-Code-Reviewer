@@ -131,6 +131,8 @@ def _docker_argv(
         "-e", f"REVIEW_COMMAND={repo.review_command}",
         "-e", f"REVIEW_EFFORT={cfg.review_effort}",
     ]
+    if cfg.docker.network:
+        argv += ["--network", cfg.docker.network]
     if cfg.backend == "api":
         argv += ["-e", f"ANTHROPIC_API_KEY={secrets.anthropic_api_key}"]
     else:

@@ -92,6 +92,18 @@ def test_mcp_config_is_only_passed_when_set(tmp_path):
     assert 'REVIEW_MCP={"mcpServers":{}}' in argv
 
 
+def test_the_reviewer_joins_the_compose_network_so_it_can_reach_the_sidecars(tmp_path):
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "--network robbie" in " ".join(argv)
+
+
+def test_the_network_can_be_turned_off(tmp_path):
+    cfg = _cfg(tmp_path, docker=DockerConfig(network=None))
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "--network" not in argv
+
+
 def test_the_image_is_the_last_argument(tmp_path):
     cfg = _cfg(tmp_path)
     argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")

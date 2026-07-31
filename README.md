@@ -9,14 +9,45 @@ them. So the comment, the inline notes and the label are deterministic rather
 than something a model has to remember to do.
 
 ```
-┌─ orchestrator (long-lived) ──────────────────────────┐
-│  poll → gates → Semaphore(N) → parse → publish → 📣  │
-└──────────────── docker.sock ─────────────────────────┘
-                        ▼
-┌─ reviewer × N (--rm, capped, read-only mirror) ──────┐
-│  clone, gh pr checkout, claude -p, print blocks, die │
-└──────────────────────────────────────────────────────┘
+┌─ orchestrator ──────┐   docker.sock    ┌─ reviewer × N (--rm) ─┐
+│ polling, gates, DB  │ ───────────────▶ │ clone, claude -p       │
+│ publish, slack.py   │                  │ MCP over http ─────┐   │
+└─────────┬───────────┘                  └────────────────────┼───┘
+          │            network "robbie"                       │
+          └──────────────┬────────────────────────────────────┘
+                         ▼
+              ┌─ mcp-sentry ─┐ ┌─ mcp-asana ─┐   optional sidecars;
+              │ read-only    │ │ read-only   │   tokens live here
+              └──────────────┘ └─────────────┘
 ```
+
+## Why reviewers are spawned, not pooled
+
+A warm pool of N workers would save the container start (~0.5s) and the clone
+from the local mirror (~2s) on a job that takes 5–30 minutes. It would cost a
+queue broker, worker lifecycle handling, and state surviving between jobs —
+which is the one thing a review must not have, since every pass starts from a
+clean checkout. `max_concurrent_reviews` is the knob; there is no pool to size.
+
+## Where MCP belongs, and where it doesn't
+
+MCP exposes tools **to a model**, so the only thing that should get an MCP
+server is the review model, and only for reads that inform a review: is this
+file throwing in prod, is there a ticket describing this feature, what does the
+call graph look like. Configure those in `review_mcp`.
+
+Two things deliberately do not use it:
+
+- **robbie's own Slack notifications.** The orchestrator is deterministic Python
+  making one HTTP POST. An MCP service there would add a handshake and a process
+  to babysit and buy nothing. That is `slack.py`.
+- **anything that writes.** The review model emits blocks and nothing else. Give
+  it a `post_message` tool and the property that makes the output trustworthy —
+  that a model cannot act, only report — is gone.
+
+A sidecar beats stdio-inside-the-image for one concrete reason: the token stays
+in the sidecar, and the container running a model with `bypassPermissions` never
+sees it. Same reasoning as `GH_TOKEN_REVIEWER`.
 
 ## When a PR gets reviewed
 

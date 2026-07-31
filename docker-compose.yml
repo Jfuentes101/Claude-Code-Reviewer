@@ -5,10 +5,13 @@
 # the config must therefore be a HOST path, and it is mounted here at the exact
 # same path inside the orchestrator so both agree. Change one, change the other.
 #
+# The network is named explicitly, not left as "<dir>_default", because the
+# orchestrator passes that literal name to `docker run --network` for every
+# reviewer it spawns. Rename it here and in `docker.network` together.
+#
 #   cp .env.example .env && edit it
-#   ./scripts/mirror-sync              # once per repo, then on a timer
-#   docker compose build
-#   docker compose up -d
+#   ./scripts/mirror-sync owner/repo
+#   docker compose build && docker compose up -d
 
 services:
   robbie:
@@ -20,6 +23,7 @@ services:
     # SIGTERM finishes the tick in flight; a review can legitimately take 30 min
     stop_grace_period: 35m
     env_file: .env
+    networks: [robbie]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./config:/etc/robbie:ro
@@ -39,6 +43,32 @@ services:
     command: ["--version"]
     entrypoint: ["claude"]
     restart: "no"
+
+  # ---- MCP sidecars -------------------------------------------------------
+  #
+  # Read-only context the REVIEW MODEL may pull while judging a PR: "is this
+  # file throwing in prod", "is there a card describing this feature". The point
+  # of a sidecar over stdio inside the reviewer image is that the token stays
+  # here — the reviewer runs a model with bypassPermissions and never sees it.
+  #
+  # These are NOT for robbie's own Slack notifications: the orchestrator is
+  # deterministic Python making one HTTP POST, and MCP would only add a
+  # handshake and a service to babysit. Slack lives in slack.py.
+  #
+  # To enable one: uncomment, then point `review_mcp` in robbie.yaml at it:
+  #   review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
+  #
+  # mcp-sentry:
+  #   image: robbie-mcp-sentry:latest
+  #   restart: unless-stopped
+  #   networks: [robbie]
+  #   environment:
+  #     - SENTRY_TOKEN            # read-only scope, and only this service holds it
+  #     - SENTRY_ORG_SLUG
+
+networks:
+  robbie:
+    name: robbie
 
 volumes:
   robbie-state:

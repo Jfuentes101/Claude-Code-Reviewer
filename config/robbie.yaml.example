@@ -8,15 +8,20 @@ state_dir: /var/lib/robbie
 review_effort: high     # the interactive default is richer than a review loop needs
 stale_review_days: 7    # `robbie digest` threshold
 
-# passed to every reviewer as --mcp-config. Empty = no MCP servers at all.
-# A code graph earns its place on a large repo; everything else is startup cost.
-# review_mcp: '{"mcpServers":{"codegraph":{"type":"stdio","command":"codegraph","args":["serve","--mcp"]}}}'
+# Read-only context the REVIEW MODEL may pull while judging. Empty = none.
+# `stdio` runs inside the reviewer image; `http` reaches a compose sidecar, which
+# is how a token stays out of a container running bypassPermissions.
+# Not for robbie's own notifications — those are plain HTTP from the orchestrator.
+# review_mcp: '{"mcpServers":{"codegraph":{"type":"stdio","command":"codegraph","args":["serve","--mcp"]},"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
 
 docker:
   cpus: "2"
   memory: 4g
   pids_limit: 512
   timeout_s: 1800       # per-review cap
+  # must match the network name in docker-compose.yml, or a spawned reviewer
+  # cannot resolve the sidecars. null keeps them off the compose network.
+  network: robbie
 
 budget:
   daily_usd: 20.0       # backend=api: measured from each run's reported cost
