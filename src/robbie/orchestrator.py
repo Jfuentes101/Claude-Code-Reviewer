@@ -58,12 +58,15 @@ class Orchestrator:
         slack: Slack,
         *,
         dry_run: bool = False,
+        no_publish: bool = False,
     ) -> None:
         self.cfg = cfg
         self.secrets = secrets
         self.db = db
         self.slack = slack
         self.dry_run = dry_run
+        # unlike dry_run, the review still runs; only the outward writes stop
+        self.no_publish = no_publish
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
 
     # ----- entry points --------------------------------------------------
@@ -183,7 +186,7 @@ class Orchestrator:
 
         if decision.action == "ci-note":
             result = await publish.post_ci_note(
-                repo, meta, decision.checks, dry_run=self.dry_run
+                repo, meta, decision.checks, dry_run=self.dry_run or self.no_publish
             )
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
@@ -251,7 +254,7 @@ class Orchestrator:
         findings = parse_findings(blocks.inline)
 
         if blocks.verdict == "ok":
-            await publish.clear_needs_work(repo, meta.number)
+            await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             self.db.finish_review(key, state="published", verdict="ok", **common)
             await self._brief_owner(repo, meta, blocks.slack, run.transcript)
             return Outcome(repo.slug, meta.number, "review", "ok — nothing posted")
@@ -272,7 +275,8 @@ class Orchestrator:
         self.db.finish_review(key, state="published", verdict=blocks.verdict, **common)
         try:
             result = await publish.publish_review(
-                blocks.verdict, repo, meta, body=blocks.github, findings=findings
+                blocks.verdict, repo, meta, body=blocks.github, findings=findings,
+                dry_run=self.no_publish,
             )
         except Exception as ex:  # noqa: BLE001 — the review is done; only delivery failed
             logger.exception("publish failed for %s#%s", repo.slug, meta.number)

@@ -102,6 +102,19 @@ def test_the_model_is_told_not_to_go_looking_for_ci_itself():
     assert "you have no CI-provider credentials" in text
 
 
+def test_a_green_run_says_the_gate_would_have_stopped_a_red_one():
+    text = _flat(ci="passing (1): rspec")
+    assert "would have stopped this review before it started" in text
+
+
+def test_a_forced_run_over_red_ci_is_not_told_the_failure_must_be_harmless():
+    # `robbie once` bypasses the gates, so the green-path claim would be a lie
+    text = _flat(ci="passing (1): a · FAILING: ci/setup")
+    assert "would have stopped this review before it started" not in text
+    assert "do not assume the failure is harmless" in text
+    assert "forced past" in text
+
+
 def test_a_missing_linter_is_declared_expected_rather_than_a_gap():
     text = _flat(ci="passing (1): rspec")
     assert "that is expected and correct" in text

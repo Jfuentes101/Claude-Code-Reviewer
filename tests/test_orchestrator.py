@@ -254,6 +254,37 @@ async def test_the_budget_gate_stops_reviews_and_warns_once(orch, repo, monkeypa
 # ----- dry run -----------------------------------------------------------
 
 
+async def test_no_publish_runs_the_review_but_writes_nothing_outward(orch, repo, monkeypatch):
+    orch.no_publish = True
+    seen: dict = {}
+
+    async def spy(*a, **kw):
+        seen.update(kw)
+        return PublishResult(False, "dry run")
+
+    monkeypatch.setattr(publish_mod, "publish_review", spy)
+    ran = []
+    stub_run(monkeypatch, ok_run("needs-work"))
+    monkeypatch.setattr(
+        orch_mod, "run_review",
+        lambda *a, **kw: ran.append(1) or _async(ok_run("needs-work"))(),
+    )
+
+    outcome = await orch._review(repo, pr(), KEY, REQ)
+    assert ran == [1], "the review itself must actually run, unlike --dry-run"
+    assert seen.get("dry_run") is True, "publishing must be suppressed"
+    assert orch.slack.channels == [] and orch.slack.authors == []
+    assert outcome.action == "review"
+
+
+async def test_no_publish_still_records_the_cost(orch, repo, monkeypatch):
+    orch.no_publish = True
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(False, "dry run")))
+    stub_run(monkeypatch, ok_run("needs-work"))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert orch.db.spend_since(0) == pytest.approx(0.42), "the run cost real money"
+
+
 async def test_dry_run_writes_nothing(orch, repo, monkeypatch):
     orch.dry_run = True
     stub_run(monkeypatch, ok_run("needs-work"))

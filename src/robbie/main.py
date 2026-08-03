@@ -61,6 +61,10 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="robbie")
     ap.add_argument("--config", default=None, help="path to robbie.yaml")
     ap.add_argument("--dry-run", action="store_true", help="decide and log, write nothing")
+    ap.add_argument(
+        "--no-publish", action="store_true",
+        help="run the review for real, then write nothing to GitHub or Slack",
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     poll = sub.add_parser("poll", help="run the review loop")
@@ -85,9 +89,11 @@ async def _run(args: argparse.Namespace) -> int:
         token=secrets.slack_bot_token,
         owner_id=cfg.slack.owner_id,
         users_file=cfg.slack.users_file,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run or args.no_publish,
     )
-    orch = Orchestrator(cfg, secrets, db, slack, dry_run=args.dry_run)
+    orch = Orchestrator(
+        cfg, secrets, db, slack, dry_run=args.dry_run, no_publish=args.no_publish
+    )
 
     try:
         if args.command == "digest":

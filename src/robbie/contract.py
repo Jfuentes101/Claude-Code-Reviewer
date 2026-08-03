@@ -49,14 +49,23 @@ def _block(text: str, name: str) -> str:
 
 def preamble(*, author: str, title: str, url: str, ci: str = "") -> str:
     """The instructions wrapped around the repo's own review command."""
+    failing = "FAILING:" in ci
+    why_failing = (
+        "Something above is failing. It was either excluded from the gate that "
+        "guards this review (an advisory bot, say) or this review was forced past "
+        "a red build on purpose. Report it plainly in your CI line and judge the "
+        "code as it stands; do not assume the failure is harmless, and do not "
+        "assume it is caused by this PR either."
+        if failing
+        else "A red build would have stopped this review before it started, so "
+        "the above is the full picture."
+    )
     ci_block = f"""
 CI state on the head commit, as the wrapper read it moments ago:
   {ci}
 
 That is the whole CI truth you get, and you need nothing else: you have no
-CI-provider credentials, and a red build would have stopped this review before it
-started, so anything reported above as failing is either advisory or was
-explicitly excluded from that check. Do not shell out to discover CI state, and
+CI-provider credentials. {why_failing} Do not shell out to discover CI state, and
 do not wait for a running check — report it as running and judge the code as it
 stands.
 
