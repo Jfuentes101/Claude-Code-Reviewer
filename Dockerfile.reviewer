@@ -17,9 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
 
-RUN useradd --create-home --shell /bin/bash robbie \
- && mkdir -p /work /home/robbie/.claude \
- && chown -R robbie:robbie /work /home/robbie
+# backend=oauth bind-mounts the host's credentials file, which is mode 600, so the
+# container user has to BE the host user or it cannot read or refresh the token.
+# The base image already holds uid 1000 for `node`, hence the userdel.
+ARG UID=1000
+ARG GID=1000
+RUN userdel -r node 2>/dev/null || true; \
+    getent group "$GID" >/dev/null || groupadd -g "$GID" robbie; \
+    useradd -u "$UID" -g "$GID" --create-home --shell /bin/bash robbie; \
+    mkdir -p /work /home/robbie/.claude && chown -R "$UID:$GID" /work /home/robbie
 
 COPY reviewer/entrypoint.sh /usr/local/bin/review
 RUN chmod +x /usr/local/bin/review

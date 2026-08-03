@@ -48,6 +48,11 @@ class DockerConfig(_Strict):
     # reviewers are spawned over the docker socket, so they are not on the
     # compose network by default and cannot resolve the mcp sidecars by name
     network: str | None = "robbie"
+    # on by default, but AppArmor's docker-default profile treats the exec-time
+    # profile transition as gaining privileges, so on an AppArmor host (Ubuntu,
+    # Pop!_OS) every execve in the container returns EPERM. Turn it off there;
+    # the container still runs unprivileged with every capability dropped.
+    no_new_privileges: bool = True
 
 
 class BudgetConfig(_Strict):

@@ -119,7 +119,6 @@ def _docker_argv(
         "--memory", cfg.docker.memory,
         "--pids-limit", str(cfg.docker.pids_limit),
         "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges",
         # the mirror is the only host path a reviewer can see, and it cannot write to it
         "-v", f"{repo.bare}:/bare:ro",
         # the reviewer runs a model with bypassPermissions, so it gets the
@@ -132,6 +131,8 @@ def _docker_argv(
         "-e", f"REVIEW_EFFORT={cfg.review_effort}",
         "-e", f"BASE_REF={meta.base_ref}",
     ]
+    if cfg.docker.no_new_privileges:
+        argv += ["--security-opt", "no-new-privileges"]
     if cfg.docker.network:
         argv += ["--network", cfg.docker.network]
     if cfg.policy_dir:

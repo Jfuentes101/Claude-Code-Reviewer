@@ -22,14 +22,15 @@ git remote set-url origin "https://github.com/$REPO_SLUG.git"
 # the mirror is only an object cache; gh fetches the head itself, so this works
 # even for a fork or a branch the mirror has never seen
 gh pr checkout "$PR_NUMBER" >/dev/null
-git fetch --quiet origin "$BASE_REF"
 
 # The review criteria come from the BASE branch, never from the checkout: a PR
 # must not be able to rewrite the rules it is judged by. Same reason the CLI runs
 # with --setting-sources user below, which keeps a .claude/ added by this PR from
-# being loaded as instructions.
-if ! body="$(git show "origin/$BASE_REF:$REVIEW_COMMAND" 2>/dev/null)"; then
-  echo "entrypoint: $REVIEW_COMMAND not found on origin/$BASE_REF" >&2
+# being loaded as instructions. Fetched over the API rather than with git, which
+# has no credentials of its own here, and to avoid pulling a whole branch for one file.
+if ! body="$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$BASE_REF" \
+              -H "Accept: application/vnd.github.raw" 2>/dev/null)"; then
+  echo "entrypoint: $REVIEW_COMMAND not found on $BASE_REF" >&2
   exit 3
 fi
 # frontmatter out, $ARGUMENTS in. Variable expansion, never eval: backticks

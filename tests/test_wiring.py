@@ -68,6 +68,13 @@ def test_caps_and_hardening_are_always_applied(tmp_path):
         assert expected in joined
 
 
+def test_no_new_privileges_can_be_turned_off_for_apparmor_hosts(tmp_path):
+    cfg = _cfg(tmp_path, docker=DockerConfig(no_new_privileges=False))
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "no-new-privileges" not in " ".join(argv)
+    assert "--cap-drop" in argv, "dropping caps is not negotiable"
+
+
 def test_api_backend_passes_the_key_and_mounts_no_credentials(tmp_path):
     argv = _docker_argv(_cfg(tmp_path), _secrets(), _cfg(tmp_path).repos[0], _pr(), name="n")
     assert "ANTHROPIC_API_KEY=sk-ant" in argv
