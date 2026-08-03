@@ -58,6 +58,7 @@ async def publish_review(
     body: str,
     findings: list[dict],
     dry_run: bool = False,
+    self_login: str | None = None,
 ) -> PublishResult:
     """Post a needs-work review or a plain comment, then set the label."""
     if verdict not in {"needs-work", "comment"}:
@@ -65,10 +66,22 @@ async def publish_review(
     if not body.strip():
         return PublishResult(False, "summary body was empty; posting nothing")
 
+    # GitHub rejects REQUEST_CHANGES on a PR the token's own user authored, so
+    # the findings go out as a comment rather than being lost. The label still
+    # goes on, which is what actually holds the next pass.
+    own_pr = bool(self_login) and meta.author == self_login
+    as_review = verdict == "needs-work" and not own_pr
+    if own_pr and verdict == "needs-work":
+        body = (
+            f"{body.rstrip()}\n\n<sub>Posted as a comment rather than a "
+            "changes-requested review: GitHub does not allow requesting changes on "
+            "your own pull request.</sub>"
+        )
+
     marker = f"<!-- robbie-review sha={meta.head_sha} -->"
     # a review and a comment live at different endpoints, so dedup where we post
     endpoint = (
-        f"pulls/{meta.number}/reviews" if verdict == "needs-work"
+        f"pulls/{meta.number}/reviews" if as_review
         else f"issues/{meta.number}/comments"
     )
     if await _already_posted(repo.slug, endpoint, marker):
@@ -85,7 +98,7 @@ async def publish_review(
         )
         return PublishResult(False, "dry run", inline=len(anchored.comments))
 
-    if verdict == "needs-work":
+    if as_review:
         payload = json.dumps({
             "body": full,
             "event": "REQUEST_CHANGES",
@@ -115,7 +128,7 @@ async def publish_review(
                 )
 
     await _set_label(repo, meta.number, add=True)
-    verb = "requested changes" if verdict == "needs-work" else "commented"
+    verb = "requested changes" if as_review else "commented"
     return PublishResult(
         True,
         f"{verb} + {len(anchored.comments)} inline + set {repo.needs_work_label!r}",

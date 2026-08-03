@@ -31,6 +31,7 @@ from robbie.github import (
     queue,
     review_still_requested,
     summarize_checks,
+    whoami,
 )
 from robbie.runner import run_review
 from robbie.slack import Slack
@@ -67,6 +68,7 @@ class Orchestrator:
         self.dry_run = dry_run
         # unlike dry_run, the review still runs; only the outward writes stop
         self.no_publish = no_publish
+        self._self_login: str | None = None
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
 
     # ----- entry points --------------------------------------------------
@@ -276,7 +278,7 @@ class Orchestrator:
         try:
             result = await publish.publish_review(
                 blocks.verdict, repo, meta, body=blocks.github, findings=findings,
-                dry_run=self.no_publish,
+                dry_run=self.no_publish, self_login=await self._token_login(),
             )
         except Exception as ex:  # noqa: BLE001 — the review is done; only delivery failed
             logger.exception("publish failed for %s#%s", repo.slug, meta.number)
@@ -291,6 +293,15 @@ class Orchestrator:
         if blocks.verdict == "comment":
             await self._brief_owner(repo, meta, blocks.slack, run.transcript)
         return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
+
+    async def _token_login(self) -> str | None:
+        if self._self_login is None:
+            try:
+                self._self_login = await whoami()
+            except GhError:
+                logger.warning("could not resolve the token's own login")
+                self._self_login = ""
+        return self._self_login or None
 
     # ----- notifications -------------------------------------------------
 
