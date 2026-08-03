@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Prove that N reviewers really run at once, isolated, and capped.
+
+Drives the real Orchestrator with the real docker spawn path, against a stub
+reviewer image so the model is never called. Concurrency is measured from
+OUTSIDE, by sampling `docker ps` — the point is evidence that containers
+coexisted, not a claim from the code that spawned them.
+
+    scripts/fleet-check --config config/robbie.local.yaml --cap 3 10389 10517 10518
+
+Runs with no_publish, so nothing reaches GitHub or Slack.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from robbie import config as configmod  # noqa: E402
+from robbie.db import Db  # noqa: E402
+from robbie.github import pr_meta  # noqa: E402
+from robbie.orchestrator import Orchestrator  # noqa: E402
+from robbie.slack import Slack  # noqa: E402
+
+STUB_IMAGE = "robbie-reviewer-stub:latest"
+
+
+def build_stub(root: Path, hold: int) -> None:
+    # the runner passes a fixed set of -e flags, so the hold rides in on the image
+    dockerfile = (
+        "FROM robbie-reviewer:latest\n"
+        "USER root\n"
+        "COPY scripts/stub-reviewer.sh /usr/local/bin/review\n"
+        "RUN chmod 755 /usr/local/bin/review\n"
+        "ARG HOLD=8\n"
+        "ENV STUB_HOLD=$HOLD\n"
+        "USER robbie\n"
+    )
+    subprocess.run(
+        ["docker", "build", "-q", "-f", "-", "--build-arg", f"HOLD={hold}",
+         "-t", STUB_IMAGE, str(root)],
+        input=dockerfile, text=True, check=True, capture_output=True,
+    )
+    print(f"stub image ready: {STUB_IMAGE} (hold={hold}s)")
+
+
+async def watch(stop: asyncio.Event, seen: dict) -> None:
+    """Sample the live container set until told to stop."""
+    while not stop.is_set():
+        out = subprocess.run(
+            ["docker", "ps", "--filter", "name=robbie-", "--format", "{{.Names}}"],
+            capture_output=True, text=True,
+        ).stdout
+        names = {n for n in out.split() if n}
+        seen["peak"] = max(seen["peak"], len(names))
+        seen["names"] |= names
+        if len(names) > 1:
+            seen["overlaps"].add(frozenset(names))
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=0.25)
+
+
+async def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("prs", nargs="+", type=int)
+    ap.add_argument("--config", default="config/robbie.local.yaml")
+    ap.add_argument("--cap", type=int, default=3)
+    ap.add_argument("--hold", type=int, default=8, help="seconds each stub sits still")
+    ap.add_argument("--skip-build", action="store_true")
+    args = ap.parse_args()
+
+    root = Path(__file__).resolve().parent.parent
+    if not args.skip_build:
+        build_stub(root, args.hold)
+
+    cfg = configmod.load(args.config)
+    cfg.max_concurrent_reviews = args.cap
+    repo = cfg.repos[0]
+    repo.image = STUB_IMAGE
+    secrets = configmod.load_secrets(cfg)
+
+    db = Db(cfg.state_dir / "fleet-check.db")
+    slack = Slack(token=secrets.slack_bot_token, owner_id=cfg.slack.owner_id,
+                  users_file=cfg.slack.users_file, dry_run=True)
+    orch = Orchestrator(cfg, secrets, db, slack, no_publish=True)
+
+    print(f"fetching metadata for {len(args.prs)} PR(s)…")
+    metas = await asyncio.gather(*(pr_meta(repo.slug, n) for n in args.prs))
+
+    stop = asyncio.Event()
+    seen = {"peak": 0, "names": set(), "overlaps": set()}
+    watcher = asyncio.create_task(watch(stop, seen))
+
+    started = time.monotonic()
+    outcomes = await asyncio.gather(*(
+        orch._review(repo, m, f"fleet-{m.number}-{m.head_sha[:8]}", "fleet")
+        for m in metas
+    ), return_exceptions=True)
+    elapsed = time.monotonic() - started
+    stop.set()
+    await watcher
+
+    print(f"\n{'─' * 62}")
+    print(f"cap requested         : {args.cap}")
+    print(f"peak containers seen  : {seen['peak']}")
+    print(f"distinct containers   : {len(seen['names'])}")
+    print(f"wall clock            : {elapsed:.1f}s for {len(args.prs)} review(s)")
+    serial = args.hold * len(args.prs)
+    print(f"serial would have been: ~{serial}s (hold {args.hold}s each)")
+    print(f"{'─' * 62}")
+
+    for m, o in zip(metas, outcomes, strict=True):
+        if isinstance(o, Exception):
+            print(f"  #{m.number}  EXCEPTION  {o}")
+            continue
+        row = db.get_review(f"fleet-{m.number}-{m.head_sha[:8]}")
+        print(f"  #{m.number}  {o.action:<7} {o.detail[:44]:<44} db={row.state if row else '-'}")
+
+    ok = (
+        seen["peak"] == min(args.cap, len(args.prs))
+        and len(seen["names"]) == len(args.prs)
+        and all(not isinstance(o, Exception) and o.action == "review" for o in outcomes)
+    )
+    print(f"\n{'PASS' if ok else 'FAIL'}: "
+          f"expected peak {min(args.cap, len(args.prs))}, "
+          f"{len(args.prs)} distinct containers, every review completed")
+    db.close()
+    return 0 if ok else 1
+
+
+raise SystemExit(asyncio.run(main()))
