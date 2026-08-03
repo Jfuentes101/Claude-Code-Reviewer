@@ -71,6 +71,9 @@ class Config(_Strict):
     backend: Literal["api", "oauth"] = "api"
     poll_interval_s: int = 600
     max_concurrent_reviews: int = 3
+    # the gate phase is API calls, not containers, so it gets its own wider cap:
+    # a full queue would otherwise fire three gh subprocesses per PR at once
+    max_concurrent_checks: int = 8
     state_dir: Path = Path("/var/lib/robbie")
     review_effort: str = "high"
     stale_review_days: int = 7  # --digest threshold

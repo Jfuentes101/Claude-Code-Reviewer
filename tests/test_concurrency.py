@@ -177,6 +177,110 @@ async def test_cost_sums_across_the_fleet(orch, monkeypatch):
     assert orch.db.spend_since(0) == pytest.approx(0.40)
 
 
+# ----- the gate phase, which is API calls rather than containers -------------
+
+
+class Gates:
+    """Stands in for the gh calls, recording overlap and start order."""
+
+    def __init__(self, hold: float = 0.02) -> None:
+        self.hold = hold
+        self.live = 0
+        self.peak = 0
+        self.starts: list[tuple[float, int]] = []
+
+    async def meta(self, slug: str, pr: int) -> PrMeta:
+        self.live += 1
+        self.peak = max(self.peak, self.live)
+        self.starts.append((asyncio.get_running_loop().time(), pr))
+        try:
+            await asyncio.sleep(self.hold)
+            return pr_meta_for(pr)
+        finally:
+            self.live -= 1
+
+
+def pr_meta_for(number: int) -> PrMeta:
+    return PrMeta(
+        number=number, title=f"pr {number}", url=f"https://x/{number}", author="dev",
+        head_sha=f"sha{number:04d}", changed_files=1, labels=(), checks=(),
+    )
+
+
+def stub_gates(monkeypatch, gates: Gates) -> None:
+    monkeypatch.setattr(orch_mod, "pr_meta", gates.meta)
+    monkeypatch.setattr(orch_mod, "last_review_request", _async("2026-01-01T00:00:00Z"))
+    monkeypatch.setattr(orch_mod, "open_threads", _async(0))
+
+
+async def test_the_gate_phase_has_its_own_cap(orch, monkeypatch):
+    orch._gate_sem = asyncio.Semaphore(3)
+    gates = Gates()
+    stub_gates(monkeypatch, gates)
+    fleet = Fleet(hold=0.01)
+    monkeypatch.setattr(orch_mod, "run_review", fleet)
+
+    await asyncio.gather(*(orch._handle(orch.cfg.repos[0], n) for n in range(9)))
+    assert gates.peak == 3, f"gate cap is 3, saw {gates.peak} concurrent gh phases"
+
+
+async def test_a_busy_review_queue_does_not_stall_gate_checking(orch, monkeypatch):
+    """The whole reason the gate slot is released before the review.
+
+    There must be MORE PRs than gate slots, or nothing ever queues on the gate
+    semaphore and this passes whether or not the slot is held. With 6 PRs through
+    2 gate slots, holding the slot across a review makes each wave wait for a
+    container: the last gate check starts ~0.4s in instead of ~0.02s.
+    """
+    orch._sem = asyncio.Semaphore(1)
+    orch._gate_sem = asyncio.Semaphore(2)
+    gates = Gates(hold=0.01)
+    stub_gates(monkeypatch, gates)
+    fleet = Fleet(hold=0.10)
+    monkeypatch.setattr(orch_mod, "run_review", fleet)
+
+    await asyncio.gather(*(orch._handle(orch.cfg.repos[0], n) for n in range(6)))
+
+    spread = max(t for t, _ in gates.starts) - min(t for t, _ in gates.starts)
+    assert spread < 0.08, (
+        f"gate checks spread over {spread:.3f}s — they queued behind reviews, "
+        "so the gate slot is being held across the container"
+    )
+    assert len(gates.starts) == 6
+    assert fleet.peak == 1
+
+
+async def test_the_two_caps_are_independent(orch, monkeypatch):
+    orch._sem = asyncio.Semaphore(2)
+    orch._gate_sem = asyncio.Semaphore(5)
+    gates = Gates()
+    stub_gates(monkeypatch, gates)
+    fleet = Fleet(hold=0.05)
+    monkeypatch.setattr(orch_mod, "run_review", fleet)
+
+    await asyncio.gather(*(orch._handle(orch.cfg.repos[0], n) for n in range(6)))
+    assert gates.peak == 5
+    assert fleet.peak == 2
+
+
+async def test_the_needs_work_short_circuit_skips_the_timeline_call(orch, monkeypatch):
+    async def labelled(slug: str, pr: int) -> PrMeta:
+        return PrMeta(
+            number=pr, title="t", url="u", author="dev", head_sha="abc",
+            changed_files=1, labels=("❌ NEEDS WORK! ❌",), checks=(),
+        )
+
+    called = []
+    monkeypatch.setattr(orch_mod, "pr_meta", labelled)
+    monkeypatch.setattr(orch_mod, "last_review_request", lambda *a: called.append(1))
+    monkeypatch.setattr(orch_mod, "run_review", Fleet())
+
+    outcome = await orch._handle(orch.cfg.repos[0], 7)
+    assert outcome.action == "hold"
+    assert called == [], "a blocked PR must not cost a paginated timeline fetch"
+    assert orch.db.get_review("") is None, "and it must leave no row"
+
+
 async def test_the_cap_comes_from_config(tmp_path):
     repo = RepoConfig(slug="a/b", reviewer_login="r", bare=Path("/x"))
     cfg = Config(

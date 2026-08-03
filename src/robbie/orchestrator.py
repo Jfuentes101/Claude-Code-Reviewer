@@ -70,6 +70,7 @@ class Orchestrator:
         self.no_publish = no_publish
         self._self_login: str | None = None
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
+        self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
 
     # ----- entry points --------------------------------------------------
 
@@ -143,27 +144,40 @@ class Orchestrator:
             return Outcome(repo.slug, pr, "failed", str(ex))
 
     async def _handle_inner(self, repo: RepoConfig, pr: int) -> Outcome:
+        # the gate slot is released before the review starts. Holding it across a
+        # 30-minute container would turn this cap into the total-in-flight cap,
+        # and PRs past it would go unchecked until a review finished.
+        async with self._gate_sem:
+            meta, key, requested_at, decision = await self._gate(repo, pr)
+        return await self._act(repo, meta, key, requested_at, decision)
+
+    async def _gate(
+        self, repo: RepoConfig, pr: int
+    ) -> tuple[PrMeta, str, str, Decision]:
         meta = await pr_meta(repo.slug, pr)
 
         # short-circuit before paging the timeline; `evaluate` decides the same
         if meta.has_label(repo.needs_work_label):
-            return Outcome(repo.slug, pr, "hold", f"{repo.needs_work_label} still on")
+            return meta, "", "", Decision(
+                "hold", f"{repo.needs_work_label} still on", record=False
+            )
 
         requested_at = await last_review_request(repo.slug, pr, repo.reviewer_login)
         key = dedup_key(repo.slug, pr, meta.head_sha, requested_at)
         prior = self.db.get_review(key)
         if prior is not None and prior.state in ("published", "held"):
-            return Outcome(repo.slug, pr, "skip", "already judged at this commit and request")
+            return meta, key, requested_at, Decision(
+                "skip", "already judged at this commit and request"
+            )
 
         threads = await open_threads(repo.slug, pr, repo.reviewer_login)
-        decision = evaluate(
+        return meta, key, requested_at, evaluate(
             meta,
             repo,
             key_done=False,
             sha_judged=self.db.sha_was_judged(repo.slug, pr, meta.head_sha),
             open_threads=threads,
         )
-        return await self._act(repo, meta, key, requested_at, decision)
 
     async def _act(
         self,
