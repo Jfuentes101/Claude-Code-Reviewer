@@ -19,7 +19,12 @@ from robbie import budget, publish
 from robbie import slack as slackmod
 from robbie.anchor import parse_findings, severity_count
 from robbie.config import Config, RepoConfig, Secrets
-from robbie.contract import preamble, threads_block
+from robbie.contract import (
+    parse_thread_verdicts,
+    preamble,
+    thread_preamble,
+    threads_block,
+)
 from robbie.db import Db
 from robbie.gates import Decision, dedup_key, evaluate
 from robbie.github import (
@@ -130,6 +135,74 @@ class Orchestrator:
                         mark = f"… {prior.state}"
                 rows.append(f"  {repo.slug}#{pr:<6} {mark}  — {meta.title[:60]}")
         return rows
+
+    async def answer_threads(self, slug: str | None = None) -> list[Outcome]:
+        """Act on replies to the reviewer's own open threads.
+
+        Only threads where somebody else spoke last are considered: after robbie
+        answers one it holds the last word, so the next run leaves it alone and
+        the ball stays with the author. That is also what keeps gate 5 honest —
+        conceded threads get closed instead of blocking reviews forever.
+        """
+        out: list[Outcome] = []
+        for repo in self.cfg.repos:
+            if slug and repo.slug != slug:
+                continue
+            for pr in self.db.reviewed_prs(repo.slug):
+                try:
+                    threads = await my_threads(repo.slug, pr, repo.reviewer_login)
+                except GhError as ex:
+                    logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
+                    continue
+                pending = [t for t in threads if t.answered]
+                if not pending:
+                    continue
+                out.append(await self._answer_one(repo, pr, pending))
+        return out
+
+    async def _answer_one(self, repo: RepoConfig, pr: int, pending: list) -> Outcome:
+        meta = await pr_meta(repo.slug, pr)
+        if meta.state != "OPEN":
+            return Outcome(repo.slug, pr, "skip", f"pr is {meta.state.lower()}")
+
+        prompt = thread_preamble(author=meta.author, url=meta.url, threads=pending)
+        async with self._sem:
+            run = await run_review(
+                self.cfg, self.secrets, repo, meta, prompt=prompt, mode="threads"
+            )
+        if not run.ok:
+            await self.slack.dm_owner(
+                f"I couldn't work through the replies on *{meta.title}* ({meta.url}): "
+                f"{run.error}"
+            )
+            return Outcome(repo.slug, pr, "failed", run.error or "unknown")
+
+        verdicts = {v.comment_id: v for v in parse_thread_verdicts(run.text)}
+        by_comment = {t.comment_id: t for t in pending}
+        done = {"resolve": 0, "reply": 0, "leave": 0, "unanswered": 0}
+        for cid, thread in by_comment.items():
+            verdict = verdicts.get(cid)
+            if verdict is None:
+                done["unanswered"] += 1
+                continue
+            if verdict.action == "resolve":
+                await publish.resolve_thread(
+                    repo, thread.node_id, dry_run=self.no_publish
+                )
+            elif verdict.action == "reply":
+                await publish.reply_to_thread(
+                    repo, pr, cid, verdict.body, dry_run=self.no_publish
+                )
+            done[verdict.action] += 1
+
+        detail = ", ".join(f"{n} {k}" for k, n in done.items() if n)
+        if done["reply"]:
+            await self.slack.dm_owner(
+                f"I answered {done['reply']} of my review threads on *{meta.title}* "
+                f"({meta.url}) and closed {done['resolve']}. The ball is back with "
+                f"{meta.author}."
+            )
+        return Outcome(repo.slug, pr, "threads", detail or "nothing to do")
 
     # ----- per-PR pipeline ----------------------------------------------
 

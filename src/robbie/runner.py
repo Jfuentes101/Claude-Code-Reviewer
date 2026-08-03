@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 class ReviewRun:
     ok: bool
     blocks: Blocks | None = None
+    text: str = ""
     cost_usd: float | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
@@ -45,11 +46,15 @@ async def run_review(
     meta: PrMeta,
     *,
     prompt: str,
+    mode: str = "review",
 ) -> ReviewRun:
     """Run the review in a throwaway container and parse its output."""
-    name = f"robbie-{repo.name}-{meta.number}-{meta.head_sha[:8]}"
-    stem = cfg.transcript_dir / f"{repo.name}-{meta.number}-{meta.head_sha[:8]}"
-    argv = _docker_argv(cfg, secrets, repo, meta, name=name)
+    tag = f"{repo.name}-{meta.number}-{meta.head_sha[:8]}"
+    if mode != "review":
+        tag = f"{tag}-{mode}"
+    name = f"robbie-{tag}"
+    stem = cfg.transcript_dir / tag
+    argv = _docker_argv(cfg, secrets, repo, meta, name=name, mode=mode)
 
     logger.info("spawning %s for %s#%s", name, repo.slug, meta.number)
     started = asyncio.get_running_loop().time()
@@ -100,7 +105,8 @@ async def run_review(
     usage = result.get("usage") or {}
     return ReviewRun(
         ok=True,
-        blocks=parse_blocks(text),
+        blocks=parse_blocks(text) if mode == "review" else None,
+        text=text,
         cost_usd=_as_float(result.get("total_cost_usd")),
         tokens_in=_as_int(usage.get("input_tokens")),
         tokens_out=_as_int(usage.get("output_tokens")),
@@ -110,7 +116,8 @@ async def run_review(
 
 
 def _docker_argv(
-    cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta, *, name: str
+    cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta, *,
+    name: str, mode: str = "review",
 ) -> list[str]:
     argv = [
         "docker", "run", "--rm", "-i",
@@ -130,6 +137,7 @@ def _docker_argv(
         "-e", f"REVIEW_COMMAND={repo.review_command}",
         "-e", f"REVIEW_EFFORT={cfg.review_effort}",
         "-e", f"BASE_REF={meta.base_ref}",
+        "-e", f"REVIEW_MODE={mode}",
     ]
     if cfg.docker.no_new_privileges:
         argv += ["--security-opt", "no-new-privileges"]

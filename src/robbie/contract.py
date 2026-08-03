@@ -48,6 +48,97 @@ def _block(text: str, name: str) -> str:
 
 
 SIG_LINE = "<sub>🤖 automated pre-review by robbie</sub>"
+THREAD_ACTIONS = ("resolve", "reply", "leave")
+
+
+@dataclass(frozen=True)
+class ThreadVerdict:
+    comment_id: int
+    action: str  # resolve | reply | leave
+    body: str = ""
+
+    @property
+    def valid(self) -> bool:
+        if self.action not in THREAD_ACTIONS:
+            return False
+        return bool(self.body.strip()) if self.action == "reply" else True
+
+
+def parse_thread_verdicts(text: str) -> list[ThreadVerdict]:
+    """Read the per-thread decisions out of a run.
+
+    Anything malformed is dropped rather than guessed: leaving a thread alone is
+    always safe, and acting on a misparsed id would touch the wrong conversation.
+    """
+    out: list[ThreadVerdict] = []
+    for m in re.finditer(
+        r"^<<<THREAD (\d+)>>>\s*$(.*?)^<<<END>>>\s*$", text, re.S | re.M
+    ):
+        lines = [line for line in m.group(2).strip().splitlines()]
+        if not lines:
+            continue
+        action = lines[0].strip().lower()
+        verdict = ThreadVerdict(
+            comment_id=int(m.group(1)),
+            action=action,
+            body="\n".join(lines[1:]).strip(),
+        )
+        if verdict.valid:
+            out.append(verdict)
+    return out
+
+
+def thread_preamble(*, author: str, url: str, threads: list) -> str:
+    """Ask for a decision on each thread somebody answered."""
+    blocks = []
+    for t in threads:
+        where = f"{t.path}:{t.line}" if t.line else t.path
+        rows = [f"THREAD {t.comment_id} — {where}", f"  you said: {_strip(t.mine, 1200)}"]
+        rows += [f"  {who} replied: {_strip(body, 1200)}" for who, body in t.replies]
+        blocks.append("\n".join(rows))
+    listing = "\n\n".join(blocks)
+
+    return f"""\
+You are running NON-INTERACTIVELY from a scheduler, continuing a code review you \
+already posted on {url}. Do NOT ask questions and do NOT post anything yourself — a \
+wrapper acts on your output.
+
+{author} (or someone else) has replied to review comments of yours. For each thread \
+below, work out whether the reply is RIGHT. Read the actual code to check — you have \
+the PR checked out, so verify rather than assume, and remember that whoever replied \
+knows this codebase and this product better than you do.
+
+{listing}
+
+Then, for EACH thread above, emit exactly one block. Markers on their own lines, \
+nothing else in your response after the first one.
+
+<<<THREAD {threads[0].comment_id if threads else 0}>>>
+resolve
+<<<END>>>
+
+The first line is one of these three words:
+
+  resolve — the reply is right, or right enough. Your finding does not stand: the \
+code already handles it, the concern does not apply here, the risk is accepted for a \
+reason that holds, or you simply misread it. Say nothing; the thread gets closed. \
+Prefer this. A reviewer who cannot concede a point is noise, and a thread closed by \
+agreement is the loop working.
+
+  reply — the reply does not settle it and the difference matters, OR they asked you \
+a question you should answer. Put the reply body on the lines after the word. Address \
+what they actually said, in one short paragraph: name the specific case their \
+reasoning misses, with a file:line if you have one. No preamble, no restating their \
+point back at them, no thanks. If you were wrong about part of it, say that part \
+plainly before the part you still hold. Never repeat the original finding as though \
+it were unanswered.
+
+  leave — you cannot tell from the code, or the reply is about something outside this \
+PR. The thread stays as it is and a human picks it up.
+
+Choosing `reply` puts the ball back in their court and holds the next review pass, so \
+spend it only where it changes what they would do. If it is a matter of taste, resolve.
+"""
 BODY_CAP = 400
 
 

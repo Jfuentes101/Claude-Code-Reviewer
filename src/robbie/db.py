@@ -156,6 +156,16 @@ class Db:
             )
         )
 
+    def reviewed_prs(self, repo: str) -> list[int]:
+        """PRs this repo has published reviews on — where threads of ours can exist."""
+        return [
+            int(r["pr"]) for r in self.conn.execute(
+                "SELECT DISTINCT pr FROM reviews WHERE repo=? AND state='published' "
+                "ORDER BY pr DESC",
+                (repo,),
+            )
+        ]
+
     def running(self) -> list[sqlite3.Row]:
         return list(
             self.conn.execute(

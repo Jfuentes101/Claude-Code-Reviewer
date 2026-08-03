@@ -19,9 +19,12 @@ def thread(**kw) -> Thread:
         path="app/models/payment.rb", line=42, resolved=False, outdated=False,
         mine="🔴 **Must-fix** — Guard the nil case\n\nThis blows up when the payout "
              f"is missing.\n\n{SIG}",
-        replies=(),
+        replies=(), node_id="PRRT_abc", comment_id=555,
     )
-    return Thread(**{**base, **kw})
+    merged = {**base, **kw}
+    # mirrors GitHub: if the last comment came from someone else, we did not speak last
+    merged.setdefault("mine_is_last", not merged["replies"])
+    return Thread(**merged)
 
 
 # ----- thread state ------------------------------------------------------

@@ -37,6 +37,7 @@ class PrMeta:
     labels: tuple[str, ...]
     checks: tuple[dict[str, Any], ...]
     base_ref: str = "main"
+    state: str = "OPEN"
 
     def has_label(self, name: str) -> bool:
         return name in self.labels
@@ -84,12 +85,13 @@ async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
 async def pr_meta(repo: str, pr: int) -> PrMeta:
     data = await _gh_json(
         "pr", "view", str(pr), "--repo", repo, "--json",
-        "number,title,url,author,headRefOid,changedFiles,labels,statusCheckRollup,baseRefName",
+        "number,title,url,author,headRefOid,changedFiles,labels,statusCheckRollup,baseRefName,state",
     )
     if not data:
         raise GhError(f"could not fetch {repo}#{pr}")
     return PrMeta(
         base_ref=data.get("baseRefName") or "main",
+        state=str(data.get("state") or "OPEN"),
         number=int(data["number"]),
         title=data.get("title") or "",
         url=data.get("url") or "",
@@ -141,16 +143,23 @@ class Thread:
     outdated: bool
     mine: str  # what the reviewer said first
     replies: tuple[tuple[str, str], ...]  # (author, body), in order, after that
+    node_id: str = ""  # for resolveReviewThread
+    comment_id: int = 0  # databaseId of the first comment, for posting a reply
+    mine_is_last: bool = True
+
+    @property
+    def live(self) -> bool:
+        return not self.resolved and not self.outdated
 
     @property
     def awaiting_author(self) -> bool:
-        """Open, still anchored, and the reviewer spoke last."""
-        return not self.resolved and not self.outdated and not self.replies
+        """Open and the reviewer spoke last — including after answering a reply."""
+        return self.live and self.mine_is_last
 
     @property
     def answered(self) -> bool:
-        """Someone came back on it and it is not settled."""
-        return bool(self.replies) and not self.resolved
+        """Open and someone else spoke last, so it is the reviewer's move."""
+        return self.live and not self.mine_is_last
 
 
 async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
@@ -160,8 +169,8 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
       query($owner:String!,$name:String!,$num:Int!){
         repository(owner:$owner,name:$name){ pullRequest(number:$num){
           reviewThreads(first:100){ nodes {
-            isResolved isOutdated path line
-            comments(first:50){ nodes { author { login } body } }
+            id isResolved isOutdated path line
+            comments(first:50){ nodes { databaseId author { login } body } }
           }}}}}
     """
     data = await _gh_json(
@@ -190,6 +199,9 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
                 (((c.get("author") or {}).get("login") or "?"), str(c.get("body") or ""))
                 for c in comments[1:]
             ),
+            node_id=str(node.get("id") or ""),
+            comment_id=int(first.get("databaseId") or 0),
+            mine_is_last=((comments[-1].get("author") or {}).get("login")) == reviewer,
         ))
     return out
 

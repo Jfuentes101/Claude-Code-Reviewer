@@ -6,6 +6,7 @@ set -euo pipefail
 : "${REPO_SLUG:?}" "${PR_NUMBER:?}" "${PR_URL:?}" "${REVIEW_COMMAND:?}" "${BASE_REF:?}"
 
 preamble="$(cat)"
+MODE="${REVIEW_MODE:-review}"
 
 # robbie's cross-repo standards go in the user scope, which the CLI loads on its
 # own. Copied rather than mounted so it cannot collide with the credentials mount.
@@ -28,15 +29,22 @@ gh pr checkout "$PR_NUMBER" >/dev/null
 # with --setting-sources user below, which keeps a .claude/ added by this PR from
 # being loaded as instructions. Fetched over the API rather than with git, which
 # has no credentials of its own here, and to avoid pulling a whole branch for one file.
-if ! body="$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$BASE_REF" \
-              -H "Accept: application/vnd.github.raw" 2>/dev/null)"; then
-  echo "entrypoint: $REVIEW_COMMAND not found on $BASE_REF" >&2
-  exit 3
+body=""
+if [[ "$MODE" == "review" ]]; then
+  if ! body="$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$BASE_REF" \
+                -H "Accept: application/vnd.github.raw" 2>/dev/null)"; then
+    echo "entrypoint: $REVIEW_COMMAND not found on $BASE_REF" >&2
+    exit 3
+  fi
+  # frontmatter out, $ARGUMENTS in. Variable expansion, never eval: backticks
+  # inside the command file stay literal data. Keep it that way.
+  body="$(awk 'NR==1&&/^---/{f=1;next} f&&/^---/{f=0;next} !f' <<<"$body")"
+  body="${body//\$ARGUMENTS/$PR_URL}"
+  body="
+
+--- review command follows (\$ARGUMENTS = $PR_URL) ---
+$body"
 fi
-# frontmatter out, $ARGUMENTS in. Variable expansion, never eval: backticks
-# inside the command file stay literal data. Keep it that way.
-body="$(awk 'NR==1&&/^---/{f=1;next} f&&/^---/{f=0;next} !f' <<<"$body")"
-body="${body//\$ARGUMENTS/$PR_URL}"
 
 mcp="${REVIEW_MCP:-}"
 [[ -n "$mcp" ]] || mcp='{"mcpServers":{}}'
@@ -48,7 +56,4 @@ exec claude -p \
   --strict-mcp-config --mcp-config "$mcp" \
   --effort "${REVIEW_EFFORT:-high}" \
   --no-session-persistence \
-  <<<"$preamble
-
---- review command follows (\$ARGUMENTS = $PR_URL) ---
-$body"
+  <<<"$preamble$body"

@@ -17,6 +17,7 @@ import json
 import logging
 from dataclasses import dataclass
 
+from robbie.anchor import SIGNATURE as anchor_signature
 from robbie.anchor import Anchored, anchor, commentable
 from robbie.config import RepoConfig
 from robbie.github import GhError, PrMeta, _gh, _gh_json
@@ -135,6 +136,39 @@ async def publish_review(
         inline=len(anchored.comments),
         url=url or None,
     )
+
+
+async def resolve_thread(
+    repo: RepoConfig, node_id: str, *, dry_run: bool = False
+) -> PublishResult:
+    """Close a thread the reviewer conceded. No text: the concession is the act."""
+    if not node_id:
+        return PublishResult(False, "no thread id")
+    if dry_run:
+        return PublishResult(False, f"dry run: would resolve {node_id}")
+    await _gh(
+        "api", "graphql", "-f",
+        "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id})"
+        "{thread{isResolved}}}",
+        "-f", f"id={node_id}",
+    )
+    return PublishResult(True, "resolved")
+
+
+async def reply_to_thread(
+    repo: RepoConfig, pr: int, comment_id: int, body: str, *, dry_run: bool = False
+) -> PublishResult:
+    if not body.strip():
+        return PublishResult(False, "empty reply")
+    full = f"{body.rstrip()}\n\n{anchor_signature}"
+    if dry_run:
+        logger.info("DRY reply on %s#%s thread %s:\n%s", repo.slug, pr, comment_id, full)
+        return PublishResult(False, "dry run")
+    url = (await _gh(
+        "api", f"repos/{repo.slug}/pulls/{pr}/comments/{comment_id}/replies",
+        "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": full}),
+    )).strip()
+    return PublishResult(True, "replied", url=url or None)
 
 
 async def clear_needs_work(repo: RepoConfig, pr: int, *, dry_run: bool = False) -> PublishResult:

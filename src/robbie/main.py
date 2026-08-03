@@ -77,6 +77,9 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="show the queue")
 
+    th = sub.add_parser("threads", help="act on replies to my own review threads")
+    th.add_argument("--repo", default=None)
+
     dig = sub.add_parser("digest", help="post the stuck-in-review digest")
     dig.add_argument("--days", type=int, default=None)
     return ap
@@ -100,6 +103,14 @@ async def _run(args: argparse.Namespace) -> int:
         if args.command == "digest":
             listed = await post_digest(cfg, slack, days=args.days)
             logger.info("digest done: %d PR(s) listed", listed)
+            return 0
+
+        if args.command == "threads":
+            outcomes = await orch.answer_threads(args.repo)
+            for outcome in outcomes:
+                logger.info("%s", outcome)
+            if not outcomes:
+                logger.info("no threads of mine are waiting on me")
             return 0
 
         if args.command == "status":
