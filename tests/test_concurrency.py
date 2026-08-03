@@ -55,6 +55,7 @@ def orch(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "cleared")))
     monkeypatch.setattr(orch_mod, "review_still_requested", _async(True))
+    monkeypatch.setattr(orch_mod, "my_threads", _async([]))
     monkeypatch.setattr(o, "_token_login", _async("robbie-bot"))
     yield o
     db.close()
@@ -210,7 +211,7 @@ def pr_meta_for(number: int) -> PrMeta:
 def stub_gates(monkeypatch, gates: Gates) -> None:
     monkeypatch.setattr(orch_mod, "pr_meta", gates.meta)
     monkeypatch.setattr(orch_mod, "last_review_request", _async("2026-01-01T00:00:00Z"))
-    monkeypatch.setattr(orch_mod, "open_threads", _async(0))
+    monkeypatch.setattr(orch_mod, "my_threads", _async([]))
 
 
 async def test_the_gate_phase_has_its_own_cap(orch, monkeypatch):

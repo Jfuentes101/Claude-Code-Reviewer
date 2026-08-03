@@ -123,22 +123,75 @@ async def open_threads(repo: str, pr: int, reviewer: str) -> int:
     Unresolved, not outdated (a fix push moves the code and outdates the
     thread), and the last word is the reviewer's.
     """
+    return sum(1 for t in await my_threads(repo, pr, reviewer) if t.awaiting_author)
+
+
+@dataclass(frozen=True)
+class Thread:
+    """One review thread the reviewer started, with whatever came back.
+
+    GitHub is the store for this; robbie keeps no copy. Resolution state, the
+    replies and their order all live here, so a local mirror would only be a
+    cache to invalidate.
+    """
+
+    path: str
+    line: int | None
+    resolved: bool
+    outdated: bool
+    mine: str  # what the reviewer said first
+    replies: tuple[tuple[str, str], ...]  # (author, body), in order, after that
+
+    @property
+    def awaiting_author(self) -> bool:
+        """Open, still anchored, and the reviewer spoke last."""
+        return not self.resolved and not self.outdated and not self.replies
+
+    @property
+    def answered(self) -> bool:
+        """Someone came back on it and it is not settled."""
+        return bool(self.replies) and not self.resolved
+
+
+async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
+    """Every review thread opened by `reviewer`, with its replies."""
     owner, name = repo.split("/", 1)
     query = """
       query($owner:String!,$name:String!,$num:Int!){
         repository(owner:$owner,name:$name){ pullRequest(number:$num){
           reviewThreads(first:100){ nodes {
-            isResolved isOutdated comments(first:50){ nodes { author { login } } }
+            isResolved isOutdated path line
+            comments(first:50){ nodes { author { login } body } }
           }}}}}
     """
-    n = await _gh_json(
+    data = await _gh_json(
         "api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}",
         "-F", f"num={pr}", "-f", f"query={query}",
-        "--jq", "[ .data.repository.pullRequest.reviewThreads.nodes[] "
-                "| select(.isResolved == false and .isOutdated == false) "
-                f'| select((.comments.nodes | last | .author.login) == "{reviewer}") ] | length',
     )
-    return int(n or 0)
+    nodes = (
+        (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+    ).get("reviewThreads", {}).get("nodes") or []
+
+    out: list[Thread] = []
+    for node in nodes:
+        comments = ((node.get("comments") or {}).get("nodes")) or []
+        if not comments:
+            continue
+        first = comments[0]
+        if ((first.get("author") or {}).get("login")) != reviewer:
+            continue  # someone else's thread; not ours to answer
+        out.append(Thread(
+            path=node.get("path") or "?",
+            line=node.get("line"),
+            resolved=bool(node.get("isResolved")),
+            outdated=bool(node.get("isOutdated")),
+            mine=str(first.get("body") or ""),
+            replies=tuple(
+                (((c.get("author") or {}).get("login") or "?"), str(c.get("body") or ""))
+                for c in comments[1:]
+            ),
+        ))
+    return out
 
 
 def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:

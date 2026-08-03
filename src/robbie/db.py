@@ -145,6 +145,17 @@ class Db:
             (key, repo, pr, head_sha, requested_at, reason, now_ms(), now_ms()),
         )
 
+    def passes_for(self, repo: str, pr: int) -> list[sqlite3.Row]:
+        """Earlier judged passes on this PR, oldest first."""
+        return list(
+            self.conn.execute(
+                "SELECT head_sha, verdict, state, hold_reason, created_at FROM reviews "
+                "WHERE repo=? AND pr=? AND state IN ('published','held') "
+                "ORDER BY created_at",
+                (repo, pr),
+            )
+        )
+
     def running(self) -> list[sqlite3.Row]:
         return list(
             self.conn.execute(

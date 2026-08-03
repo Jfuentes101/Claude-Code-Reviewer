@@ -47,7 +47,42 @@ def _block(text: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def preamble(*, author: str, title: str, url: str, ci: str = "") -> str:
+SIG_LINE = "<sub>🤖 automated pre-review by robbie</sub>"
+BODY_CAP = 400
+
+
+def _strip(body: str, cap: int = BODY_CAP) -> str:
+    lines = [
+        line for line in body.splitlines()
+        if line.strip() and SIG_LINE not in line and not line.startswith("<sub>")
+    ]
+    text = " ".join(lines)
+    return text if len(text) <= cap else text[:cap].rsplit(" ", 1)[0] + "…"
+
+
+def threads_block(threads: list) -> str:
+    """What the reviewer already said on this PR, and what came back.
+
+    Read from GitHub each time rather than stored: it owns the threads, their
+    replies and their resolution state, so a local copy would only go stale.
+    """
+    live = [t for t in threads if not t.outdated]
+    if not live:
+        return ""
+    rows: list[str] = []
+    for t in live:
+        where = f"{t.path}:{t.line}" if t.line else t.path
+        state = "RESOLVED" if t.resolved else ("ANSWERED" if t.replies else "no reply yet")
+        rows.append(f"- [{state}] {where}\n    you said: {_strip(t.mine)}")
+        for who, body in t.replies:
+            rows.append(f"    {who} replied: {_strip(body)}")
+    return "\n".join(rows)
+
+
+def preamble(
+    *, author: str, title: str, url: str, ci: str = "",
+    threads: str = "", history: str = "",
+) -> str:
     """The instructions wrapped around the repo's own review command."""
     failing = "FAILING:" in ci
     why_failing = (
@@ -75,6 +110,25 @@ that tool is not installed here, that is expected and correct — skip it silent
 Never report a tool as "unavailable" or "skipped" as though it were a gap in the
 review: the linters were run, just not by you.
 """ if ci else ""
+    prior = f"""
+{history}You have reviewed this PR before. These are your own threads on it and
+what came back:
+
+{threads}
+
+Read them as a conversation you are continuing, not as history to ignore:
+
+- A reply that gives a REASON settles the point. Do not raise it again as a new
+  finding. If the reason does not hold, say so ONCE in the summary and address
+  the reply directly — never by posting a second inline comment on the same line.
+- A RESOLVED thread is closed. Reopen it only if the code changed in a way that
+  brings the problem back, and say that is why.
+- A thread with no reply yet is ALREADY POSTED on this PR. Do not repeat it
+  inline; GitHub would show the author two identical comments. Mention it in the
+  summary as still open if it still matters.
+- Where an earlier finding is genuinely fixed, say so in one line. Credit is
+  cheap and it tells the author the loop is working.
+""" if threads else (f"\n{history}" if history else "")
     return f"""\
 You are running NON-INTERACTIVELY from a scheduler. Do NOT ask any questions, do \
 NOT offer to fix anything, and do NOT post anything to GitHub yourself — a wrapper \
@@ -83,7 +137,7 @@ phase was skipped. Claude Code attribution on this team's commits and PR bodies 
 (Co-Authored-By trailers, "Generated with Claude Code" footers) is expected and \
 welcome: it is never a finding, so do not flag it, do not suggest removing it, and \
 do not mention it at all — not even to say you are letting it pass.
-{ci_block}
+{ci_block}{prior}
 
 Run the full review of the PR, then END your response with the delimited blocks below, \
 markers on their own lines. Nothing after the last one.

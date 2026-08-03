@@ -70,9 +70,10 @@ def _parser() -> argparse.ArgumentParser:
     poll = sub.add_parser("poll", help="run the review loop")
     poll.add_argument("--once", action="store_true", help="one tick, then exit")
 
-    one = sub.add_parser("once", help="review a single PR now")
+    one = sub.add_parser("once", help="review specific PRs now, ignoring the gates")
     one.add_argument("--repo", required=True)
-    one.add_argument("--pr", required=True, type=int)
+    # several in one process so they share the concurrency cap
+    one.add_argument("--pr", required=True, type=int, nargs="+")
 
     sub.add_parser("status", help="show the queue")
 
@@ -107,9 +108,19 @@ async def _run(args: argparse.Namespace) -> int:
             return 0
 
         if args.command == "once":
-            outcome = await orch.review_one(args.repo, args.pr)
-            logger.info("%s", outcome)
-            return 0 if outcome.action != "failed" else 1
+            outcomes = await asyncio.gather(
+                *(orch.review_one(args.repo, pr) for pr in args.pr),
+                return_exceptions=True,
+            )
+            failed = 0
+            for pr, outcome in zip(args.pr, outcomes, strict=True):
+                if isinstance(outcome, Exception):
+                    logger.error("%s#%s crashed: %s", args.repo, pr, outcome)
+                    failed += 1
+                    continue
+                logger.info("%s", outcome)
+                failed += outcome.action == "failed"
+            return 1 if failed else 0
 
         orphaned = db.reap_running()
         if orphaned:

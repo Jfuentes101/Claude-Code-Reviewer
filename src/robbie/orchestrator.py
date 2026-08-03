@@ -19,14 +19,14 @@ from robbie import budget, publish
 from robbie import slack as slackmod
 from robbie.anchor import parse_findings, severity_count
 from robbie.config import Config, RepoConfig, Secrets
-from robbie.contract import preamble
+from robbie.contract import preamble, threads_block
 from robbie.db import Db
 from robbie.gates import Decision, dedup_key, evaluate
 from robbie.github import (
     GhError,
     PrMeta,
     last_review_request,
-    open_threads,
+    my_threads,
     pr_meta,
     queue,
     review_still_requested,
@@ -69,6 +69,7 @@ class Orchestrator:
         # unlike dry_run, the review still runs; only the outward writes stop
         self.no_publish = no_publish
         self._self_login: str | None = None
+        self._threads: dict[int, list] = {}
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
         self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
 
@@ -170,13 +171,15 @@ class Orchestrator:
                 "skip", "already judged at this commit and request"
             )
 
-        threads = await open_threads(repo.slug, pr, repo.reviewer_login)
+        # one query serves both the gate and the prompt's prior-conversation block
+        threads = await my_threads(repo.slug, pr, repo.reviewer_login)
+        self._threads[pr] = threads
         return meta, key, requested_at, evaluate(
             meta,
             repo,
             key_done=False,
             sha_judged=self.db.sha_was_judged(repo.slug, pr, meta.head_sha),
-            open_threads=threads,
+            open_threads=sum(1 for t in threads if t.awaiting_author),
         )
 
     async def _act(
@@ -226,18 +229,21 @@ class Orchestrator:
             logger.info("DRY would review %s#%s (%s)", repo.slug, meta.number, key)
             return Outcome(repo.slug, meta.number, "review", "dry run")
 
+        # built before the semaphore: a container slot must not be held open
+        # while an API call for the prior conversation is in flight
+        prompt = preamble(
+            author=meta.author, title=meta.title, url=meta.url,
+            ci=summarize_checks(meta).as_prompt(),
+            threads=threads_block(await self._prior_threads(repo, meta)),
+            history=self._pass_history(repo, meta),
+        )
+
         async with self._sem:
             self.db.start_review(
                 key=key, repo=repo.slug, pr=meta.number,
                 head_sha=meta.head_sha, requested_at=requested_at,
             )
-            run = await run_review(
-                self.cfg, self.secrets, repo, meta,
-                prompt=preamble(
-                    author=meta.author, title=meta.title, url=meta.url,
-                    ci=summarize_checks(meta).as_prompt(),
-                ),
-            )
+            run = await run_review(self.cfg, self.secrets, repo, meta, prompt=prompt)
 
         if not run.ok:
             # not recorded as judged, so the next tick retries
@@ -307,6 +313,27 @@ class Orchestrator:
         if blocks.verdict == "comment":
             await self._brief_owner(repo, meta, blocks.slack, run.transcript)
         return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
+
+    async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list:
+        """Reuse what the gate fetched; fetch it for a forced run that skipped it."""
+        cached = self._threads.pop(meta.number, None)
+        if cached is not None:
+            return cached
+        try:
+            return await my_threads(repo.slug, meta.number, repo.reviewer_login)
+        except GhError:
+            logger.warning("%s#%s: could not read prior threads", repo.slug, meta.number)
+            return []
+
+    def _pass_history(self, repo: RepoConfig, meta: PrMeta) -> str:
+        rows = self.db.passes_for(repo.slug, meta.number)
+        if not rows:
+            return ""
+        past = ", ".join(
+            f"{r['head_sha'][:8]} → {r['verdict'] or r['hold_reason'] or r['state']}"
+            for r in rows
+        )
+        return f"This is pass {len(rows) + 1} on this PR. Earlier passes: {past}.\n"
 
     async def _token_login(self) -> str | None:
         if self._self_login is None:
