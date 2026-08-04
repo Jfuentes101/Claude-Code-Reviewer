@@ -18,7 +18,7 @@ from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.contract import Blocks
 from robbie.db import Db
 from robbie.gates import Decision, dedup_key
-from robbie.github import PrMeta, Thread
+from robbie.github import GhError, PrMeta, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -209,6 +209,31 @@ async def test_ci_is_asked_for_once_per_commit(orch, repo, monkeypatch):
     second = await orch._review(repo, pr(), "forced-again", REQ)
     assert len(ci) == 1
     assert "asked CI" in first.detail and "already asked" in second.detail
+
+
+async def test_a_ci_request_that_failed_is_asked_for_again(orch, repo, monkeypatch):
+    """The guard means "the phrase is on the PR", so a failed post must not set it.
+
+    Otherwise an approval nobody builds can never be recovered from: every later
+    pass on that commit reads "already asked" and stays silent.
+    """
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+    async def boom(*a, **k):
+        raise GhError("502 from github")
+
+    monkeypatch.setattr(publish_mod, "request_ci", boom)
+    first = await orch._review(repo, pr(), KEY, REQ)
+    assert "CI request failed" in first.detail
+    assert any("couldn't post" in m for m in orch.slack.owner)
+
+    ci = []
+    monkeypatch.setattr(
+        publish_mod, "request_ci", lambda *a, **k: _mark(ci, PublishResult(True, "asked")),
+    )
+    second = await orch._review(repo, pr(), "forced-again", REQ)
+    assert len(ci) == 1 and "asked" in second.detail
 
 
 async def test_the_ci_trigger_comment_is_the_bare_phrase(repo, monkeypatch):

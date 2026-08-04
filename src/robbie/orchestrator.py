@@ -461,12 +461,11 @@ class Orchestrator:
         rather than something it observes: a forced re-review of a commit already
         approved must not pay for a second one.
         """
-        if not self.no_publish and not self.db.notice_once(
-            f"run-ci:{repo.slug}:{meta.number}:{meta.head_sha}"
-        ):
+        key = f"run-ci:{repo.slug}:{meta.number}:{meta.head_sha}"
+        if not self.no_publish and self.db.notice_seen(key):
             return f"CI already asked for {meta.head_sha[:8]}"
         try:
-            return (await publish.request_ci(repo, meta, dry_run=self.no_publish)).detail
+            result = await publish.request_ci(repo, meta, dry_run=self.no_publish)
         except GhError as ex:
             logger.warning("could not ask for CI on %s#%s: %s", repo.slug, meta.number, ex)
             await self.slack.dm_owner(
@@ -474,6 +473,9 @@ class Orchestrator:
                 f"`{repo.ci_phrase}`, so CI has not started: {ex}"
             )
             return "CI request failed"
+        if result.posted:
+            self.db.notice_once(key)
+        return result.detail
 
     async def _token_login(self) -> str | None:
         if self._self_login is None:
