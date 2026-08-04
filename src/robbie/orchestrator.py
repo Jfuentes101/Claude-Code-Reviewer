@@ -75,6 +75,7 @@ class Orchestrator:
         self.no_publish = no_publish
         self._self_login: str | None = None
         self._threads: dict[int, list] = {}
+        self._inflight = 0  # containers spending right now, which no gate can see
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
         self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
 
@@ -89,7 +90,7 @@ class Orchestrator:
         a re-review re-raises findings it conceded seconds later.
         """
         answered: list[Outcome] = []
-        if budget.check(self.cfg, self.secrets, self.db).allowed:
+        if budget.check(self.cfg, self.secrets, self.db, self._inflight).allowed:
             answered = await self.answer_threads()  # a container, so the same spend gate
         jobs: list[asyncio.Task[Outcome]] = []
         async with asyncio.TaskGroup() as tg:
@@ -185,9 +186,13 @@ class Orchestrator:
 
         prompt = thread_preamble(author=meta.author, url=meta.url, threads=pending)
         async with self._sem:
-            run = await run_review(
-                self.cfg, self.secrets, repo, meta, prompt=prompt, mode="threads"
-            )
+            self._inflight += 1
+            try:
+                run = await run_review(
+                    self.cfg, self.secrets, repo, meta, prompt=prompt, mode="threads"
+                )
+            finally:
+                self._inflight -= 1
         if not run.ok:
             await self.slack.dm_owner(
                 f"I couldn't work through the replies on *{meta.title}* ({meta.url}): "
@@ -300,7 +305,7 @@ class Orchestrator:
             )
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
-        gate = budget.check(self.cfg, self.secrets, self.db)
+        gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
         if not gate.allowed:
             if gate.notice_key and self.db.notice_once(gate.notice_key):
                 await self.slack.dm_owner(
@@ -330,11 +335,21 @@ class Orchestrator:
         )
 
         async with self._sem:
+            # the gate ruled minutes ago, behind however many reviews queued here
+            gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
+            if not gate.allowed:
+                logger.info("budget closed while %s#%s waited: %s",
+                            repo.slug, meta.number, gate.detail)
+                return Outcome(repo.slug, meta.number, "budget", gate.detail)
             self.db.start_review(
                 key=key, repo=repo.slug, pr=meta.number,
                 head_sha=meta.head_sha, requested_at=requested_at,
             )
-            run = await run_review(self.cfg, self.secrets, repo, meta, prompt=prompt)
+            self._inflight += 1
+            try:
+                run = await run_review(self.cfg, self.secrets, repo, meta, prompt=prompt)
+            finally:
+                self._inflight -= 1
 
         if not run.ok:
             # not recorded as judged, so the next tick retries

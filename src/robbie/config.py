@@ -60,6 +60,11 @@ class DockerConfig(_Strict):
 class BudgetConfig(_Strict):
     daily_usd: float = 20.0  # backend=api
     stop_pct: int = 70  # backend=oauth: pause at this % of the 5h window
+    # Held back for each review in flight, because the gate reads what has been
+    # spent and a running container has not finished spending. Measured: robbie
+    # put $81.83 through one 5h window, so a $5 review is upwards of 6% of one.
+    reserve_pct: float = 8.0  # backend=oauth
+    reserve_usd: float = 5.0  # backend=api, the p90 of 50 observed reviews
 
 
 class SlackConfig(_Strict):

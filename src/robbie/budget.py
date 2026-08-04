@@ -36,25 +36,35 @@ class Verdict:
     notice_key: str | None = None
 
 
-def check(cfg: Config, secrets: Secrets, db: Db) -> Verdict:
+def check(cfg: Config, secrets: Secrets, db: Db, inflight: int = 0) -> Verdict:
+    """May another review start, given `inflight` of them already running?
+
+    Both backends read what has already been *spent*, which is the wrong quantity
+    on its own: a container that is halfway through a review has spent nothing
+    yet and will spend plenty. So each review in flight, plus the one asking,
+    holds back a reserve. Without it a fleet all reads the same safe number at
+    once and starts together — the failure the cutoff exists to prevent.
+    """
     if cfg.backend == "api":
-        return _check_api(cfg, db)
-    return _check_oauth(cfg, secrets)
+        return _check_api(cfg, db, inflight)
+    return _check_oauth(cfg, secrets, inflight)
 
 
-def _check_api(cfg: Config, db: Db) -> Verdict:
+def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
     spent = db.spend_since(_midnight_ms())
     limit = cfg.budget.daily_usd
-    if spent < limit:
+    held = (inflight + 1) * cfg.budget.reserve_usd
+    if spent + held <= limit:
         return Verdict(True, f"${spent:.2f} of ${limit:.2f} spent today")
     return Verdict(
         False,
-        f"daily budget reached: ${spent:.2f} of ${limit:.2f}",
+        f"daily budget reached: ${spent:.2f} of ${limit:.2f}"
+        + (f", ${held:.2f} held for {inflight} running + 1" if inflight or held else ""),
         notice_key=f"budget:{datetime.now(UTC):%Y-%m-%d}",
     )
 
 
-def _check_oauth(cfg: Config, secrets: Secrets) -> Verdict:
+def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     """ponytail: undocumented endpoint, so it can change under us. A read failure
     must be reported as unknown, never as "plenty left"."""
     try:
@@ -73,11 +83,13 @@ def _check_oauth(cfg: Config, secrets: Secrets) -> Verdict:
         logger.warning("plan usage unreadable, running without the guard: %s", ex)
         return Verdict(True, f"usage unreadable ({ex}); running unguarded",
                        notice_key="budget:unreadable")
-    if pct < cfg.budget.stop_pct:
-        return Verdict(True, f"5h window at {pct:.0f}%")
+    held = (inflight + 1) * cfg.budget.reserve_pct
+    if pct + held <= cfg.budget.stop_pct:
+        return Verdict(True, f"5h window at {pct:.0f}% (+{held:.0f}% held back)")
     return Verdict(
         False,
-        f"5h window at {pct:.0f}% (cutoff {cfg.budget.stop_pct}%); resumes around {resets}",
+        f"5h window at {pct:.0f}% +{held:.0f}% held for {inflight} running + 1 "
+        f"(cutoff {cfg.budget.stop_pct}%); resumes around {resets}",
         # resets_at jitters by ~1s between calls, so key on the rounded minute
         notice_key=f"budget:{_minute_key(resets)}",
     )

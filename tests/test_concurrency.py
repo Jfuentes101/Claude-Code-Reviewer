@@ -14,7 +14,14 @@ import pytest
 
 from robbie import orchestrator as orch_mod
 from robbie import publish as publish_mod
-from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
+from robbie.config import (
+    BudgetConfig,
+    Config,
+    DockerConfig,
+    RepoConfig,
+    Secrets,
+    SlackConfig,
+)
 from robbie.contract import Blocks
 from robbie.db import Db
 from robbie.github import PrMeta
@@ -46,6 +53,8 @@ def orch(tmp_path, monkeypatch):
     cfg = Config(
         slack=SlackConfig(owner_id="U0"), repos=[repo], state_dir=tmp_path,
         docker=DockerConfig(timeout_s=5), max_concurrent_reviews=2,
+        # the semaphore is what these tests measure, so keep money out of the way
+        budget=BudgetConfig(daily_usd=1000.0),
     )
     db = Db(tmp_path / "robbie.db")
     o = Orchestrator(
@@ -124,6 +133,23 @@ async def test_raising_the_cap_raises_actual_parallelism(orch, monkeypatch):
     monkeypatch.setattr(orch_mod, "run_review", fleet)
     await _run_all(orch, fleet, range(6))
     assert fleet.peak == 5
+
+
+async def test_the_budget_caps_the_fleet_below_the_semaphore(orch, monkeypatch):
+    """What the money can cover, not what the cap allows.
+
+    Five slots and a budget that only reserves for four means four run: the fifth
+    asks while four are spending, and gets told no.
+    """
+    orch.cfg.budget.daily_usd = 20.0
+    orch.cfg.budget.reserve_usd = 5.0
+    orch._sem = asyncio.Semaphore(5)
+    fleet = Fleet()
+    monkeypatch.setattr(orch_mod, "run_review", fleet)
+    outcomes = await _run_all(orch, fleet, range(6))
+    assert fleet.peak == 4
+    assert [o.action for o in outcomes].count("budget") >= 1
+    assert orch._inflight == 0, "a finished review must give its reserve back"
 
 
 async def test_a_cap_of_one_serializes(orch, monkeypatch):
