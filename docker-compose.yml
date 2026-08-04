@@ -42,6 +42,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.reviewer
+      # must be the uid that owns CLAUDE_CREDENTIALS on the host: it is mounted
+      # mode 600, so a mismatch fails every review on backend=oauth
+      args:
+        UID: ${ROBBIE_UID:-1000}
+        GID: ${ROBBIE_GID:-1000}
     image: robbie-reviewer:latest
     command: ["--version"]
     entrypoint: ["claude"]
