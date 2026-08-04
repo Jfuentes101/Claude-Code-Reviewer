@@ -25,7 +25,9 @@ async def post_digest(cfg: Config, slack: Slack, *, days: int | None = None) -> 
         if not repo.slack_channel:
             logger.info("%s has no slack_channel; skipping its digest", repo.slug)
             continue
-        nodes = await stale_changes_requested(repo.slug, repo.reviewer_login, threshold)
+        nodes = await stale_changes_requested(
+            repo.slug, repo.reviewer_login, label=repo.label
+        )
         lines = _lines(nodes, threshold)
         if not lines:
             logger.info("%s: nothing stuck in review %d+ day(s)", repo.slug, threshold)

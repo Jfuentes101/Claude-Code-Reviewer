@@ -167,24 +167,47 @@ class Thread:
         return not self.resolved and not self.mine_is_last
 
 
+THREAD_PAGE = 100  # GraphQL's per-page maximum for both connections
+
+
 async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
-    """Every review thread opened by `reviewer`, with its replies."""
+    """Every review thread opened by `reviewer`, with its replies.
+
+    Paged to the end rather than capped at one page: gate 5 counts these, and a
+    truncated read can only under-count, which is the direction that lets a
+    review through while robbie's last findings still stand unanswered.
+    """
     owner, name = repo.split("/", 1)
     query = """
-      query($owner:String!,$name:String!,$num:Int!){
+      query($owner:String!,$name:String!,$num:Int!,$first:Int!,$after:String){
         repository(owner:$owner,name:$name){ pullRequest(number:$num){
-          reviewThreads(first:100){ nodes {
-            id isResolved isOutdated path line
-            comments(first:50){ nodes { databaseId author { login } body } }
-          }}}}}
+          reviewThreads(first:$first, after:$after){
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id isResolved isOutdated path line
+              comments(first:$first){ nodes { databaseId author { login } body } }
+            }
+          }}}}
     """
-    data = await _gh_json(
-        "api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}",
-        "-F", f"num={pr}", "-f", f"query={query}",
-    )
-    nodes = (
-        (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
-    ).get("reviewThreads", {}).get("nodes") or []
+
+    nodes: list[dict[str, Any]] = []
+    after: str | None = None
+    while True:
+        args = ["api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}",
+                "-F", f"num={pr}", "-F", f"first={THREAD_PAGE}", "-f", f"query={query}"]
+        if after:
+            args += ["-f", f"after={after}"]
+        data = await _gh_json(*args)
+        conn = (
+            (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+        ).get("reviewThreads") or {}
+        nodes += conn.get("nodes") or []
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        after = str(page.get("endCursor") or "")
+        if not after:
+            break
 
     out: list[Thread] = []
     for node in nodes:
@@ -194,6 +217,12 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
         first = comments[0]
         if ((first.get("author") or {}).get("login")) != reviewer:
             continue  # someone else's thread; not ours to answer
+        if len(comments) == THREAD_PAGE:
+            # who spoke last is read off the end of this list, so say it is short
+            logger.warning(
+                "%s#%s %s: thread has %d+ comments; only the first %d were read",
+                repo, pr, node.get("path"), THREAD_PAGE, THREAD_PAGE,
+            )
         out.append(Thread(
             path=node.get("path") or "?",
             line=node.get("line"),
@@ -290,11 +319,14 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
     )
 
 
-async def stale_changes_requested(repo: str, reviewer: str, days: int) -> list[dict[str, Any]]:
-    """PRs sitting on a standing changes-requested review for `days`+.
+async def stale_changes_requested(
+    repo: str, reviewer: str, *, label: str
+) -> list[dict[str, Any]]:
+    """PRs sitting on a standing changes-requested review from `reviewer`.
 
     Clocked on the age of the review, not on last activity: these authors keep
     pushing, they just never re-request, so "no recent activity" finds nothing.
+    The age cut itself is the caller's, since the search cannot express it.
     """
     query = """
       query($q: String!, $me: String!) {
@@ -308,7 +340,7 @@ async def stale_changes_requested(repo: str, reviewer: str, days: int) -> list[d
       }
     """
     search = (
-        f'repo:{repo} is:pr is:open label:"Code Review" '
+        f'repo:{repo} is:pr is:open label:"{label}" '
         f"reviewed-by:{reviewer} review:changes_requested"
     )
     data = await _gh_json(

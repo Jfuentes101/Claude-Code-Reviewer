@@ -8,8 +8,9 @@ threads, so they are read each time rather than mirrored locally.
 
 from __future__ import annotations
 
+from robbie import github as gh_mod
 from robbie.contract import preamble, threads_block
-from robbie.github import Thread
+from robbie.github import Thread, my_threads
 
 SIG = "<sub>🤖 automated pre-review by robbie</sub>"
 
@@ -25,6 +26,61 @@ def thread(**kw) -> Thread:
     # mirrors GitHub: if the last comment came from someone else, we did not speak last
     merged.setdefault("mine_is_last", not merged["replies"])
     return Thread(**merged)
+
+
+def raw(cid: int, author: str = "rev") -> dict:
+    return {
+        "id": f"PRRT_{cid}", "isResolved": False, "isOutdated": False,
+        "path": "app/models/payment.rb", "line": 42,
+        "comments": {"nodes": [{"databaseId": cid, "author": {"login": author}, "body": "x"}]},
+    }
+
+
+def page(nodes: list[dict], *, cursor: str | None = None) -> dict:
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+        "nodes": nodes,
+    }}}}}
+
+
+# ----- reading them off GitHub -------------------------------------------
+
+
+async def test_every_page_of_threads_is_read(monkeypatch):
+    """A truncated read under-counts, which is the direction that lets gate 5 pass."""
+    pages = [page([raw(1)], cursor="CUR1"), page([raw(2)])]
+    calls: list[tuple] = []
+
+    async def fake(*args, **kw):
+        calls.append(args)
+        return pages[len(calls) - 1]
+
+    monkeypatch.setattr(gh_mod, "_gh_json", fake)
+    assert [t.comment_id for t in await my_threads("acme/app", 7, "rev")] == [1, 2]
+    assert any("after=CUR1" in a for a in calls[1]), "the second page has to say where from"
+
+
+async def test_one_page_asks_once(monkeypatch):
+    calls: list[tuple] = []
+
+    async def fake(*args, **kw):
+        calls.append(args)
+        return page([raw(1)])
+
+    monkeypatch.setattr(gh_mod, "_gh_json", fake)
+    await my_threads("acme/app", 7, "rev")
+    assert len(calls) == 1
+
+
+async def test_someone_elses_thread_is_not_ours_to_answer(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_gh_json", _async(page([raw(1, author="dev")])))
+    assert await my_threads("acme/app", 7, "rev") == []
+
+
+def _async(value):
+    async def _call(*a, **kw):
+        return value
+    return _call
 
 
 # ----- thread state ------------------------------------------------------
