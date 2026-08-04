@@ -32,6 +32,11 @@ docker:
 budget:
   daily_usd: 20.0       # backend=api: measured from each run's reported cost
   stop_pct: 70          # backend=oauth: pause at this % of the 5h window
+  # Held back for each review in flight and for the one asking, because both
+  # numbers above measure what has been SPENT and a running container has not
+  # finished spending. Without it a free slot starts on a stale reading.
+  reserve_pct: 8.0      # backend=oauth
+  reserve_usd: 5.0      # backend=api
 
 slack:
   owner_id: U01234567           # gets briefings, holds and operator warnings
@@ -48,3 +53,6 @@ repos:
     slack_channel: C01234567
     image: robbie-reviewer:latest
     ignore_checks: ["CodeRabbit"]
+    # posted as the whole comment body on an `ok`, to start a build that no
+    # longer runs on push. Whatever listens for it may match the entire comment.
+    ci_phrase: run-ci
