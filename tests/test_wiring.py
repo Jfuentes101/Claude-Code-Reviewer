@@ -12,7 +12,7 @@ from robbie.anchor import Anchored
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.github import PrMeta
 from robbie.publish import MAX_BYTES, _assemble, _truncate
-from robbie.runner import _docker_argv
+from robbie.runner import _docker_argv, _docker_env
 
 NW = "❌ NEEDS WORK! ❌"
 
@@ -56,9 +56,17 @@ def test_the_mirror_is_mounted_read_only(tmp_path):
 
 
 def test_the_reviewer_gets_the_read_only_token(tmp_path):
-    argv = _docker_argv(_cfg(tmp_path), _secrets(), _cfg(tmp_path).repos[0], _pr(), name="n")
-    assert "GH_TOKEN=read-token" in argv
-    assert "GH_TOKEN=write-token" not in argv
+    cfg = _cfg(tmp_path)
+    assert _docker_env(cfg, _secrets())["GH_TOKEN"] == "read-token"
+
+
+def test_no_secret_is_ever_written_into_the_command_line(tmp_path):
+    """An argv is readable through /proc by anyone on the host."""
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    for secret in ("read-token", "write-token", "sk-ant"):
+        assert secret not in " ".join(argv)
+    assert "GH_TOKEN" in argv, "it still has to be handed over, just by name"
 
 
 def test_caps_and_hardening_are_always_applied(tmp_path):
@@ -76,8 +84,10 @@ def test_no_new_privileges_can_be_turned_off_for_apparmor_hosts(tmp_path):
 
 
 def test_api_backend_passes_the_key_and_mounts_no_credentials(tmp_path):
-    argv = _docker_argv(_cfg(tmp_path), _secrets(), _cfg(tmp_path).repos[0], _pr(), name="n")
-    assert "ANTHROPIC_API_KEY=sk-ant" in argv
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "ANTHROPIC_API_KEY" in argv
+    assert _docker_env(cfg, _secrets())["ANTHROPIC_API_KEY"] == "sk-ant"
     assert not any(".credentials.json" in a for a in argv)
 
 
@@ -89,7 +99,7 @@ def test_oauth_backend_mounts_credentials_writable_for_token_refresh(tmp_path):
     )
     mount = next(a for a in argv if ".credentials.json" in a)
     assert not mount.endswith(":ro"), "the CLI has to write the refreshed token back"
-    assert "ANTHROPIC_API_KEY" not in " ".join(argv)
+    assert "ANTHROPIC_API_KEY" not in argv
 
 
 def test_mcp_config_is_only_passed_when_set(tmp_path):

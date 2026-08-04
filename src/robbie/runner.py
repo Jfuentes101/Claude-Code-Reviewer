@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +64,7 @@ async def run_review(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, **_docker_env(cfg, secrets)},
     )
     try:
         out, err = await asyncio.wait_for(
@@ -128,9 +130,9 @@ def _docker_argv(
         "--cap-drop", "ALL",
         # the mirror is the only host path a reviewer can see, and it cannot write to it
         "-v", f"{repo.bare}:/bare:ro",
-        # the reviewer runs a model with bypassPermissions, so it gets the
-        # read-only token when one is configured — publishing is not its job
-        "-e", f"GH_TOKEN={secrets.reviewer_gh_token}",
+        # by name, not by value: an argv is world-readable through /proc, and the
+        # docker CLI reads these out of its own environment (see _docker_env)
+        "-e", "GH_TOKEN",
         "-e", f"REPO_SLUG={repo.slug}",
         "-e", f"PR_NUMBER={meta.number}",
         "-e", f"PR_URL={meta.url}",
@@ -146,7 +148,7 @@ def _docker_argv(
     if cfg.policy_dir:
         argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
     if cfg.backend == "api":
-        argv += ["-e", f"ANTHROPIC_API_KEY={secrets.anthropic_api_key}"]
+        argv += ["-e", "ANTHROPIC_API_KEY"]
     else:
         # rw because the CLI refreshes the OAuth token in place, and the next
         # container needs the fresh one. ponytail: concurrent refreshes can race
@@ -156,6 +158,18 @@ def _docker_argv(
         argv += ["-e", f"REVIEW_MCP={cfg.review_mcp}"]
     argv.append(repo.image)
     return argv
+
+
+def _docker_env(cfg: Config, secrets: Secrets) -> dict[str, str]:
+    """The secrets `docker run -e NAME` picks up, kept out of the command line.
+
+    The reviewer runs a model with bypassPermissions, so it gets the read-only
+    token when one is configured — publishing is not its job.
+    """
+    env = {"GH_TOKEN": secrets.reviewer_gh_token}
+    if cfg.backend == "api":
+        env["ANTHROPIC_API_KEY"] = secrets.anthropic_api_key or ""
+    return env
 
 
 async def _kill(name: str) -> None:
