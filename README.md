@@ -100,6 +100,15 @@ Gates 4–6 differ in whether they leave a trace. 4 is recorded (there is no new
 code to judge, so it is not looked at again); 5 and 6 are not, so a reply, a
 resolve or a green build brings the PR back on its own.
 
+**A tick answers before it reviews.** Gate 5 is only honest if conceded findings
+get closed, so every tick first works through the threads somebody replied to —
+judging each reply against the code and then resolving, answering or leaving it —
+and only then reads the queue. That order is not cosmetic: one `my_threads` read
+per PR feeds both gate 5 and the prompt's prior-conversation block, so closing
+afterwards would leave the gate ruling on threads the same tick is about to close,
+and a re-review re-raising findings it conceded seconds later. `robbie threads
+[--pr N]` runs that half alone.
+
 Dedup key is `repo:pr:head_sha:last_review_requested_at`, so a PR is reviewed
 once and re-reviewed when new commits land. A re-request without new commits
 changes the key too, but gate 4 turns that into one DM instead of a second
@@ -110,11 +119,22 @@ review of the same diff.
 | verdict | what gets posted | effect on the queue |
 |---|---|---|
 | `needs-work` | changes-requested review + inline comments + label | clears the review request; the PR leaves the human's queue until a re-request |
-| `comment` | plain comment + inline comments (one call each) + label | request untouched; the human still gets the briefing for their own pass |
-| `ok` | nothing; the label is cleared | request untouched; briefing only |
+| `comment` | plain comment + inline comments (one call each) + label | request untouched; the human still gets their own pass |
+| `ok` | the label comes off and a `ci_phrase` comment goes on | request untouched |
 
 `comment` posts its inline notes individually on purpose: a submitted review
 would fulfil the human's pending request, and it shouldn't.
+
+An `ok` is the only verdict that leaves no trace on the PR, so it is the only one
+that DMs the owner — one line, not a briefing. The others announce themselves in
+the channel, on the PR, and to the author.
+
+That comment is also how CI starts. Where a build no longer runs on push because
+the push volume made it too expensive, the review becomes the gate in front of
+it: `ci_phrase` (default `run-ci`) is posted as the **entire** comment body — no
+signature, no hidden marker — because whatever listens for it may be matching the
+whole comment. It is posted at most once per head sha, so forcing a re-review of
+an approved commit cannot buy a second build.
 
 ## Setup
 
@@ -130,14 +150,61 @@ docker compose up -d
 docker compose logs -f
 ```
 
+Then prove it before it reviews anything:
+
+```bash
+docker compose exec robbie robbie --dry-run poll --once
+```
+
+That reads the queue, runs every gate, and writes nothing — so a bad token, an
+unreadable mirror or a path that means something different inside the container
+surfaces there instead of halfway through a paid review.
+
 Put `./scripts/mirror-sync` on a timer (systemd, cron). A stale mirror costs a
 slower clone, not a wrong review — `gh` fetches the PR head itself.
 
-**The one thing that will bite you:** the orchestrator spawns *sibling*
-containers, so every bind mount it builds is resolved by the host docker daemon.
-`repos[].bare` in the config must be a **host** path, and the compose file mounts
-the mirror directory at that same path inside the orchestrator so both sides
-agree. Change one, change the other.
+### What each file wants from you
+
+**`.env`** — every secret, plus the paths and ids compose interpolates. Start by
+choosing `backend`, because it decides which of them matter: `api` needs
+`ANTHROPIC_API_KEY`, `oauth` needs `CLAUDE_CREDENTIALS` pointing at a copy of
+`~/.claude/.credentials.json` from a machine where `claude login` has run. Put a
+**read-only** `GH_TOKEN_REVIEWER` next to the writing `GH_TOKEN`: the reviewer
+runs a model with `bypassPermissions`, and publishing is not its job.
+
+**`config/robbie.yaml`** — the identity that matters is `reviewer_login`, whose
+pending review requests *are* the queue; `GH_TOKEN` must belong to it, because
+its reviews are posted as that account.
+
+**`config/slack-users.tsv`** — GitHub login → Slack id, for the DM to a PR's
+author. The shipped example maps nobody, so until you fill it every author DM
+comes back unmapped (once per author, as a warning to the owner).
+
+### Four things that will bite you
+
+**Host paths.** The orchestrator spawns *sibling* containers, so every bind mount
+it builds is resolved by the host docker daemon. `repos[].bare` and `policy_dir`
+must be **host** paths, and the compose file mounts them at those same paths
+inside the orchestrator so both sides agree. Change one, change the other.
+
+**The reviewer's uid, on `backend=oauth`.** The credentials file is mounted mode
+600 and the CLI refreshes it in place, so the container's user has to be the host
+user that owns it: set `ROBBIE_UID`/`ROBBIE_GID` to `id -u`/`id -g` before
+building. Get it wrong and *every* review fails on an unreadable token — the base
+image already occupies uid 1000, so this is not the theoretical kind of mismatch.
+
+**`backend=oauth` spends a human's plan.** Reviews come out of the same 5-hour
+window as that person's own interactive work, and a fleet of them empties it fast.
+`stop_pct` is the ceiling, `reserve_pct` is what each in-flight review holds back
+so a free slot cannot start on a reading that three unfinished containers are
+about to invalidate, and `max_concurrent_reviews` is how many can be wrong at
+once. On a shared plan, 1–2 is a kinder cap than 3.
+
+**AppArmor hosts.** Ubuntu and Pop!_OS ship a `docker-default` profile that treats
+the profile transition on `exec` as gaining privileges, so with
+`no_new_privileges` even `exec /usr/bin/bash` returns EPERM. Set
+`docker.no_new_privileges: false` there. The default `true` is right on a plain
+Debian VPS. Dropping capabilities is not part of that trade and always happens.
 
 ## Commands
 
@@ -146,6 +213,7 @@ docker compose exec robbie robbie status                        # queue overview
 docker compose exec robbie robbie once --repo o/r --pr 123      # force one review
 docker compose exec robbie robbie poll --once                   # a single tick
 docker compose exec robbie robbie digest --days 7               # stuck-in-review digest
+docker compose exec robbie robbie threads --pr 123              # just the replies half
 docker compose exec robbie robbie --dry-run poll --once         # decide, write nothing
 ```
 
@@ -261,6 +329,21 @@ you have a reason.
 
 An unreadable budget is never treated as unlimited: robbie warns once and keeps
 going, so a broken endpoint degrades loudly.
+
+Either backend can only read what has already been **spent**, and a container
+halfway through a review has spent nothing yet. So the gate is asked again right
+before a container starts rather than only in the gate phase minutes earlier, and
+every review in flight — plus the one asking — holds back `reserve_pct` (oauth) or
+`reserve_usd` (api). Without that, every free slot reads the same safe number at
+the same moment and they all start.
+
+One reserve, not an estimate per PR: across 50 recorded reviews the same PR
+re-reviewed six times ranged from $1.57 to $6.23, so within-PR spread is as wide
+as the population's and a size heuristic would be false precision. Size the number
+from your own table instead — `SELECT cost_usd FROM reviews` against the spend of
+one window is the whole calibration. A consequence to expect: the budget can now
+cap the fleet below `max_concurrent_reviews`, because what the money covers is the
+real limit.
 
 ## Adding a repo
 
