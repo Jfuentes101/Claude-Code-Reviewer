@@ -211,6 +211,24 @@ async def post_ci_note(
     return PublishResult(True, f"posted the CI note ({', '.join(checks) or 'red'})")
 
 
+async def request_ci(
+    repo: RepoConfig, meta: PrMeta, *, dry_run: bool = False
+) -> PublishResult:
+    """Ask CI to run, now that the review says the code is worth building.
+
+    The body is the trigger phrase and nothing else — no signature, no hidden
+    marker — because whatever listens for it may be matching the whole comment.
+    """
+    if dry_run:
+        logger.info("DRY %r on %s#%s", repo.ci_phrase, repo.slug, meta.number)
+        return PublishResult(False, "dry run")
+    await _gh(
+        "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
+        "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": repo.ci_phrase}),
+    )
+    return PublishResult(True, f"asked CI to run ({repo.ci_phrase})")
+
+
 # ----- internals ---------------------------------------------------------
 
 

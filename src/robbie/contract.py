@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from robbie.github import NO_CHECKS
+
 MARKERS = ("VERDICT", "GITHUB", "INLINE", "SLACK")
 VERDICTS = ("needs-work", "comment", "ok")
 
@@ -86,6 +88,24 @@ def parse_thread_verdicts(text: str) -> list[ThreadVerdict]:
         if verdict.valid:
             out.append(verdict)
     return out
+
+
+def _linters(nothing_ran: bool) -> str:
+    """The linters are CI's job either way — what changes is whether they ran."""
+    if nothing_ran:
+        return (
+            "The team's linters run in CI, which has not run yet, so nobody has linted "
+            "this commit: do not say the linters pass, and do not imply they do. You "
+            "cannot run them either — they are deliberately not installed here — so "
+            "leave lint to CI and judge the code itself."
+        )
+    return (
+        "The team's linters run in CI, and CI already ran them on this commit. Do not "
+        "re-run what CI covers. If the review command below asks you to run a linter "
+        "and that tool is not installed here, that is expected and correct — skip it "
+        'silently. Never report a tool as "unavailable" or "skipped" as though it were '
+        "a gap in the review: the linters were run, just not by you."
+    )
 
 
 def thread_preamble(*, author: str, url: str, threads: list) -> str:
@@ -179,16 +199,26 @@ def preamble(
 ) -> str:
     """The instructions wrapped around the repo's own review command."""
     failing = "FAILING:" in ci
-    why_failing = (
-        "Something above is failing. It was either excluded from the gate that "
-        "guards this review (an advisory bot, say) or this review was forced past "
-        "a red build on purpose. Report it plainly in your CI line and judge the "
-        "code as it stands; do not assume the failure is harmless, and do not "
-        "assume it is caused by this PR either."
-        if failing
-        else "A red build would have stopped this review before it started, so "
-        "the above is the full picture."
-    )
+    nothing_ran = ci.startswith(NO_CHECKS)
+    if failing:
+        why_failing = (
+            "Something above is failing. It was either excluded from the gate that "
+            "guards this review (an advisory bot, say) or this review was forced past "
+            "a red build on purpose. Report it plainly in your CI line and judge the "
+            "code as it stands; do not assume the failure is harmless, and do not "
+            "assume it is caused by this PR either."
+        )
+    elif nothing_ran:
+        why_failing = (
+            "That is not a broken integration: builds cost money here, so CI no longer "
+            "runs on a push — approving this commit is what starts one. Nothing above "
+            "vouches for the code, and no test has been run on it."
+        )
+    else:
+        why_failing = (
+            "A red build would have stopped this review before it started, so "
+            "the above is the full picture."
+        )
     ci_block = f"""
 CI state on the head commit, as the wrapper read it moments ago:
   {ci}
@@ -198,11 +228,7 @@ CI-provider credentials. {why_failing} Do not shell out to discover CI state, an
 do not wait for a running check — report it as running and judge the code as it
 stands.
 
-The team's linters run in CI, and CI already ran them on this commit. Do not
-re-run what CI covers. If the review command below asks you to run a linter and
-that tool is not installed here, that is expected and correct — skip it silently.
-Never report a tool as "unavailable" or "skipped" as though it were a gap in the
-review: the linters were run, just not by you.
+{_linters(nothing_ran)}
 """ if ci else ""
     prior = f"""
 {history}You have reviewed this PR before. These are your own threads on it and

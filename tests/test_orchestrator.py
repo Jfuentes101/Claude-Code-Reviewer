@@ -7,6 +7,7 @@ publish error would burn a full review every tick.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -151,11 +152,15 @@ async def test_a_run_without_a_verdict_posts_nothing_and_stops_retrying(orch, re
 # ----- verdicts ------------------------------------------------------------
 
 
-async def test_ok_clears_the_label_posts_nothing_and_briefs_the_owner(orch, repo, monkeypatch):
-    cleared = []
+async def test_ok_clears_the_label_asks_for_ci_and_briefs_the_owner(orch, repo, monkeypatch):
+    cleared, ci = [], []
     monkeypatch.setattr(
         publish_mod, "clear_needs_work",
         lambda *a, **k: _mark(cleared, PublishResult(True, "cleared")),
+    )
+    monkeypatch.setattr(
+        publish_mod, "request_ci",
+        lambda *a, **k: _mark(ci, PublishResult(True, "asked CI to run (run-ci)")),
     )
     monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "nope")))
     stub_run(monkeypatch, ok_run("ok"))
@@ -163,9 +168,39 @@ async def test_ok_clears_the_label_posts_nothing_and_briefs_the_owner(orch, repo
     outcome = await orch._review(repo, pr(), KEY, REQ)
     assert outcome.action == "review"
     assert cleared, "an ok verdict releases the brake"
+    assert ci, "an approval is what pays for a build now that push does not"
     assert orch.db.get_review(KEY).verdict == "ok"
     assert orch.slack.owner and "briefing" in orch.slack.owner[0]
-    assert orch.slack.channels == [], "nothing was posted, so nothing to announce"
+    assert orch.slack.channels == [], "no review was posted, so nothing to announce"
+
+
+async def test_ci_is_asked_for_once_per_commit(orch, repo, monkeypatch):
+    """A build costs money now, and a forced re-review must not buy a second one."""
+    ci = []
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(
+        publish_mod, "request_ci",
+        lambda *a, **k: _mark(ci, PublishResult(True, "asked CI to run (run-ci)")),
+    )
+    stub_run(monkeypatch, ok_run("ok"))
+
+    first = await orch._review(repo, pr(), KEY, REQ)
+    second = await orch._review(repo, pr(), "forced-again", REQ)
+    assert len(ci) == 1
+    assert "asked CI" in first.detail and "already asked" in second.detail
+
+
+async def test_the_ci_trigger_comment_is_the_bare_phrase(repo, monkeypatch):
+    """Whatever listens for it may match the whole body, so nothing rides along."""
+    sent = {}
+
+    async def fake_gh(*args, stdin=None, **kw):
+        sent["body"] = json.loads(stdin)["body"]
+        return "https://x/1"
+
+    monkeypatch.setattr(publish_mod, "_gh", fake_gh)
+    await publish_mod.request_ci(repo, pr())
+    assert sent["body"] == "run-ci"
 
 
 async def test_needs_work_publishes_notifies_and_does_not_brief_the_owner(

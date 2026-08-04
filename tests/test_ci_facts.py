@@ -121,6 +121,15 @@ def test_a_missing_linter_is_declared_expected_rather_than_a_gap():
     assert 'Never report a tool as "unavailable"' in text
 
 
+def test_an_unbuilt_commit_is_not_told_its_linters_passed():
+    """CI runs on approval now, so silence means nothing ran — not that it is green."""
+    text = _flat(ci=summarize_checks(pr()).as_prompt())
+    assert "CI already ran them on this commit" not in text
+    assert "nobody has linted this commit" in text
+    assert "approving this commit is what starts one" in text
+    assert "would have stopped this review before it started" not in text
+
+
 def test_without_ci_data_the_block_is_omitted_entirely():
     text = preamble(author="dev", title="t", url="u")
     assert "CI state on the head commit" not in text

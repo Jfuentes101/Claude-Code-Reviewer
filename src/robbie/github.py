@@ -231,6 +231,11 @@ def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
     return sorted(set(out))
 
 
+# CI runs when a review approves the commit, so this is the normal state on a
+# first pass, not a broken integration
+NO_CHECKS = "No CI checks are reporting on this commit."
+
+
 @dataclass(frozen=True)
 class CheckSummary:
     """What CI says about the head commit, bucketed.
@@ -247,7 +252,7 @@ class CheckSummary:
 
     def as_prompt(self) -> str:
         if not (self.passing or self.failing or self.running or self.other):
-            return "No CI checks are reporting on this commit."
+            return NO_CHECKS
         parts = []
         if self.passing:
             parts.append(f"passing ({len(self.passing)}): {', '.join(self.passing)}")

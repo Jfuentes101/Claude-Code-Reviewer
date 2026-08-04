@@ -30,6 +30,8 @@ class RepoConfig(_Strict):
     image: str = "robbie-reviewer:latest"
     # CodeRabbit reports its review as a commit status; it is never a broken build
     ignore_checks: tuple[str, ...] = ("CodeRabbit",)
+    # CI does not run on push any more, so an approval is what pays for a build
+    ci_phrase: str = "run-ci"
 
     @property
     def owner(self) -> str:

@@ -368,9 +368,10 @@ class Orchestrator:
 
         if blocks.verdict == "ok":
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
+            ci = await self._request_ci(repo, meta)
             self.db.finish_review(key, state="published", verdict="ok", **common)
             await self._brief_owner(repo, meta, blocks.slack, run.transcript)
-            return Outcome(repo.slug, meta.number, "review", "ok — nothing posted")
+            return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
         if not blocks.publishable:
             self.db.finish_review(
@@ -425,6 +426,27 @@ class Orchestrator:
             for r in rows
         )
         return f"This is pass {len(rows) + 1} on this PR. Earlier passes: {past}.\n"
+
+    async def _request_ci(self, repo: RepoConfig, meta: PrMeta) -> str:
+        """Trigger a build for an approved commit, at most once per commit.
+
+        CI stopped running on push, so a build is now something robbie spends
+        rather than something it observes: a forced re-review of a commit already
+        approved must not pay for a second one.
+        """
+        if not self.no_publish and not self.db.notice_once(
+            f"run-ci:{repo.slug}:{meta.number}:{meta.head_sha}"
+        ):
+            return f"CI already asked for {meta.head_sha[:8]}"
+        try:
+            return (await publish.request_ci(repo, meta, dry_run=self.no_publish)).detail
+        except GhError as ex:
+            logger.warning("could not ask for CI on %s#%s: %s", repo.slug, meta.number, ex)
+            await self.slack.dm_owner(
+                f"I approved *{meta.title}* ({meta.url}) but couldn't post "
+                f"`{repo.ci_phrase}`, so CI has not started: {ex}"
+            )
+            return "CI request failed"
 
     async def _token_login(self) -> str | None:
         if self._self_login is None:
