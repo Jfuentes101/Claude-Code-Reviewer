@@ -149,7 +149,7 @@ def _async(value):
 def acted(monkeypatch) -> dict:
     seen: dict = {"resolved": [], "replied": []}
 
-    async def fake_resolve(repo, node_id, *, dry_run=False):
+    async def fake_resolve(node_id, *, dry_run=False):
         seen["resolved"].append(node_id)
         return PublishResult(True, "resolved")
 
@@ -233,7 +233,7 @@ async def test_the_tick_answers_replies_before_it_reads_the_queue(orch, monkeypa
         log.append("threads")
         return [thread(555, replies=(("dev", "fixed in abc123"),))]
 
-    async def resolve(repo, node_id, *, dry_run=False):
+    async def resolve(node_id, *, dry_run=False):
         log.append("resolve")
         return PublishResult(True, "resolved")
 
@@ -322,6 +322,75 @@ async def test_leave_touches_nothing(orch, monkeypatch, acted):
     assert "1 leave" in out[0].detail
 
 
+async def test_a_left_thread_is_not_paid_for_twice(orch, monkeypatch, acted):
+    """`leave` changes nothing on GitHub, so the thread stays ours to answer.
+
+    Without a record of having judged it, every tick from here on spawns another
+    container to reach the same conclusion.
+    """
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "depends on the other PR"),))
+    ]))
+    spawns = []
+
+    async def counting(*a, **kw):
+        spawns.append(1)
+        return ReviewRun(ok=True, cost_usd=0.05, text="<<<THREAD 555>>>\nleave\n<<<END>>>")
+
+    monkeypatch.setattr(orch_mod, "run_review", counting)
+    assert "1 leave" in (await orch.answer_threads())[0].detail
+    assert await orch.answer_threads() == []
+    assert len(spawns) == 1, "the same reply was already judged; nothing changed"
+
+
+async def test_a_new_reply_brings_a_left_thread_back(orch, monkeypatch, acted):
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "depends on the other PR"),))
+    ]))
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nleave\n<<<END>>>")
+    await orch.answer_threads()
+
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "depends on the other PR"), ("dev", "that one merged")))
+    ]))
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    await orch.answer_threads()
+    assert acted["resolved"] == ["PRRT_555"]
+
+
+async def test_a_skipped_thread_is_not_retried_blindly_either(orch, monkeypatch, acted):
+    monkeypatch.setattr(orch_mod, "my_threads", _async([thread(555, replies=(("dev", "?"),))]))
+    stub_run(monkeypatch, "no blocks at all")
+    assert "1 unanswered" in (await orch.answer_threads())[0].detail
+    assert await orch.answer_threads() == []
+
+
+async def test_the_threads_pass_records_what_it_spent(orch, monkeypatch, acted):
+    """It spawns the same container a review does, so the budget has to see it."""
+    monkeypatch.setattr(orch_mod, "my_threads", _async([thread(555, replies=(("dev", "x"),))]))
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    await orch.answer_threads()
+    assert orch.db.spend_since(0) == pytest.approx(0.05)
+
+
+async def test_the_budget_is_re_checked_before_each_container(orch, monkeypatch, acted):
+    """The sweep can run several containers, and the reading ages between them."""
+    monkeypatch.setattr(orch_mod, "my_threads", _async([thread(555, replies=(("dev", "x"),))]))
+    calls = []
+
+    def gate(*a):
+        calls.append(1)
+        return Verdict(allowed=len(calls) < 2, detail="5h window at 100%")
+
+    monkeypatch.setattr(orch_mod.budget, "check", gate)
+    monkeypatch.setattr(orch_mod, "queue", _async([]))
+    ran = []
+    monkeypatch.setattr(orch_mod, "run_review", lambda *a, **k: ran.append(1))
+    out = await orch.poll_once()
+    assert [o.action for o in out] == ["budget"]
+    assert ran == [], "the gate closed while it queued; no container should start"
+
+
 async def test_a_thread_the_model_skipped_is_left_alone_not_guessed(orch, monkeypatch, acted):
     monkeypatch.setattr(orch_mod, "my_threads", _async([
         thread(555, replies=(("dev", "?"),)), thread(666, replies=(("dev", "?"),))
@@ -387,7 +456,7 @@ async def test_no_publish_acts_on_nothing(orch, monkeypatch):
     orch.no_publish = True
     dry: list[bool] = []
 
-    async def fake_resolve(repo, node_id, *, dry_run=False):
+    async def fake_resolve(node_id, *, dry_run=False):
         dry.append(dry_run)
         return PublishResult(False, "dry run")
 

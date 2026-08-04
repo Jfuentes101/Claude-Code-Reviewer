@@ -48,6 +48,18 @@ CREATE TABLE IF NOT EXISTS notices (
     created_at INTEGER NOT NULL
 );
 
+-- containers that spend without being a review pass, so the budget can see them
+CREATE TABLE IF NOT EXISTS spend (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo       TEXT    NOT NULL,
+    pr         INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,
+    cost_usd   REAL,
+    duration_s REAL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_spend_created ON spend(created_at DESC);
+
 -- cold start: the first poll of a repo records its backlog instead of
 -- reviewing it, so enabling robbie can't trigger a review storm
 CREATE TABLE IF NOT EXISTS seeded (
@@ -187,14 +199,33 @@ class Db:
         )
         return cur.rowcount or 0
 
+    def record_spend(
+        self, *, repo: str, pr: int, kind: str,
+        cost_usd: float | None, duration_s: float | None,
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO spend (repo, pr, kind, cost_usd, duration_s, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (repo, pr, kind, cost_usd, duration_s, now_ms()),
+        )
+
     def spend_since(self, since_ms: int) -> float:
         row = self.conn.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0.0) AS usd FROM reviews WHERE created_at >= ?",
-            (since_ms,),
+            "SELECT COALESCE((SELECT SUM(cost_usd) FROM reviews WHERE created_at >= ?), 0.0) "
+            "     + COALESCE((SELECT SUM(cost_usd) FROM spend   WHERE created_at >= ?), 0.0) "
+            "AS usd",
+            (since_ms, since_ms),
         ).fetchone()
         return float(row["usd"])
 
     # ----- notices / seeding --------------------------------------------
+
+    def notice_seen(self, key: str) -> bool:
+        """Whether this key was ever recorded, without recording it."""
+        return (
+            self.conn.execute("SELECT 1 FROM notices WHERE key=?", (key,)).fetchone()
+            is not None
+        )
 
     def notice_once(self, key: str) -> bool:
         """True the first time this key is seen; False every time after."""

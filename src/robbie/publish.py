@@ -138,9 +138,7 @@ async def publish_review(
     )
 
 
-async def resolve_thread(
-    repo: RepoConfig, node_id: str, *, dry_run: bool = False
-) -> PublishResult:
+async def resolve_thread(node_id: str, *, dry_run: bool = False) -> PublishResult:
     """Close a thread the reviewer conceded. No text: the concession is the act."""
     if not node_id:
         return PublishResult(False, "no thread id")

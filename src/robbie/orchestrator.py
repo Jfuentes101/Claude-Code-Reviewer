@@ -30,6 +30,7 @@ from robbie.gates import Decision, dedup_key, evaluate
 from robbie.github import (
     GhError,
     PrMeta,
+    Thread,
     last_review_request,
     my_threads,
     pr_meta,
@@ -166,13 +167,16 @@ class Orchestrator:
                 except GhError as ex:
                     logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
                     continue
-                pending = [t for t in threads if t.answered]
+                pending = [
+                    t for t in threads
+                    if t.answered and not self.db.notice_seen(_thread_state(repo.slug, pr, t))
+                ]
                 if not pending:
                     continue
                 out.append(await self._answer_one(repo, pr, pending))
         return out
 
-    async def _answer_one(self, repo: RepoConfig, pr: int, pending: list) -> Outcome:
+    async def _answer_one(self, repo: RepoConfig, pr: int, pending: list[Thread]) -> Outcome:
         meta = await pr_meta(repo.slug, pr)
         if meta.state != "OPEN":
             return Outcome(repo.slug, pr, "skip", f"pr is {meta.state.lower()}")
@@ -185,6 +189,10 @@ class Orchestrator:
 
         prompt = thread_preamble(author=meta.author, url=meta.url, threads=pending)
         async with self._sem:
+            gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
+            if not gate.allowed:
+                logger.info("budget closed while %s#%s waited: %s", repo.slug, pr, gate.detail)
+                return Outcome(repo.slug, pr, "budget", gate.detail)
             self._inflight += 1
             try:
                 run = await run_review(
@@ -192,6 +200,10 @@ class Orchestrator:
                 )
             finally:
                 self._inflight -= 1
+        self.db.record_spend(
+            repo=repo.slug, pr=pr, kind="threads",
+            cost_usd=run.cost_usd, duration_s=run.duration_s,
+        )
         if not run.ok:
             await self.slack.dm_owner(
                 f"I couldn't work through the replies on *{meta.title}* ({meta.url}): "
@@ -204,17 +216,20 @@ class Orchestrator:
         done = {"resolve": 0, "reply": 0, "leave": 0, "unanswered": 0}
         for cid, thread in by_comment.items():
             verdict = verdicts.get(cid)
+            # a thread left as it is stays answered, so without this the next tick
+            # would pay for the same container again, and every tick after it
             if verdict is None:
                 done["unanswered"] += 1
+                self.db.notice_once(_thread_state(repo.slug, pr, thread))
                 continue
             if verdict.action == "resolve":
-                await publish.resolve_thread(
-                    repo, thread.node_id, dry_run=self.no_publish
-                )
+                await publish.resolve_thread(thread.node_id, dry_run=self.no_publish)
             elif verdict.action == "reply":
                 await publish.reply_to_thread(
                     repo, pr, cid, verdict.body, dry_run=self.no_publish
                 )
+            else:
+                self.db.notice_once(_thread_state(repo.slug, pr, thread))
             done[verdict.action] += 1
 
         detail = ", ".join(f"{n} {k}" for k, n in done.items() if n)
@@ -532,6 +547,15 @@ class Orchestrator:
             "and will review *new* requests from here on. Run "
             f"`robbie once --repo {repo.slug} --pr <n>` to go through one from the backlog."
         )
+
+
+def _thread_state(slug: str, pr: int, thread: Thread) -> str:
+    """Identifies a thread *and* the reply that is waiting on it.
+
+    Judging one and leaving it alone must not be judged again, but a new reply
+    has to bring it straight back, so the reply count is part of the key.
+    """
+    return f"thread:{slug}:{pr}:{thread.comment_id}:{len(thread.replies)}"
 
 
 async def _requested_at_or_blank(slug: str, pr: int, reviewer: str) -> str:
