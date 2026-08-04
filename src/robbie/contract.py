@@ -93,6 +93,8 @@ def thread_preamble(*, author: str, url: str, threads: list) -> str:
     blocks = []
     for t in threads:
         where = f"{t.path}:{t.line}" if t.line else t.path
+        if t.outdated:
+            where += " (OUTDATED — the code moved; a reply here stays collapsed)"
         rows = [f"THREAD {t.comment_id} — {where}", f"  you said: {_strip(t.mine, 1200)}"]
         rows += [f"  {who} replied: {_strip(body, 1200)}" for who, body in t.replies]
         blocks.append("\n".join(rows))
@@ -131,7 +133,8 @@ what they actually said, in one short paragraph: name the specific case their \
 reasoning misses, with a file:line if you have one. No preamble, no restating their \
 point back at them, no thanks. If you were wrong about part of it, say that part \
 plainly before the part you still hold. Never repeat the original finding as though \
-it were unanswered.
+it were unanswered. Not available on a thread marked OUTDATED — nobody would read it. \
+There, judge the code as it stands now and choose resolve or leave.
 
   leave — you cannot tell from the code, or the reply is about something outside this \
 PR. The thread stays as it is and a human picks it up.

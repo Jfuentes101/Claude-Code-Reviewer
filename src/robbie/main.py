@@ -79,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
 
     th = sub.add_parser("threads", help="act on replies to my own review threads")
     th.add_argument("--repo", default=None)
+    th.add_argument("--pr", type=int, nargs="+", default=[], help="only these PRs")
 
     dig = sub.add_parser("digest", help="post the stuck-in-review digest")
     dig.add_argument("--days", type=int, default=None)
@@ -106,7 +107,7 @@ async def _run(args: argparse.Namespace) -> int:
             return 0
 
         if args.command == "threads":
-            outcomes = await orch.answer_threads(args.repo)
+            outcomes = await orch.answer_threads(args.repo, tuple(args.pr))
             for outcome in outcomes:
                 logger.info("%s", outcome)
             if not outcomes:

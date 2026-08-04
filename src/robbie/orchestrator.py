@@ -81,7 +81,16 @@ class Orchestrator:
     # ----- entry points --------------------------------------------------
 
     async def poll_once(self) -> list[Outcome]:
-        """One tick across every configured repo."""
+        """One tick across every configured repo: answer replies, then review.
+
+        Answering first because a single `my_threads` read per PR feeds both gate
+        5 and the prompt's prior-conversation block. Do it the other way and that
+        read is stale: the gate rules on threads this tick is about to close, and
+        a re-review re-raises findings it conceded seconds later.
+        """
+        answered: list[Outcome] = []
+        if budget.check(self.cfg, self.secrets, self.db).allowed:
+            answered = await self.answer_threads()  # a container, so the same spend gate
         jobs: list[asyncio.Task[Outcome]] = []
         async with asyncio.TaskGroup() as tg:
             for repo in self.cfg.repos:
@@ -98,7 +107,7 @@ class Orchestrator:
 
                 for pr in prs:
                     jobs.append(tg.create_task(self._handle(repo, pr)))
-        return [job.result() for job in jobs]
+        return answered + [job.result() for job in jobs]
 
     async def review_one(self, slug: str, pr: int) -> Outcome:
         """Force a review, ignoring the queue, the gates and prior state."""
@@ -136,7 +145,9 @@ class Orchestrator:
                 rows.append(f"  {repo.slug}#{pr:<6} {mark}  — {meta.title[:60]}")
         return rows
 
-    async def answer_threads(self, slug: str | None = None) -> list[Outcome]:
+    async def answer_threads(
+        self, slug: str | None = None, only: tuple[int, ...] = ()
+    ) -> list[Outcome]:
         """Act on replies to the reviewer's own open threads.
 
         Only threads where somebody else spoke last are considered: after robbie
@@ -148,7 +159,8 @@ class Orchestrator:
         for repo in self.cfg.repos:
             if slug and repo.slug != slug:
                 continue
-            for pr in self.db.reviewed_prs(repo.slug):
+            # named PRs override the DB: threads can predate robbie's own passes
+            for pr in only or self.db.reviewed_prs(repo.slug):
                 try:
                     threads = await my_threads(repo.slug, pr, repo.reviewer_login)
                 except GhError as ex:
@@ -164,6 +176,12 @@ class Orchestrator:
         meta = await pr_meta(repo.slug, pr)
         if meta.state != "OPEN":
             return Outcome(repo.slug, pr, "skip", f"pr is {meta.state.lower()}")
+
+        if self.dry_run:
+            logger.info(
+                "DRY would work through %d reply(s) on %s#%s", len(pending), repo.slug, pr
+            )
+            return Outcome(repo.slug, pr, "threads", "dry run")
 
         prompt = thread_preamble(author=meta.author, url=meta.url, threads=pending)
         async with self._sem:

@@ -158,8 +158,13 @@ class Thread:
 
     @property
     def answered(self) -> bool:
-        """Open and someone else spoke last, so it is the reviewer's move."""
-        return self.live and not self.mine_is_last
+        """Open and someone else spoke last, so it is the reviewer's move.
+
+        Outdated counts here, unlike in `awaiting_author`: the code moving is
+        usually the fix landing, so it is the likeliest thread to close. What it
+        does rule out is a reply — GitHub collapses those out of sight.
+        """
+        return not self.resolved and not self.mine_is_last
 
 
 async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:

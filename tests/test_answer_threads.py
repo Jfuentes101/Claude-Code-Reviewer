@@ -13,6 +13,7 @@ import pytest
 
 from robbie import orchestrator as orch_mod
 from robbie import publish as publish_mod
+from robbie.budget import Verdict
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.contract import parse_thread_verdicts, thread_preamble
 from robbie.db import Db
@@ -196,6 +197,88 @@ async def test_the_author_coming_back_again_reopens_our_move(orch, monkeypatch, 
     out = await orch.answer_threads()
     assert acted["resolved"] == ["PRRT_555"]
     assert "1 resolve" in out[0].detail
+
+
+async def test_dry_run_writes_nothing_and_starts_no_container(orch, monkeypatch, acted):
+    """`--dry-run` writes nothing here either, and pays for no container to decide."""
+    orch.dry_run = True
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "fixed in abc123"),))
+    ]))
+    ran = []
+    monkeypatch.setattr(orch_mod, "run_review", lambda *a, **k: ran.append(1))
+    out = await orch.answer_threads()
+    assert (ran, acted["resolved"], acted["replied"]) == ([], [], [])
+    assert out[0].detail == "dry run"
+
+
+async def test_named_prs_do_not_have_to_be_in_the_db(orch, monkeypatch, acted):
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "fixed"),))
+    ]))
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    out = await orch.answer_threads(only=(999,))
+    assert [o.pr for o in out] == [999], "PR 999 was never reviewed by us"
+
+
+async def test_the_tick_answers_replies_before_it_reads_the_queue(orch, monkeypatch, acted):
+    """Answering is half the tick, and it is the half that goes first.
+
+    One `my_threads` read per PR feeds both gate 5 and the prompt's history, so
+    the closing has to land before it, not after.
+    """
+    log: list[str] = []
+
+    async def threads(*a, **k):
+        log.append("threads")
+        return [thread(555, replies=(("dev", "fixed in abc123"),))]
+
+    async def resolve(repo, node_id, *, dry_run=False):
+        log.append("resolve")
+        return PublishResult(True, "resolved")
+
+    async def queue(*a, **k):
+        log.append("queue")
+        return []
+
+    monkeypatch.setattr(orch_mod, "my_threads", threads)
+    monkeypatch.setattr(publish_mod, "resolve_thread", resolve)
+    monkeypatch.setattr(orch_mod, "queue", queue)
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+
+    out = await orch.poll_once()
+    assert log == ["threads", "resolve", "queue"]
+    assert [o.action for o in out] == ["threads"]
+
+
+async def test_the_spend_gate_stops_the_answering_too(orch, monkeypatch, acted):
+    """It spawns the same container a review does, so it costs the same money."""
+    monkeypatch.setattr(orch_mod, "queue", _async([]))
+    monkeypatch.setattr(
+        orch_mod.budget, "check",
+        lambda *a: Verdict(allowed=False, detail="5h window at 100%"),
+    )
+    read = []
+    monkeypatch.setattr(orch_mod, "my_threads", lambda *a, **k: read.append(1))
+    assert await orch.poll_once() == []
+    assert read == [], "no thread read, no container, on a closed budget"
+
+
+async def test_an_outdated_thread_is_still_ours_to_close(orch, monkeypatch, acted):
+    """The code moving is usually the fix landing — the likeliest thread to close."""
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, outdated=True, replies=(("dev", "fixed in abc123"),))
+    ]))
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    await orch.answer_threads()
+    assert acted["resolved"] == ["PRRT_555"]
+
+
+def test_an_outdated_thread_says_a_reply_would_be_invisible():
+    text = thread_preamble(author="dev", url="https://x/7", threads=[
+        thread(555, outdated=True, replies=(("dev", "fixed"),))
+    ])
+    assert "OUTDATED" in text
 
 
 async def test_a_resolved_thread_is_ignored(orch, monkeypatch, acted):
