@@ -61,8 +61,10 @@ class BudgetConfig(_Strict):
     daily_usd: float = 20.0  # backend=api
     stop_pct: int = 70  # backend=oauth: pause at this % of the 5h window
     # Held back for each review in flight, because the gate reads what has been
-    # spent and a running container has not finished spending. Measured: robbie
-    # put $81.83 through one 5h window, so a $5 review is upwards of 6% of one.
+    # spent and a running container has not finished spending. Deliberately
+    # generous: $81.83 of reviews shared one 5h window with a human's own
+    # sessions, which caps a $5 review at ~6% of a window and puts it well under
+    # that in practice. Erring high costs idle quota, erring low costs the cutoff.
     reserve_pct: float = 8.0  # backend=oauth
     reserve_usd: float = 5.0  # backend=api, the p90 of 50 observed reviews
 
