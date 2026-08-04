@@ -74,7 +74,8 @@ class Orchestrator:
         # unlike dry_run, the review still runs; only the outward writes stop
         self.no_publish = no_publish
         self._self_login: str | None = None
-        self._threads: dict[int, list] = {}
+        # (repo, pr) → what the gate read, handed to the prompt in the same tick
+        self._threads: dict[tuple[str, int], list[Thread]] = {}
         self._inflight = 0  # containers spending right now, which no gate can see
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
         self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
@@ -89,6 +90,7 @@ class Orchestrator:
         read is stale: the gate rules on threads this tick is about to close, and
         a re-review re-raises findings it conceded seconds later.
         """
+        self._threads.clear()
         answered: list[Outcome] = []
         if budget.check(self.cfg, self.secrets, self.db, self._inflight).allowed:
             answered = await self.answer_threads()  # a container, so the same spend gate
@@ -216,8 +218,6 @@ class Orchestrator:
         done = {"resolve": 0, "reply": 0, "leave": 0, "unanswered": 0}
         for cid, thread in by_comment.items():
             verdict = verdicts.get(cid)
-            # a thread left as it is stays answered, so without this the next tick
-            # would pay for the same container again, and every tick after it
             if verdict is None:
                 done["unanswered"] += 1
                 self.db.notice_once(_thread_state(repo.slug, pr, thread))
@@ -283,7 +283,7 @@ class Orchestrator:
 
         # one query serves both the gate and the prompt's prior-conversation block
         threads = await my_threads(repo.slug, pr, repo.reviewer_login)
-        self._threads[pr] = threads
+        self._threads[repo.slug, pr] = threads
         return meta, key, requested_at, evaluate(
             meta,
             repo,
@@ -433,9 +433,9 @@ class Orchestrator:
             await self._notify(repo, meta, blocks.verdict, findings)
         return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
 
-    async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list:
+    async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list[Thread]:
         """Reuse what the gate fetched; fetch it for a forced run that skipped it."""
-        cached = self._threads.pop(meta.number, None)
+        cached = self._threads.pop((repo.slug, meta.number), None)
         if cached is not None:
             return cached
         try:

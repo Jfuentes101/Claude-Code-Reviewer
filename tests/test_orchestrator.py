@@ -18,7 +18,7 @@ from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.contract import Blocks
 from robbie.db import Db
 from robbie.gates import Decision, dedup_key
-from robbie.github import PrMeta
+from robbie.github import PrMeta, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -101,6 +101,26 @@ def ok_run(verdict: str, *, inline: str = "[]", slack: str = "briefing") -> Revi
         cost_usd=0.42, tokens_in=1000, tokens_out=200, duration_s=12.0,
         transcript=Path("/tmp/t.md"),
     )
+
+
+async def test_the_gate_cache_does_not_cross_repos(orch, cfg, monkeypatch):
+    """Two repos can each have a PR #7, and the conversation is not shared."""
+    other = RepoConfig(slug="acme/other", reviewer_login="rev", bare=Path("/srv/m/o.git"))
+    cfg.repos.append(other)
+
+    async def threads(slug, number, reviewer):
+        return [Thread(
+            path=f"{slug}#{number}", line=1, resolved=False, outdated=False,
+            mine="a finding", replies=(),
+        )]
+
+    monkeypatch.setattr(orch_mod, "my_threads", threads)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(pr()))
+    monkeypatch.setattr(orch_mod, "last_review_request", _async(REQ))
+
+    await orch._gate(cfg.repos[0], 7)
+    prior = await orch._prior_threads(other, pr())
+    assert [t.path for t in prior] == ["acme/other#7"]
 
 
 # ----- holds ---------------------------------------------------------------
