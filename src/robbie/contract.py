@@ -112,7 +112,7 @@ def thread_preamble(*, author: str, url: str, threads: list) -> str:
     """Ask for a decision on each thread somebody answered."""
     blocks = []
     for t in threads:
-        where = f"{t.path}:{t.line}" if t.line else t.path
+        where = _where(t)
         if t.outdated:
             where += " (OUTDATED — the code moved; a reply here stays collapsed)"
         rows = [f"THREAD {t.comment_id} — {where}", f"  you said: {_strip(t.mine, 1200)}"]
@@ -166,12 +166,25 @@ BODY_CAP = 400
 
 
 def _strip(body: str, cap: int = BODY_CAP) -> str:
+    """Flatten anything that came from GitHub to a single capped line.
+
+    Everything embedded in a prompt goes through here, and the flattening is the
+    load-bearing half: a block marker is only a marker on a line of its own, so
+    text that can never carry a newline can never forge one. That covers reply
+    bodies — written by whoever can comment — and paths, since git allows a
+    newline in a filename and a PR chooses its own filenames.
+    """
     lines = [
         line for line in body.splitlines()
         if line.strip() and SIG_LINE not in line and not line.startswith("<sub>")
     ]
     text = " ".join(lines)
     return text if len(text) <= cap else text[:cap].rsplit(" ", 1)[0] + "…"
+
+
+def _where(t) -> str:
+    path = _strip(t.path, 200)
+    return f"{path}:{t.line}" if t.line else path
 
 
 def threads_block(threads: list) -> str:
@@ -185,7 +198,7 @@ def threads_block(threads: list) -> str:
         return ""
     rows: list[str] = []
     for t in live:
-        where = f"{t.path}:{t.line}" if t.line else t.path
+        where = _where(t)
         state = "RESOLVED" if t.resolved else ("ANSWERED" if t.replies else "no reply yet")
         rows.append(f"- [{state}] {where}\n    you said: {_strip(t.mine)}")
         for who, body in t.replies:
