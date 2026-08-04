@@ -72,7 +72,6 @@ def orch(cfg, tmp_path, monkeypatch):
     )
     o = Orchestrator(cfg, secrets, db, slack)  # type: ignore[arg-type]
     # nothing in these tests may reach GitHub
-    monkeypatch.setattr(orch_mod, "review_still_requested", _async(True))
     yield o
     db.close()
 
@@ -170,7 +169,9 @@ async def test_ok_clears_the_label_asks_for_ci_and_briefs_the_owner(orch, repo, 
     assert cleared, "an ok verdict releases the brake"
     assert ci, "an approval is what pays for a build now that push does not"
     assert orch.db.get_review(KEY).verdict == "ok"
-    assert orch.slack.owner and "briefing" in orch.slack.owner[0]
+    assert orch.slack.owner == [
+        "✅ <https://x/7|*#7*> Add widgets — nothing to fix, asked CI to run (run-ci)."
+    ], "an ok is invisible on the PR, so one line has to say it happened"
     assert orch.slack.channels == [], "no review was posted, so nothing to announce"
 
 
@@ -219,14 +220,15 @@ async def test_needs_work_publishes_notifies_and_does_not_brief_the_owner(
     assert orch.slack.owner == [], "the PR left their queue; no briefing needed"
 
 
-async def test_comment_publishes_and_still_briefs_the_owner(orch, repo, monkeypatch):
+async def test_comment_publishes_without_briefing_the_owner(orch, repo, monkeypatch):
+    """A published review announces itself on the PR and in the channel."""
     monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "did it")))
     stub_run(monkeypatch, ok_run("comment"))
 
     await orch._review(repo, pr(), KEY, REQ)
     assert orch.db.get_review(KEY).verdict == "comment"
     assert orch.slack.authors == ["dev"]
-    assert orch.slack.owner, "the review request is untouched, so they still look at it"
+    assert orch.slack.owner == [], "no summary DM for a review that is visible"
 
 
 async def test_an_unmapped_author_warns_the_owner_once(orch, repo, monkeypatch):

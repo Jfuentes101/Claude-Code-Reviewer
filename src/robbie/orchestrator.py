@@ -34,7 +34,6 @@ from robbie.github import (
     my_threads,
     pr_meta,
     queue,
-    review_still_requested,
     summarize_checks,
     whoami,
 )
@@ -385,7 +384,7 @@ class Orchestrator:
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             ci = await self._request_ci(repo, meta)
             self.db.finish_review(key, state="published", verdict="ok", **common)
-            await self._brief_owner(repo, meta, blocks.slack, run.transcript)
+            await self._brief_owner(meta, ci)
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
         if not blocks.publishable:
@@ -417,8 +416,6 @@ class Orchestrator:
 
         if result.posted:
             await self._notify(repo, meta, blocks.verdict, findings)
-        if blocks.verdict == "comment":
-            await self._brief_owner(repo, meta, blocks.slack, run.transcript)
         return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
 
     async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list:
@@ -495,17 +492,15 @@ class Orchestrator:
                 slackmod.unmapped_note(meta.author, self.cfg.slack.users_file)
             )
 
-    async def _brief_owner(
-        self, repo: RepoConfig, meta: PrMeta, briefing: str, transcript
-    ) -> None:
-        """The reviewer still has to look at these, so they get the full briefing."""
-        text = briefing.strip() or (
-            f"I reviewed *{meta.title}* ({meta.url}) and found no blockers, but couldn't "
-            "parse a clean summary from the run."
+    async def _brief_owner(self, meta: PrMeta, ci: str) -> None:
+        """One line, not a briefing: the reviews worth reading announce themselves.
+
+        A needs-work review shows up on the PR and in the channel. An `ok` shows
+        up nowhere, so it is the only verdict that has to be told.
+        """
+        await self.slack.dm_owner(
+            slackmod.approved_note(meta.number, meta.title, meta.url, ci)
         )
-        if not await review_still_requested(repo.slug, meta.number, repo.reviewer_login):
-            text += "\n\n_(this one isn't in your pending-review list, so take it from the link.)_"
-        await self.slack.dm_owner(f"{text}\n\n— full review: {transcript}")
 
     # ----- cold start ----------------------------------------------------
 

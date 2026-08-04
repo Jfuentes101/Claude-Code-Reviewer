@@ -63,7 +63,6 @@ def orch(tmp_path, monkeypatch):
         db, FakeSlack(),  # type: ignore[arg-type]
     )
     monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "cleared")))
-    monkeypatch.setattr(orch_mod, "review_still_requested", _async(True))
     monkeypatch.setattr(orch_mod, "my_threads", _async([]))
     monkeypatch.setattr(o, "_token_login", _async("robbie-bot"))
     yield o

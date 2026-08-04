@@ -290,14 +290,6 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
     )
 
 
-async def review_still_requested(repo: str, pr: int, reviewer: str) -> bool:
-    logins = await _gh_json(
-        "pr", "view", str(pr), "--repo", repo, "--json", "reviewRequests",
-        "--jq", "[.reviewRequests[].login]",
-    )
-    return reviewer in (logins or [])
-
-
 async def stale_changes_requested(repo: str, reviewer: str, days: int) -> list[dict[str, Any]]:
     """PRs sitting on a standing changes-requested review for `days`+.
 

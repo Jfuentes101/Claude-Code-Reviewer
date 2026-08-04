@@ -92,6 +92,11 @@ def channel_note(pr: int, title: str, url: str, author: str, phrase: str) -> str
     return f"🔍 <{url}|*#{pr}*> {title[:70]} — {phrase}. Over to {author}, findings are on the PR."
 
 
+def approved_note(pr: int, title: str, url: str, ci: str) -> str:
+    """An `ok` leaves no review on the PR, so this line is the whole signal."""
+    return f"✅ <{url}|*#{pr}*> {title[:70]} — nothing to fix, {ci}."
+
+
 def author_note(pr: int, title: str, url: str, phrase: str) -> str:
     return (
         f"🔍 <{url}|*#{pr}*> {title[:70]} — my pre-review is done: {phrase}. "
