@@ -154,7 +154,7 @@ def test_no_threads_means_no_block():
 
 
 def _flat(**kw) -> str:
-    return " ".join(preamble(author="dev", title="t", url="u", **kw).split())
+    return " ".join(preamble(author="dev", **kw).split())
 
 
 def test_a_first_pass_carries_no_conversation_section():

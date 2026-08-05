@@ -126,8 +126,14 @@ review of the same diff.
 would fulfil the human's pending request, and it shouldn't.
 
 An `ok` is the only verdict that leaves no trace on the PR, so it is the only one
-that DMs the owner — one line, not a briefing. The others announce themselves in
-the channel, on the PR, and to the author.
+that DMs — one line, to everyone in `slack.approved_ids`, since the PR just left
+all of their queues. The others announce themselves in the channel, on the PR, and
+to the author.
+
+That is the whole of Slack: the author hears that their review is ready, the team
+channel hears that a review was posted, and an approval is DMed to the humans who
+would otherwise never know it happened. The model writes none of it — the copy is
+in `slack.py` and the numbers come from the findings.
 
 That comment is also how CI starts. Where a build no longer runs on push because
 the push volume made it too expensive, the review becomes the gate in front of

@@ -89,7 +89,7 @@ def test_the_prompt_line_counts_passing_checks_instead_of_burying_them():
 
 def _flat(**kw) -> str:
     """Prompt text with wrapping collapsed, so these assert content not layout."""
-    return " ".join(preamble(author="dev", title="t", url="u", **kw).split())
+    return " ".join(preamble(author="dev", **kw).split())
 
 
 def test_the_ci_state_reaches_the_prompt():
@@ -131,11 +131,11 @@ def test_an_unbuilt_commit_is_not_told_its_linters_passed():
 
 
 def test_without_ci_data_the_block_is_omitted_entirely():
-    text = preamble(author="dev", title="t", url="u")
+    text = preamble(author="dev")
     assert "CI state on the head commit" not in text
     assert "<<<VERDICT>>>" in text, "the contract itself still has to be there"
 
 
-def test_the_briefing_template_forbids_guessing_the_ci_line():
-    text = preamble(author="dev", title="t", url="u", ci="x")
+def test_the_summary_is_forbidden_from_guessing_the_ci_line():
+    text = preamble(author="dev", ci="x")
     assert "never from a guess" in text

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from robbie.config import SlackConfig
 from robbie.slack import Slack, verdict_phrase
 
 
@@ -56,6 +57,33 @@ async def test_unmapped_authors_are_reported_not_guessed(slack):
 
 
 # ----- copy -------------------------------------------------------------
+
+
+async def test_an_approval_reaches_everyone_who_shares_the_queue(tmp_path, monkeypatch):
+    """The one verdict with no trace on the PR, so the DM is the whole signal."""
+    sent: list[str] = []
+    slack = Slack(
+        token="t", owner_id="U0OWNER", users_file=tmp_path / "none.tsv",
+        approved_ids=("U0ME", "U0JIMMY"),
+    )
+    monkeypatch.setattr(slack, "post", _record(sent))
+    assert await slack.dm_reviewers("nothing to fix")
+    assert sent == ["U0ME", "U0JIMMY"]
+
+
+def test_no_list_configured_means_just_the_owner():
+    cfg = SlackConfig(owner_id="U0OWNER")
+    assert cfg.approved_dm == ("U0OWNER",)
+    assert SlackConfig(owner_id="U0OWNER", approved_ids=["U0A", "U0B"]).approved_dm == (
+        "U0A", "U0B"
+    )
+
+
+def _record(sent: list[str]):
+    async def post(channel: str, text: str) -> bool:
+        sent.append(channel)
+        return True
+    return post
 
 
 def test_needs_work_phrase_counts_blockers():

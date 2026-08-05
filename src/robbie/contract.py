@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from robbie.github import NO_CHECKS, Thread
 
-MARKERS = ("VERDICT", "GITHUB", "INLINE", "SLACK")
+MARKERS = ("VERDICT", "GITHUB", "INLINE")
 VERDICTS = ("needs-work", "comment", "ok")
 
 
@@ -24,7 +24,6 @@ class Blocks:
     verdict: str | None
     github: str
     inline: str
-    slack: str
 
     @property
     def publishable(self) -> bool:
@@ -40,7 +39,6 @@ def parse_blocks(text: str) -> Blocks:
         verdict=verdict if verdict in VERDICTS else None,
         github=found["GITHUB"],
         inline=found["INLINE"],
-        slack=found["SLACK"],
     )
 
 
@@ -207,8 +205,7 @@ def threads_block(threads: list[Thread]) -> str:
 
 
 def preamble(
-    *, author: str, title: str, url: str, ci: str = "",
-    threads: str = "", history: str = "",
+    *, author: str, ci: str = "", threads: str = "", history: str = ""
 ) -> str:
     """The instructions wrapped around the repo's own review command."""
     failing = "FAILING:" in ci
@@ -286,11 +283,11 @@ Exactly one of these three words, nothing else:
 Then, ONLY IF the verdict is needs-work or comment, the summary that heads the review \
 for {author} — short, because the findings themselves are posted inline on the diff. \
 Real GitHub markdown, first person (you are robbie), addressed to the author: direct and \
-warm, never scolding. One line on what the PR does, one line on CI and linters, then an \
-index of the findings, one line each: severity — file:line — what. No repeating the \
-explanations that go inline. If the verdict is needs-work, close with one line on what \
-you would need to see to consider it ready; if it is comment, open by saying plainly \
-that none of this blocks the merge.
+warm, never scolding. One line on what the PR does, one line on CI and linters — from the \
+CI state given above, never from a guess — then an index of the findings, one line each: \
+severity — file:line — what. No repeating the explanations that go inline. If the verdict \
+is needs-work, close with one line on what you would need to see to consider it ready; if \
+it is comment, open by saying plainly that none of this blocks the merge.
 <<<GITHUB>>>
 <the summary>
 <<<END>>>
@@ -311,24 +308,6 @@ Critical / Must-fix / Should-fix / Nitpick. Say each thing once: a finding lives
 inline or in the summary, never both. Write each body so it stands alone next to that \
 line, without the reader having scrolled the summary.
 
-Then, ONLY IF the verdict is comment or ok, a Slack-ready briefing for the human reviewer \
-— written like a trusted colleague reporting on a project: warm, first-person, thorough but \
-scannable. Slack mrkdwn: *bold* (single asterisks, never **), bullets with the • character.
-<<<SLACK>>>
-{author} requested a review on *{title}* ({url}), and it's through my pass with no blockers.
-
-*What it is:* <1-2 sentences: what the PR does and the business reason. note size, e.g. \
-files / +adds / -dels.>
-
-*What I found:* <the non-blocking things worth a human eye — bullets, severity-prefixed, \
-file:line where it helps. If the PR is genuinely clean, say so plainly instead of padding.>
-
-*CI & linters:* <one line, from the CI state given above — never from a guess>
-
-*If it were me:* <the next action you'd take: approve as-is, approve with the nits as \
-comments, ask about X first, etc.>
-<<<END>>>
-
-Keep it honest and specific — concrete findings over vague praise. Omit a section entirely \
-if there's genuinely nothing to report rather than filling it.
+Keep it honest and specific — concrete findings over vague praise. Say nothing rather \
+than padding a section with something you did not find.
 """

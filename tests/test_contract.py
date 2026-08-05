@@ -27,7 +27,6 @@ def test_full_run_parses():
     assert b.verdict == "needs-work"
     assert "adds widgets" in b.github
     assert b.inline.startswith("[")
-    assert b.slack == ""
     assert b.publishable
 
 
@@ -43,7 +42,7 @@ def test_an_unknown_verdict_is_none_rather_than_a_guess():
 def test_missing_blocks_are_empty_not_an_error():
     b = parse_blocks("no markers here at all")
     assert b.verdict is None
-    assert (b.github, b.inline, b.slack) == ("", "", "")
+    assert (b.github, b.inline) == ("", "")
     assert not b.publishable
 
 
@@ -64,8 +63,9 @@ def test_only_the_first_end_closes_a_block():
 
 
 def test_preamble_carries_the_pr_context_and_every_marker():
-    text = preamble(author="dev", title="Add widgets", url="https://x/7")
-    for marker in ("<<<VERDICT>>>", "<<<GITHUB>>>", "<<<INLINE>>>", "<<<SLACK>>>", "<<<END>>>"):
+    text = preamble(author="dev")
+    for marker in ("<<<VERDICT>>>", "<<<GITHUB>>>", "<<<INLINE>>>", "<<<END>>>"):
         assert marker in text
-    assert "dev" in text and "Add widgets" in text and "https://x/7" in text
+    assert "<<<SLACK>>>" not in text, "nothing reads a briefing; do not pay to write one"
+    assert "dev" in text, "the summary is addressed to the author"
     assert "do NOT post anything to GitHub yourself" in text

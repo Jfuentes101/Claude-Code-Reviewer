@@ -26,6 +26,7 @@ class Slack:
     token: str
     owner_id: str
     users_file: Path
+    approved_ids: tuple[str, ...] = ()
     dry_run: bool = False
 
     async def post(self, channel: str, text: str) -> bool:
@@ -50,6 +51,11 @@ class Slack:
 
     async def dm_owner(self, text: str) -> bool:
         return await self.post(self.owner_id, text)
+
+    async def dm_reviewers(self, text: str) -> bool:
+        """Everyone who shares the review queue, for the verdict nobody can see."""
+        sent = [await self.post(member, text) for member in self.approved_ids]
+        return all(sent)
 
     async def dm_author(self, login: str, text: str) -> str:
         """Returns 'sent', 'unmapped' or 'bot' so the caller can warn once."""

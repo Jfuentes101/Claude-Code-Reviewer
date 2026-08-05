@@ -30,12 +30,17 @@ REQ = "2026-01-01T00:00:00Z"
 class FakeSlack:
     def __init__(self) -> None:
         self.owner: list[str] = []
+        self.reviewers: list[str] = []
         self.channels: list[tuple[str, str]] = []
         self.authors: list[str] = []
         self.author_state = "sent"
 
     async def dm_owner(self, text: str) -> bool:
         self.owner.append(text)
+        return True
+
+    async def dm_reviewers(self, text: str) -> bool:
+        self.reviewers.append(text)
         return True
 
     async def post(self, channel: str, text: str) -> bool:
@@ -94,10 +99,10 @@ def stub_run(monkeypatch, run: ReviewRun) -> None:
     monkeypatch.setattr(orch_mod, "run_review", _async(run))
 
 
-def ok_run(verdict: str, *, inline: str = "[]", slack: str = "briefing") -> ReviewRun:
+def ok_run(verdict: str, *, inline: str = "[]") -> ReviewRun:
     return ReviewRun(
         ok=True,
-        blocks=Blocks(verdict=verdict, github="summary", inline=inline, slack=slack),
+        blocks=Blocks(verdict=verdict, github="summary", inline=inline),
         cost_usd=0.42, tokens_in=1000, tokens_out=200, duration_s=12.0,
         transcript=Path("/tmp/t.md"),
     )
@@ -177,7 +182,7 @@ async def test_a_failed_run_is_retryable_and_reported(orch, repo, monkeypatch):
 
 
 async def test_a_run_without_a_verdict_posts_nothing_and_stops_retrying(orch, repo, monkeypatch):
-    stub_run(monkeypatch, ReviewRun(ok=True, blocks=Blocks(None, "", "", ""), duration_s=1.0))
+    stub_run(monkeypatch, ReviewRun(ok=True, blocks=Blocks(None, "", ""), duration_s=1.0))
     called = []
     monkeypatch.setattr(publish_mod, "publish_review", lambda *a, **k: called.append(1))
     outcome = await orch._review(repo, pr(), KEY, REQ)
@@ -190,7 +195,7 @@ async def test_a_run_without_a_verdict_posts_nothing_and_stops_retrying(orch, re
 # ----- verdicts ------------------------------------------------------------
 
 
-async def test_ok_clears_the_label_asks_for_ci_and_briefs_the_owner(orch, repo, monkeypatch):
+async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypatch):
     cleared, ci = [], []
     monkeypatch.setattr(
         publish_mod, "clear_needs_work",
@@ -208,9 +213,10 @@ async def test_ok_clears_the_label_asks_for_ci_and_briefs_the_owner(orch, repo, 
     assert cleared, "an ok verdict releases the brake"
     assert ci, "an approval is what pays for a build now that push does not"
     assert orch.db.get_review(KEY).verdict == "ok"
-    assert orch.slack.owner == [
+    assert orch.slack.reviewers == [
         "✅ <https://x/7|*#7*> Add widgets — nothing to fix, asked CI to run (run-ci)."
     ], "an ok is invisible on the PR, so one line has to say it happened"
+    assert orch.slack.owner == [], "not an operator alert; it goes to whoever reviews"
     assert orch.slack.channels == [], "no review was posted, so nothing to announce"
 
 

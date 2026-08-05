@@ -40,6 +40,10 @@ class FakeSlack:
         self.owner.append(text)
         return True
 
+    async def dm_reviewers(self, text: str) -> bool:
+        self.owner.append(text)
+        return True
+
     async def post(self, channel: str, text: str) -> bool:
         return True
 
@@ -85,7 +89,7 @@ def pr(number: int) -> PrMeta:
 def _ok_run(pr_number: int) -> ReviewRun:
     return ReviewRun(
         ok=True,
-        blocks=Blocks(verdict="ok", github="", inline="[]", slack=f"briefing for {pr_number}"),
+        blocks=Blocks(verdict="ok", github="", inline="[]"),
         cost_usd=0.10, duration_s=1.0, transcript=Path(f"/tmp/{pr_number}.md"),
     )
 

@@ -39,8 +39,12 @@ budget:
   reserve_usd: 5.0      # backend=api
 
 slack:
-  owner_id: U01234567           # gets briefings, holds and operator warnings
+  owner_id: U01234567           # gets holds, failures and operator warnings
   users_file: /etc/robbie/slack-users.tsv
+  # An `ok` is the only verdict that leaves nothing on the PR, so it is the only
+  # one that DMs. Everyone who shares the review queue wants that line; leave it
+  # out and only owner_id gets it.
+  approved_ids: [U01234567, U07654321]
 
 repos:
   - slug: acme/webapp

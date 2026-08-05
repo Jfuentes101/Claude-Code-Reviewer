@@ -70,8 +70,15 @@ class BudgetConfig(_Strict):
 
 
 class SlackConfig(_Strict):
-    owner_id: str  # who gets briefings and operator warnings
+    owner_id: str  # who gets holds, failures and every other operator warning
     users_file: Path = Path("config/slack-users.tsv")
+    # an `ok` is the one verdict that leaves no trace on the PR, so everyone who
+    # shares the review queue wants the line. Empty means just the owner.
+    approved_ids: list[str] = Field(default_factory=list)
+
+    @property
+    def approved_dm(self) -> tuple[str, ...]:
+        return tuple(self.approved_ids) or (self.owner_id,)
 
 
 class Config(_Strict):

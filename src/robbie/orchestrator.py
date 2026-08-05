@@ -360,7 +360,7 @@ class Orchestrator:
         # built before the semaphore: a container slot must not be held open
         # while an API call for the prior conversation is in flight
         prompt = preamble(
-            author=meta.author, title=meta.title, url=meta.url,
+            author=meta.author,
             ci=summarize_checks(meta).as_prompt(),
             threads=threads_block(await self._prior_threads(repo, meta)),
             history=self._pass_history(repo, meta),
@@ -417,7 +417,7 @@ class Orchestrator:
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             ci = await self._request_ci(repo, meta)
             self.db.finish_review(key, state="published", verdict="ok", **common)
-            await self._brief_owner(meta, ci)
+            await self._announce_approval(meta, ci)
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
         if not blocks.publishable:
@@ -527,13 +527,14 @@ class Orchestrator:
                 slackmod.unmapped_note(meta.author, self.cfg.slack.users_file)
             )
 
-    async def _brief_owner(self, meta: PrMeta, ci: str) -> None:
+    async def _announce_approval(self, meta: PrMeta, ci: str) -> None:
         """One line, not a briefing: the reviews worth reading announce themselves.
 
         A needs-work review shows up on the PR and in the channel. An `ok` shows
-        up nowhere, so it is the only verdict that has to be told.
+        up nowhere, so it is the only verdict that has to be told — to everyone
+        whose queue it just left, not only to the operator.
         """
-        await self.slack.dm_owner(
+        await self.slack.dm_reviewers(
             slackmod.approved_note(meta.number, meta.title, meta.url, ci)
         )
 
