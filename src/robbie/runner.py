@@ -72,6 +72,7 @@ async def run_review(
         )
     except TimeoutError:
         await _kill(name)
+        await proc.wait()  # the client exits once the container is gone
         elapsed = asyncio.get_running_loop().time() - started
         return ReviewRun(
             ok=False,

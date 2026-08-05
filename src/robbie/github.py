@@ -12,14 +12,19 @@ read as zero — that is how a hiccup turns into a duplicate review.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import signal
 from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 NO_DIRECT_REQUEST = "norq"  # review requested via a team, or no event recorded
+# a hung call would otherwise hang the tick, and with it every following one
+TIMEOUT_S = 120
 
 
 class GhError(RuntimeError):
@@ -49,8 +54,20 @@ async def _gh(*args: str, stdin: str | None = None) -> str:
         stdin=asyncio.subprocess.PIPE if stdin is not None else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # its own process group, so the timeout can take the children with it:
+        # anything still holding a pipe keeps this call waiting past the deadline
+        start_new_session=True,
     )
-    out, err = await proc.communicate(stdin.encode() if stdin is not None else None)
+    try:
+        out, err = await asyncio.wait_for(
+            proc.communicate(stdin.encode() if stdin is not None else None),
+            timeout=TIMEOUT_S,
+        )
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()
+        raise GhError(f"gh {' '.join(args[:3])} timed out after {TIMEOUT_S}s") from None
     if proc.returncode != 0:
         raise GhError(f"gh {' '.join(args[:3])} exited {proc.returncode}: {err.decode()[:400]}")
     return out.decode()
