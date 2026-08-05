@@ -9,7 +9,6 @@ together. Each review in flight, plus the one asking, holds back a reserve.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -42,15 +41,37 @@ def secrets(tmp_path: Path) -> Secrets:
     )
 
 
+class FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def usage(monkeypatch, pct: float) -> None:
-    payload = json.dumps({"five_hour": {"utilization": pct, "resets_at": "2026-08-04T19:10:00Z"}})
-    monkeypatch.setattr(
-        budget.subprocess, "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=payload, stderr=""),
-    )
+    payload = {"five_hour": {"utilization": pct, "resets_at": "2026-08-04T19:10:00Z"}}
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: FakeResponse(payload))
 
 
 # ----- oauth: percent of the five-hour window ----------------------------
+
+
+def test_the_token_never_reaches_a_command_line(tmp_path, db, monkeypatch):
+    """It used to ride in a curl argv, which /proc hands to anyone on the host."""
+    seen: dict = {}
+
+    def fake_get(url, **kw):
+        seen.update(url=url, headers=kw.get("headers", {}))
+        return FakeResponse({"five_hour": {"utilization": 10, "resets_at": "x"}})
+
+    monkeypatch.setattr(budget.httpx, "get", fake_get)
+    assert budget.check(cfg(tmp_path), secrets(tmp_path), db).allowed
+    assert seen["url"] == budget.USAGE_URL
+    assert seen["headers"]["Authorization"] == "Bearer t"
 
 
 def test_room_for_one_review_is_room_enough(tmp_path, db, monkeypatch):
@@ -87,7 +108,7 @@ def test_five_agents_cannot_all_start_on_the_same_safe_reading(tmp_path, db, mon
 
 
 def test_an_unreadable_window_still_runs_but_says_so(tmp_path, db, monkeypatch):
-    monkeypatch.setattr(budget.subprocess, "run", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
     v = budget.check(cfg(tmp_path), secrets(tmp_path), db)
     assert v.allowed and v.notice_key == "budget:unreadable"
 

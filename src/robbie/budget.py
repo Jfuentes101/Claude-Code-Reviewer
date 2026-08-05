@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+
+import httpx
 
 from robbie.config import Config, Secrets
 from robbie.db import Db
@@ -66,17 +67,23 @@ def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
 
 def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     """ponytail: undocumented endpoint, so it can change under us. A read failure
-    must be reported as unknown, never as "plenty left"."""
+    must be reported as unknown, never as "plenty left".
+
+    ponytail: a blocking read on the event loop, a handful of times per tick
+    against ticks of ten minutes. Make it async if a tick ever waits on it.
+    """
     try:
         creds = json.loads(secrets.claude_credentials.read_text())  # type: ignore[union-attr]
-        token = creds["claudeAiOauth"]["accessToken"]
-        raw = subprocess.run(
-            ["curl", "-sS", "--max-time", "15",
-             "-H", f"Authorization: Bearer {token}",
-             "-H", "anthropic-beta: oauth-2025-04-20", USAGE_URL],
-            capture_output=True, text=True, check=True, timeout=20,
-        ).stdout
-        data = json.loads(raw)
+        resp = httpx.get(
+            USAGE_URL,
+            headers={
+                "Authorization": f"Bearer {creds['claudeAiOauth']['accessToken']}",
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
         pct = float(data["five_hour"]["utilization"])
         resets = str(data["five_hour"]["resets_at"])
     except Exception as ex:  # noqa: BLE001 — any failure is "unknown", handled below
