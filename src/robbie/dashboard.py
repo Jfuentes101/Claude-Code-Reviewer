@@ -29,10 +29,13 @@ REFRESH_S = 30
 RECENT = 25
 
 CSS = """
-:root { color-scheme: light dark; --line: #8884; --dim: #8889; }
+:root { color-scheme: light dark; --line: #0000001f; --dim: #55606e; }
+@media (prefers-color-scheme: dark) {
+  :root { --line: #ffffff2b; --dim: #a3adbb; }
+}
 * { box-sizing: border-box; }
 body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-       margin: 0; padding: 1.5rem; max-width: 1100px; }
+       margin: 0 auto; padding: 1.5rem; max-width: 1100px; }
 h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
 h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
      margin: 2rem 0 .5rem; color: var(--dim); font-weight: 600; }
