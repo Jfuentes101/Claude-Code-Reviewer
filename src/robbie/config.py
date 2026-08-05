@@ -127,7 +127,27 @@ def load(path: str | Path | None = None) -> Config:
         cfg.transcript_dir.mkdir(parents=True, exist_ok=True)
     except OSError as ex:
         raise SystemExit(f"state_dir {cfg.state_dir} is not writable: {ex}") from ex
+    _check_paths(cfg)
     return cfg
+
+
+def _check_paths(cfg: Config) -> None:
+    """Both of these are HOST paths handed to the docker daemon on a spawn.
+
+    Compose mounts them into the orchestrator at the same path so the two agree,
+    which is what makes checking them from in here meaningful. A wrong one is
+    otherwise invisible until the first real review — `--dry-run` starts no
+    container, so it never touches either.
+    """
+    for repo in cfg.repos:
+        if not repo.bare.is_dir():
+            raise SystemExit(
+                f"{repo.slug}: mirror {repo.bare} is not a directory here. It must be a "
+                "host path that exists inside this process too (see docker-compose.yml); "
+                "./scripts/mirror-sync creates it."
+            )
+    if cfg.policy_dir is not None and not cfg.policy_dir.is_dir():
+        raise SystemExit(f"policy_dir {cfg.policy_dir} is not a directory")
 
 
 def load_secrets(cfg: Config) -> Secrets:

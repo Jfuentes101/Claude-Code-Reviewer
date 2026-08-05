@@ -200,6 +200,37 @@ def test_a_typo_in_the_config_is_a_startup_error():
         )
 
 
+def _write_config(tmp_path, **repo_kw) -> Path:
+    mirror = tmp_path / "app.git"
+    mirror.mkdir(exist_ok=True)
+    repo = {"slug": "acme/app", "reviewer_login": "rev", "bare": str(mirror), **repo_kw}
+    path = tmp_path / "robbie.yaml"
+    path.write_text(__import__("yaml").safe_dump({
+        "slack": {"owner_id": "U0"},
+        "state_dir": str(tmp_path / "state"),
+        "repos": [repo],
+    }))
+    return path
+
+
+def test_a_good_config_loads_from_disk(tmp_path):
+    assert configmod.load(_write_config(tmp_path)).repos[0].slug == "acme/app"
+
+
+def test_a_mirror_that_is_not_there_refuses_to_boot(tmp_path):
+    """--dry-run starts no container, so nothing else would ever touch this path."""
+    path = _write_config(tmp_path, bare=str(tmp_path / "nope.git"))
+    with pytest.raises(SystemExit, match="mirror-sync"):
+        configmod.load(path)
+
+
+def test_a_policy_dir_that_is_not_there_refuses_to_boot(tmp_path):
+    path = _write_config(tmp_path)
+    path.write_text(path.read_text() + f"policy_dir: {tmp_path / 'gone'}\n")
+    with pytest.raises(SystemExit, match="policy_dir"):
+        configmod.load(path)
+
+
 def test_api_backend_without_a_key_refuses_to_boot(tmp_path, monkeypatch):
     monkeypatch.setenv("GH_TOKEN", "g")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "s")

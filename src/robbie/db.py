@@ -7,6 +7,11 @@ several reviews finishing at once.
 ponytail: sync sqlite3, single writer process. Calls are sub-ms against a poll
 loop, so the async wrapper would buy nothing. If robbie ever runs more than one
 orchestrator, this is the thing to move to postgres.
+
+Adding a table is free — `IF NOT EXISTS` runs on every boot. Adding a *column* to
+one of these is not: the CREATE is skipped on an existing database and nothing
+notices until a query mentions the column. That one needs an explicit ALTER,
+guarded by `PRAGMA user_version`.
 """
 
 from __future__ import annotations
