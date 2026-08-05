@@ -5,6 +5,7 @@
     robbie once --repo R --pr N     force one review, ignoring queue and gates
     robbie status                   what's reviewed, held, or waiting
     robbie digest [--days 7]        post the stuck-in-review digest
+    robbie dashboard [--port 4020]  read-only metrics panel, off unless asked for
 
 SIGTERM finishes the tick in flight rather than killing a review halfway
 through, so `docker compose down` needs a stop_grace_period longer than
@@ -23,6 +24,7 @@ import signal
 import sys
 
 from robbie import config as configmod
+from robbie import dashboard
 from robbie.db import Db
 from robbie.digest import post_digest
 from robbie.orchestrator import Orchestrator
@@ -88,6 +90,11 @@ def _parser() -> argparse.ArgumentParser:
 
     dig = sub.add_parser("digest", help="post the stuck-in-review digest")
     dig.add_argument("--days", type=int, default=None)
+
+    dash = sub.add_parser("dashboard", help="serve the read-only metrics panel")
+    dash.add_argument("--port", type=int, default=4020)
+    # localhost by default: the panel has no auth and shows diffs, titles and spend
+    dash.add_argument("--host", default="127.0.0.1")
     return ap
 
 
@@ -110,6 +117,10 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     try:
+        if args.command == "dashboard":
+            dashboard.serve(cfg, secrets, host=args.host, port=args.port)
+            return 0
+
         if args.command == "digest":
             listed = await post_digest(cfg, slack, days=args.days)
             logger.info("digest done: %d PR(s) listed", listed)

@@ -52,6 +52,37 @@ services:
     entrypoint: ["claude"]
     restart: "no"
 
+  # ---- metrics dashboard (opt in) -----------------------------------------
+  #
+  # Off unless asked for, because it has no auth and shows PR titles, spend and
+  # whole transcripts:
+  #
+  #   docker compose --profile dashboard up -d      # http://127.0.0.1:4020
+  #
+  # Published on the loopback only. Putting it on a public interface means putting
+  # an authenticating proxy in front of it first. It reads the same SQLite the
+  # daemon writes (WAL, so it never blocks a review) and the same usage meters,
+  # cached, so a browser refresh cannot hammer either provider.
+  dashboard:
+    profiles: [dashboard]
+    image: robbie-orchestrator:latest
+    restart: unless-stopped
+    env_file: .env
+    command: ["robbie", "dashboard", "--host", "0.0.0.0", "--port", "4020"]
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-4020}:4020"
+    networks: [robbie]
+    volumes:
+      - ./config:/etc/robbie:ro
+      # not :ro — SQLite needs to write the -shm file even to read a WAL database.
+      # The panel's own connection is opened read-only instead, so it cannot write
+      # a row whatever happens in it.
+      - robbie-state:/var/lib/robbie
+      # the mirror is checked at boot like any other robbie process, so it has to
+      # see the same host path the config names
+      - ${ROBBIE_MIRRORS:-/srv/robbie/repos}:${ROBBIE_MIRRORS:-/srv/robbie/repos}:ro
+    depends_on: [robbie]
+
   # ---- MCP sidecars -------------------------------------------------------
   #
   # Read-only context the REVIEW MODEL may pull while judging a PR: "is this

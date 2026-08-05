@@ -101,7 +101,7 @@ def check(
 
 
 def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
-    spent = db.spend_since(_midnight_ms())
+    spent = db.spend_since(_midnight_ms(), cfg.endpoint_models)
     limit = cfg.budget.daily_usd
     held = (inflight + 1) * cfg.budget.reserve_usd
     if spent + held <= limit:

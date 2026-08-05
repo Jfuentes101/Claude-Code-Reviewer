@@ -99,7 +99,15 @@ SCHEMA_VERSION = 3
 
 
 class Db:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+        if read_only:
+            # a reader cannot create the schema or migrate it, and must not: the
+            # dashboard opens this way so a bug there cannot touch a review's row.
+            # The file's directory still has to be writable — SQLite needs the
+            # -shm file to read a WAL database at all.
+            self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+            self.conn.row_factory = sqlite3.Row
+            return
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
@@ -249,12 +257,21 @@ class Db:
             (repo, pr, kind, cost_usd, duration_s, now_ms()),
         )
 
-    def spend_since(self, since_ms: int) -> float:
+    def spend_since(self, since_ms: int, exclude_models: tuple[str, ...] = ()) -> float:
+        """Dollars the account was billed since `since_ms`.
+
+        A run on a third-party endpoint reports a `cost_usd` the CLI computed from
+        its own price table, which is not that provider's bill and was never the
+        account's. Counting it would trip `daily_usd` on money nobody spent.
+        """
+        holes = ",".join("?" * len(exclude_models))
+        skip = f" AND COALESCE(model, '') NOT IN ({holes})" if exclude_models else ""
         row = self.conn.execute(
-            "SELECT COALESCE((SELECT SUM(cost_usd) FROM reviews WHERE created_at >= ?), 0.0) "
-            "     + COALESCE((SELECT SUM(cost_usd) FROM spend   WHERE created_at >= ?), 0.0) "
+            "SELECT COALESCE((SELECT SUM(cost_usd) FROM reviews "
+            f"                WHERE created_at >= ?{skip}), 0.0) "
+            "     + COALESCE((SELECT SUM(cost_usd) FROM spend WHERE created_at >= ?), 0.0) "
             "AS usd",
-            (since_ms, since_ms),
+            (since_ms, *exclude_models, since_ms),
         ).fetchone()
         return float(row["usd"])
 

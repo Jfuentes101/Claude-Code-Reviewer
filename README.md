@@ -223,6 +223,34 @@ docker compose exec robbie robbie threads --pr 123              # just the repli
 docker compose exec robbie robbie --dry-run poll --once         # decide, write nothing
 ```
 
+## The metrics panel
+
+Off unless asked for:
+
+```bash
+robbie dashboard                                   # http://127.0.0.1:4020
+docker compose --profile dashboard up -d           # same, in compose
+```
+
+One page, server-rendered, no JavaScript and no new dependency — stdlib
+`http.server` over the SQLite the daemon already writes. It shows the system at a
+glance (reviews in flight, spend billed to the account, disk, schema), both spend
+meters with their live readings, the model arms with their configured share and
+what each has actually found, the PRs held or failed with the reason, the recent
+reviews with findings and timings, and the transcripts, which are the closest thing
+to a log of a review — each one readable in the browser.
+
+Two things it deliberately does not do. It never shows a per-review dollar figure
+for a third-party model, because the CLI prices those off its own table and that is
+not the provider's bill. And it holds a **read-only** database connection, so a bug
+in the panel cannot touch a review's row — which is also why its volume is mounted
+writable: SQLite needs the `-shm` file to read a WAL database at all.
+
+**It has no auth**, and it shows PR titles, diffs quoted in transcripts and spend.
+It binds to `127.0.0.1` unless told otherwise and the compose service publishes on
+the loopback only. Reaching it from elsewhere means an authenticating proxy in
+front, not `--host 0.0.0.0`.
+
 `digest` is the nag for PRs parked on a standing changes-requested review that
 nobody ever re-requests — they fall out of every queue otherwise. It clocks on
 the age of the review, not on last activity, because those authors keep pushing.

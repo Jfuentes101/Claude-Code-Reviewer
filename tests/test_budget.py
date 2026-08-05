@@ -244,6 +244,21 @@ def test_an_unreadable_endpoint_says_so_rather_than_guessing(tmp_path, db, monke
 # ----- api: dollars ------------------------------------------------------
 
 
+def test_a_third_party_run_is_not_charged_to_the_daily_dollars(tmp_path, db):
+    """Its `cost_usd` is the CLI's own price table, not a bill the account got.
+
+    Counting it would close the daily budget on money nobody spent — and the
+    numbers are not small: $5.07 recorded for one review that cost the account $0.
+    """
+    conf = endpoint_cfg(tmp_path, backend="api", daily_usd=20.0, reserve_usd=5.0)
+    for key, model, cost in (("a", "glm-5.2:cloud", 18.0), ("b", None, 1.0)):
+        db.start_review(key=key, repo="acme/app", pr=7, head_sha=key, requested_at="t")
+        db.finish_review(key, state="published", cost_usd=cost, model=model)
+    assert db.spend_since(0) == pytest.approx(19.0), "everything, for the record"
+    assert db.spend_since(0, conf.endpoint_models) == pytest.approx(1.0)
+    assert budget.check(conf, secrets(tmp_path), db).allowed, "$1 of $20 is spent, not $19"
+
+
 def test_dollars_reserve_the_same_way(tmp_path, db):
     conf = cfg(tmp_path, backend="api", daily_usd=20.0, reserve_usd=5.0)
     assert budget.check(conf, secrets(tmp_path), db, inflight=3).allowed, "$20 covers four"
