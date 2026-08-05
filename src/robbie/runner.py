@@ -51,12 +51,14 @@ async def run_review(
     prompt: str,
     mode: str = "review",
     model: str | None = None,
+    via_endpoint: bool = False,
 ) -> ReviewRun:
     """Run the review in a throwaway container and parse its output."""
     tag = _stem(cfg, repo, meta, model, mode=mode)
     name = f"robbie-{tag}"
     stem = cfg.transcript_dir / tag
-    argv = _docker_argv(cfg, secrets, repo, meta, name=name, mode=mode, model=model)
+    argv = _docker_argv(cfg, secrets, repo, meta, name=name, mode=mode,
+                        model=model, via_endpoint=via_endpoint)
 
     logger.info("spawning %s for %s#%s", name, repo.slug, meta.number)
     started = asyncio.get_running_loop().time()
@@ -65,7 +67,7 @@ async def run_review(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, **_docker_env(cfg, secrets, model=model)},
+        env={**os.environ, **_docker_env(cfg, secrets, via_endpoint=via_endpoint)},
     )
     try:
         out, err = await asyncio.wait_for(
@@ -154,6 +156,7 @@ def _why_it_failed(code: int, out: bytes, err: bytes) -> str:
 def _docker_argv(
     cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta, *,
     name: str, mode: str = "review", model: str | None = None,
+    via_endpoint: bool = False,
 ) -> list[str]:
     argv = [
         "docker", "run", "--rm", "-i",
@@ -182,8 +185,11 @@ def _docker_argv(
     if cfg.policy_dir:
         argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
     if model:
-        # its own endpoint means its own auth; the backend's would be the wrong key
-        argv += ["-e", f"REVIEW_MODEL={model}", "-e", "ANTHROPIC_AUTH_TOKEN"]
+        argv += ["-e", f"REVIEW_MODEL={model}"]
+    if via_endpoint:
+        # naming a model does not move the run; only this does, and its endpoint
+        # brings its own auth because the backend's would be the wrong key there
+        argv += ["-e", "ANTHROPIC_AUTH_TOKEN"]
         if secrets.review_base_url:
             argv += ["-e", f"ANTHROPIC_BASE_URL={secrets.review_base_url}"]
     elif cfg.backend == "api":
@@ -199,14 +205,16 @@ def _docker_argv(
     return argv
 
 
-def _docker_env(cfg: Config, secrets: Secrets, *, model: str | None = None) -> dict[str, str]:
+def _docker_env(
+    cfg: Config, secrets: Secrets, *, via_endpoint: bool = False
+) -> dict[str, str]:
     """The secrets `docker run -e NAME` picks up, kept out of the command line.
 
     The reviewer runs a model with bypassPermissions, so it gets the read-only
     token when one is configured — publishing is not its job.
     """
     env = {"GH_TOKEN": secrets.reviewer_gh_token}
-    if model:
+    if via_endpoint:
         env["ANTHROPIC_AUTH_TOKEN"] = secrets.review_api_token or ""
     elif cfg.backend == "api":
         env["ANTHROPIC_API_KEY"] = secrets.anthropic_api_key or ""

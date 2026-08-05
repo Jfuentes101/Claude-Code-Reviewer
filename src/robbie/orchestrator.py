@@ -420,7 +420,8 @@ class Orchestrator:
             self._inflight += 1
             try:
                 run = await run_review(
-                    self.cfg, self.secrets, repo, meta, prompt=prompt, model=choice.model
+                    self.cfg, self.secrets, repo, meta, prompt=prompt,
+                    model=choice.model, via_endpoint=choice.via_endpoint,
                 )
             finally:
                 self._inflight -= 1

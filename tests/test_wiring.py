@@ -154,32 +154,53 @@ def test_no_model_override_leaves_the_container_exactly_as_it_was(tmp_path):
     assert "ANTHROPIC_API_KEY" in argv, "the backend's own auth still applies"
 
 
-def test_a_model_override_brings_its_own_endpoint_and_auth(tmp_path, monkeypatch):
-    """The override replaces the backend's credentials rather than joining them.
+def test_a_run_sent_to_the_endpoint_brings_its_own_auth(tmp_path):
+    """The endpoint replaces the backend's credentials rather than joining them.
 
-    Pointing a run at another endpoint with the account's key attached would send
+    Pointing a run at another provider with the account's key attached would send
     the wrong secret to a third party, and `ANTHROPIC_API_KEY` would win anyway.
     """
     cfg = _cfg(tmp_path)
     secrets = _secrets(review_base_url="https://ollama.com", review_api_token="k-ollama")
-    argv = _docker_argv(cfg, secrets, cfg.repos[0], _pr(), name="n", model="glm-5.2:cloud")
+    argv = _docker_argv(
+        cfg, secrets, cfg.repos[0], _pr(), name="n",
+        model="glm-5.2:cloud", via_endpoint=True,
+    )
     assert "REVIEW_MODEL=glm-5.2:cloud" in argv
     assert "ANTHROPIC_BASE_URL=https://ollama.com" in argv
     assert "ANTHROPIC_AUTH_TOKEN" in argv
     assert "ANTHROPIC_API_KEY" not in argv
-    assert _docker_env(cfg, secrets, model="glm-5.2:cloud") == {
+    assert _docker_env(cfg, secrets, via_endpoint=True) == {
         "GH_TOKEN": "read-token", "ANTHROPIC_AUTH_TOKEN": "k-ollama"
     }
     assert "k-ollama" not in " ".join(argv), "a token never goes in an argv"
 
 
-def test_an_override_on_oauth_mounts_no_credentials(tmp_path):
+def test_naming_an_account_model_does_not_move_the_run(tmp_path):
+    """`--model sonnet` reached ollama.com and 404'd, because naming a model and
+    changing provider were one branch. The model is a flag; the endpoint is not."""
+    cfg = _cfg(tmp_path, backend="oauth")
+    secrets = _secrets(
+        claude_credentials=Path("/etc/robbie/creds.json"),
+        review_base_url="https://ollama.com", review_api_token="k-ollama",
+    )
+    argv = _docker_argv(cfg, secrets, cfg.repos[0], _pr(), name="n", model="sonnet")
+    assert "REVIEW_MODEL=sonnet" in argv, "the flag still has to reach the CLI"
+    assert not any(a.startswith("ANTHROPIC_BASE_URL") for a in argv)
+    assert "ANTHROPIC_AUTH_TOKEN" not in argv
+    assert any(".credentials.json" in a for a in argv), "the account's own session"
+    assert "ANTHROPIC_AUTH_TOKEN" not in _docker_env(cfg, secrets)
+
+
+def test_a_run_sent_to_the_endpoint_mounts_no_credentials(tmp_path):
     """Otherwise a third-party endpoint gets a mount of a human's own session."""
     cfg = _cfg(tmp_path, backend="oauth")
     secrets = _secrets(
         claude_credentials=Path("/etc/robbie/creds.json"), review_api_token="k-ollama"
     )
-    argv = _docker_argv(cfg, secrets, cfg.repos[0], _pr(), name="n", model="gemma4:cloud")
+    argv = _docker_argv(
+        cfg, secrets, cfg.repos[0], _pr(), name="n", model="gemma4:cloud", via_endpoint=True
+    )
     assert not any(".credentials.json" in a for a in argv)
 
 
