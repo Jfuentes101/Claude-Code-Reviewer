@@ -26,7 +26,7 @@ from robbie.contract import (
     threads_block,
 )
 from robbie.db import Db
-from robbie.gates import Decision, dedup_key, evaluate
+from robbie.gates import Decision, already_judged, dedup_key, evaluate, label_hold
 from robbie.github import (
     GhError,
     PrMeta,
@@ -267,19 +267,15 @@ class Orchestrator:
     ) -> tuple[PrMeta, str, str, Decision]:
         meta = await pr_meta(repo.slug, pr)
 
-        # short-circuit before paging the timeline; `evaluate` decides the same
-        if meta.has_label(repo.needs_work_label):
-            return meta, "", "", Decision(
-                "hold", f"{repo.needs_work_label} still on", record=False
-            )
+        # each short-circuit skips the API call the next line would have made
+        if (held := label_hold(meta, repo)) is not None:
+            return meta, "", "", held
 
         requested_at = await last_review_request(repo.slug, pr, repo.reviewer_login)
         key = dedup_key(repo.slug, pr, meta.head_sha, requested_at)
         prior = self.db.get_review(key)
-        if prior is not None and prior.state in ("published", "held"):
-            return meta, key, requested_at, Decision(
-                "skip", "already judged at this commit and request"
-            )
+        if (judged := already_judged(prior.state if prior else None)) is not None:
+            return meta, key, requested_at, judged
 
         # one query serves both the gate and the prompt's prior-conversation block
         threads = await my_threads(repo.slug, pr, repo.reviewer_login)
@@ -287,7 +283,6 @@ class Orchestrator:
         return meta, key, requested_at, evaluate(
             meta,
             repo,
-            key_done=False,
             sha_judged=self.db.sha_was_judged(repo.slug, pr, meta.head_sha),
             open_threads=sum(1 for t in threads if t.awaiting_author),
         )

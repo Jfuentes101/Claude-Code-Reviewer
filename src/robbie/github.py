@@ -136,15 +136,6 @@ async def last_review_request(repo: str, pr: int, reviewer: str) -> str:
     return lines[-1] if lines else NO_DIRECT_REQUEST
 
 
-async def open_threads(repo: str, pr: int, reviewer: str) -> int:
-    """Comments of `reviewer` still waiting on the author.
-
-    Unresolved, not outdated (a fix push moves the code and outdates the
-    thread), and the last word is the reviewer's.
-    """
-    return sum(1 for t in await my_threads(repo, pr, reviewer) if t.awaiting_author)
-
-
 @dataclass(frozen=True)
 class Thread:
     """One review thread the reviewer started, with whatever came back.
@@ -257,29 +248,11 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
     return out
 
 
-def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
-    """Names of red contexts on the head commit; empty when green or running.
-
-    Both spellings: commit statuses carry `state`, check runs carry
-    `conclusion`. Still-running is not red — the code is judged as it stands.
-    """
-    bad_states = {"FAILURE", "ERROR"}
-    bad_conclusions = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
-    out: list[str] = []
-    for check in meta.checks:
-        name = check.get("context") or check.get("name") or "check"
-        if name in ignore:
-            continue
-        if (check.get("state") or "") in bad_states or (
-            check.get("conclusion") or ""
-        ) in bad_conclusions:
-            out.append(name)
-    return sorted(set(out))
-
-
 # CI runs when a review approves the commit, so this is the normal state on a
 # first pass, not a broken integration
 NO_CHECKS = "No CI checks are reporting on this commit."
+FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}
+PENDING = {"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED", "WAITING"}
 
 
 @dataclass(frozen=True)
@@ -312,7 +285,10 @@ class CheckSummary:
 
 
 def summarize_checks(meta: PrMeta) -> CheckSummary:
-    """Bucket every check on the head commit, including the ones gate 6 ignores."""
+    """Bucket every check on the head commit, including the ones gate 6 ignores.
+
+    Both spellings: commit statuses carry `state`, check runs carry `conclusion`.
+    """
     passing, failing, running, other = [], [], [], []
     for check in meta.checks:
         name = check.get("context") or check.get("name") or "check"
@@ -320,11 +296,9 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
         status = (check.get("status") or "").upper()
         if state == "SUCCESS":
             passing.append(name)
-        elif state in {"FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"}:
+        elif state in FAILED:
             failing.append(name)
-        elif state in {"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED", "WAITING"} or (
-            not state and status in {"IN_PROGRESS", "QUEUED", "PENDING"}
-        ):
+        elif state in PENDING or (not state and status in PENDING):
             running.append(name)
         else:
             other.append(f"{name}={state or status or '?'}")
@@ -334,6 +308,18 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
         running=tuple(sorted(set(running))),
         other=tuple(sorted(set(other))),
     )
+
+
+def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
+    """Gate 6's red list: what the summary calls failing, minus the ignored ones.
+
+    Derived from the same bucketing the reviewer is handed rather than repeating
+    it, so the model's CI line cannot contradict the gate that let it run. It did
+    diverge while these were two lists: a commit status reporting TIMED_OUT was
+    failing to the model and green to the gate. Still-running is not red — the
+    code is judged as it stands.
+    """
+    return [name for name in summarize_checks(meta).failing if name not in ignore]
 
 
 async def stale_changes_requested(

@@ -30,10 +30,6 @@ class Anchored:
     comments: list[dict] = field(default_factory=list)
     leftovers: str = ""
 
-    @property
-    def counts(self) -> dict[str, int]:
-        return {"inline": len(self.comments), "leftover": self.leftovers.count("\n- ")}
-
 
 def commentable(patch: str) -> set[int]:
     """RIGHT-side line numbers inside the patch — added and context lines."""

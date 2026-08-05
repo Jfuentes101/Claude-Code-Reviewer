@@ -178,14 +178,6 @@ class Db:
             )
         ]
 
-    def running(self) -> list[sqlite3.Row]:
-        return list(
-            self.conn.execute(
-                "SELECT repo, pr, head_sha, created_at FROM reviews WHERE state='running' "
-                "ORDER BY created_at"
-            )
-        )
-
     def reap_running(self) -> int:
         """Mark orphaned 'running' rows failed at boot.
 

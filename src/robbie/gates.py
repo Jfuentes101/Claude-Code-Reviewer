@@ -45,23 +45,39 @@ class Decision:
     checks: tuple[str, ...] = field(default_factory=tuple)
 
 
+def label_hold(meta: PrMeta, repo: RepoConfig) -> Decision | None:
+    """Gate 3 alone, so a caller can rule on it before paying for the rest.
+
+    The normal state of a blocked PR: no DM, and it re-checks every tick.
+    """
+    if meta.has_label(repo.needs_work_label):
+        return Decision("hold", f"{repo.needs_work_label} still on", record=False)
+    return None
+
+
+def already_judged(state: str | None) -> Decision | None:
+    """Gate 4's first half: this exact (commit, request) has a verdict or a hold."""
+    if state in ("published", "held"):
+        return Decision("skip", "already judged at this commit and request")
+    return None
+
+
 def evaluate(
     meta: PrMeta,
     repo: RepoConfig,
     *,
-    key_done: bool,
     sha_judged: bool,
     open_threads: int,
 ) -> Decision:
-    """Decide what to do with one PR. See the module docstring for the order."""
+    """Decide what to do with one PR. See the module docstring for the order.
+
+    Gates 3 and 4 are also callable on their own above, because each of them makes
+    an API call the caller would otherwise have made to get here.
+    """
     where = f"{repo.slug}#{meta.number}"
 
-    if meta.has_label(repo.needs_work_label):
-        # the normal state of a blocked PR: no DM, and it re-checks every tick
-        return Decision("hold", f"{repo.needs_work_label} still on", record=False)
-
-    if key_done:
-        return Decision("skip", "already judged at this commit and request")
+    if (held := label_hold(meta, repo)) is not None:
+        return held
 
     if meta.changed_files == 0:
         return Decision("hold", "changes no files")

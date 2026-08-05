@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from robbie.config import RepoConfig
-from robbie.gates import dedup_key, evaluate
+from robbie.gates import already_judged, dedup_key, evaluate, label_hold
 from robbie.github import PrMeta, failing_checks
 
 NW = "❌ NEEDS WORK! ❌"
@@ -26,8 +26,8 @@ def pr(**kw) -> PrMeta:
     return PrMeta(**{**base, **kw})
 
 
-def decide(repo, meta, *, key_done=False, sha_judged=False, threads=0):
-    return evaluate(meta, repo, key_done=key_done, sha_judged=sha_judged, open_threads=threads)
+def decide(repo, meta, *, sha_judged=False, threads=0):
+    return evaluate(meta, repo, sha_judged=sha_judged, open_threads=threads)
 
 
 # ----- the happy path ----------------------------------------------------
@@ -96,8 +96,18 @@ def test_red_ci_posts_the_note_and_stays_retryable(repo):
     assert d.record is False, "a green build gets the real review next tick"
 
 
-def test_already_judged_key_is_skipped(repo):
-    assert decide(repo, pr(), key_done=True).action == "skip"
+@pytest.mark.parametrize("state,action", [
+    ("published", "skip"), ("held", "skip"), ("running", None), ("failed", None), (None, None),
+])
+def test_a_key_is_only_done_once_it_was_judged(state, action):
+    """A failed run has to come back; a published or held one must not."""
+    decision = already_judged(state)
+    assert (decision.action if decision else None) == action
+
+
+def test_the_label_gate_stands_alone_for_the_caller_that_short_circuits(repo):
+    assert label_hold(pr(labels=(NW,)), repo).action == "hold"
+    assert label_hold(pr(), repo) is None
 
 
 # ----- failing_checks: both spellings, and the CodeRabbit exception -----
@@ -116,6 +126,8 @@ def test_already_judged_key_is_skipped(repo):
         (({"name": "rspec", "conclusion": "TIMED_OUT"},), ["rspec"]),
         (({"name": "rspec", "conclusion": "SUCCESS"},), []),
         (({"name": "rspec", "status": "IN_PROGRESS"},), []),
+        # the divergence that existed while this was a second list of its own
+        (({"context": "ci/build", "state": "TIMED_OUT"},), ["ci/build"]),
         (
             ({"context": "CodeRabbit", "state": "FAILURE"},
              {"context": "ci/build", "state": "FAILURE"}),
