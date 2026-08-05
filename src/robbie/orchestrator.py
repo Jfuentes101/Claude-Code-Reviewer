@@ -124,8 +124,11 @@ class Orchestrator:
         repo = self.cfg.repo(slug)
         meta = await pr_meta(slug, pr)
         requested_at = await _requested_at_or_blank(slug, pr, repo.reviewer_login)
-        return await self._review(repo, meta, dedup_key(slug, pr, meta.head_sha, requested_at),
-                                  requested_at)
+        key = dedup_key(slug, pr, meta.head_sha, requested_at)
+        if self.model:
+            # one row per model on the same commit; the key is what rows replace on
+            key = f"{key}:{self.model}"
+        return await self._review(repo, meta, key, requested_at)
 
     async def status(self) -> list[str]:
         rows: list[str] = []

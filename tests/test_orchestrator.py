@@ -411,6 +411,26 @@ async def test_a_publish_crash_still_counts_as_judged(orch, repo, monkeypatch):
     assert "post by hand" in orch.slack.owner[0]
 
 
+async def test_two_models_on_one_commit_keep_their_own_rows(orch, cfg, monkeypatch):
+    """Otherwise the second run replaces the first and the comparison has one arm."""
+    _arms(cfg)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(pr()))
+    monkeypatch.setattr(orch_mod, "last_review_request", _async(REQ))
+    monkeypatch.setattr(orch_mod, "my_threads", _async([]))
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(False, "-")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(False, "-")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+    for model in ("glm-5.2:cloud", "sonnet"):
+        orch.model = model
+        await orch.review_one("acme/app", 7)
+
+    ran = orch.db.conn.execute(
+        "SELECT model FROM reviews WHERE head_sha='abc1234567' ORDER BY model"
+    ).fetchall()
+    assert [r["model"] for r in ran] == ["glm-5.2:cloud", "sonnet"]
+
+
 async def test_what_each_model_found_is_recorded_for_the_comparison(orch, repo, monkeypatch):
     """Verdict alone cannot compare models; how much they found at what severity can."""
     inline = json.dumps([
