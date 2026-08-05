@@ -33,6 +33,11 @@ def db(tmp_path) -> Db:
     return Db(tmp_path / "robbie.db")
 
 
+@pytest.fixture(autouse=True)
+def _no_reading_carried_between_tests(monkeypatch):
+    monkeypatch.setattr(budget, "_window", budget._Window())
+
+
 def secrets(tmp_path: Path) -> Secrets:
     creds = tmp_path / "creds.json"
     creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "t"}}))
@@ -108,9 +113,71 @@ def test_five_agents_cannot_all_start_on_the_same_safe_reading(tmp_path, db, mon
 
 
 def test_an_unreadable_window_still_runs_but_says_so(tmp_path, db, monkeypatch):
+    """A cold start with nothing to go on is the only case that goes unguarded."""
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
     v = budget.check(cfg(tmp_path), secrets(tmp_path), db)
     assert v.allowed and v.notice_key == "budget:unreadable"
+
+
+def test_the_window_is_read_once_for_a_whole_tick(tmp_path, db, monkeypatch):
+    """The gate is asked once per reviewable PR, and the endpoint 429s on a burst.
+
+    Six reads two seconds apart earned one on the real endpoint, and the fallback
+    for an unreadable window is to run without the guard at all.
+    """
+    reads = []
+    payload = {"five_hour": {"utilization": 10, "resets_at": "x"}}
+
+    def counting(*a, **k):
+        reads.append(1)
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(budget.httpx, "get", counting)
+    conf = cfg(tmp_path)
+    for _ in range(6):
+        assert budget.check(conf, secrets(tmp_path), db).allowed
+    assert len(reads) == 1
+
+
+def test_a_rate_limited_endpoint_is_not_asked_again_for_every_pr(tmp_path, db, monkeypatch):
+    """Retrying a 429 once per reviewable PR is how it stays a 429.
+
+    Observed live: seven requests in one tick, every one of them rate-limited, and
+    every one of them logged as running without the guard.
+    """
+    reads = []
+
+    def boom(*a, **k):
+        reads.append(1)
+        raise RuntimeError("429 Too Many Requests")
+
+    monkeypatch.setattr(budget.httpx, "get", boom)
+    conf = cfg(tmp_path)
+    for _ in range(6):
+        assert budget.check(conf, secrets(tmp_path), db).notice_key == "budget:unreadable"
+    assert len(reads) == 1
+
+
+def test_a_failed_read_holds_to_the_last_number_rather_than_unguarding(tmp_path, db, monkeypatch):
+    usage(monkeypatch, 85)
+    conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
+    assert not budget.check(conf, secrets(tmp_path), db).allowed
+
+    monkeypatch.setattr(budget, "USAGE_TTL_S", 0)  # force a fresh read, which now fails
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
+    v = budget.check(conf, secrets(tmp_path), db)
+    assert not v.allowed, "85% is still the best thing known about the window"
+    assert v.notice_key != "budget:unreadable"
+
+
+def test_a_reading_too_old_to_trust_gives_up_on_it(tmp_path, db, monkeypatch):
+    usage(monkeypatch, 85)
+    assert not budget.check(cfg(tmp_path, stop_pct=90), secrets(tmp_path), db).allowed
+
+    monkeypatch.setattr(budget, "USAGE_TTL_S", 0)
+    monkeypatch.setattr(budget, "USAGE_STALE_S", 0)
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
+    assert budget.check(cfg(tmp_path), secrets(tmp_path), db).notice_key == "budget:unreadable"
 
 
 # ----- api: dollars ------------------------------------------------------

@@ -27,6 +27,27 @@ from robbie.db import Db
 logger = logging.getLogger(__name__)
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_TTL_S = 60  # a tick asks once per reviewable PR, and the endpoint rate-limits
+USAGE_STALE_S = 900  # how old a reading may be before a failed read gives up on it
+
+
+@dataclass
+class _Window:
+    """The last thing known about the plan's five-hour window.
+
+    Kept across calls because the gate is asked once per reviewable PR: reading
+    the endpoint each time earned a 429, and an unreadable window runs unguarded.
+    A failure is remembered too — retrying a rate limit per PR is how it stays one.
+    """
+
+    at: float = 0.0  # monotonic; 0 means never read
+    pct: float = 0.0
+    resets: str = ""
+    quiet_until: float = 0.0
+    why: str = "not read yet"
+
+
+_window = _Window()
 
 
 @dataclass(frozen=True)
@@ -69,37 +90,49 @@ def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     """ponytail: undocumented endpoint, so it can change under us. A read failure
     must be reported as unknown, never as "plenty left".
 
-    ponytail: a blocking read on the event loop, a handful of times per tick
-    against ticks of ten minutes. Make it async if a tick ever waits on it.
+    ponytail: a blocking read on the event loop, once a minute at most against
+    ticks of ten minutes. Make it async if a tick ever waits on it.
     """
-    try:
-        creds = json.loads(secrets.claude_credentials.read_text())  # type: ignore[union-attr]
-        resp = httpx.get(
-            USAGE_URL,
-            headers={
-                "Authorization": f"Bearer {creds['claudeAiOauth']['accessToken']}",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
-            timeout=15,
+    now = time.monotonic()
+    if now - _window.at >= USAGE_TTL_S and now >= _window.quiet_until:
+        try:
+            _window.pct, _window.resets = _fetch_usage(secrets)
+            _window.at, _window.why = now, ""
+        except Exception as ex:  # noqa: BLE001 — any failure is "unknown", handled below
+            _window.quiet_until, _window.why = now + USAGE_TTL_S, str(ex)
+            logger.warning("plan usage unreadable: %s", ex)
+
+    if not _window.at or now - _window.at >= USAGE_STALE_S:
+        return Verdict(
+            True,
+            f"usage unreadable ({_window.why}); running unguarded",
+            notice_key="budget:unreadable",
         )
-        resp.raise_for_status()
-        data = resp.json()
-        pct = float(data["five_hour"]["utilization"])
-        resets = str(data["five_hour"]["resets_at"])
-    except Exception as ex:  # noqa: BLE001 — any failure is "unknown", handled below
-        logger.warning("plan usage unreadable, running without the guard: %s", ex)
-        return Verdict(True, f"usage unreadable ({ex}); running unguarded",
-                       notice_key="budget:unreadable")
-    held = (inflight + 1) * cfg.budget.reserve_pct
+    pct, held = _window.pct, (inflight + 1) * cfg.budget.reserve_pct
     if pct + held <= cfg.budget.stop_pct:
         return Verdict(True, f"5h window at {pct:.0f}% (+{held:.0f}% held back)")
     return Verdict(
         False,
         f"5h window at {pct:.0f}% +{held:.0f}% held for {inflight} running + 1 "
-        f"(cutoff {cfg.budget.stop_pct}%); resumes around {resets}",
+        f"(cutoff {cfg.budget.stop_pct}%); resumes around {_window.resets}",
         # resets_at jitters by ~1s between calls, so key on the rounded minute
-        notice_key=f"budget:{_minute_key(resets)}",
+        notice_key=f"budget:{_minute_key(_window.resets)}",
     )
+
+
+def _fetch_usage(secrets: Secrets) -> tuple[float, str]:
+    creds = json.loads(secrets.claude_credentials.read_text())  # type: ignore[union-attr]
+    resp = httpx.get(
+        USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {creds['claudeAiOauth']['accessToken']}",
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return float(data["five_hour"]["utilization"]), str(data["five_hour"]["resets_at"])
 
 
 def _midnight_ms() -> int:
