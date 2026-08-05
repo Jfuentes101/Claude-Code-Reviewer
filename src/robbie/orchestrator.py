@@ -437,10 +437,14 @@ class Orchestrator:
 
         blocks = run.blocks
         assert blocks is not None
+        findings = parse_findings(blocks.inline)
         common = {
             "cost_usd": run.cost_usd, "tokens_in": run.tokens_in,
             "tokens_out": run.tokens_out, "duration_s": run.duration_s,
             "transcript": str(run.transcript or ""), "model": choice.model,
+            "findings": len(findings),
+            "blocking": severity_count(findings, blocking=True),
+            "should_fix": severity_count(findings, blocking=False),
         }
 
         if blocks.verdict is None:
@@ -450,8 +454,6 @@ class Orchestrator:
                 f"posted nothing. Transcript: {run.transcript}"
             )
             return Outcome(repo.slug, meta.number, "failed", "no verdict")
-
-        findings = parse_findings(blocks.inline)
 
         if blocks.verdict == "ok":
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
@@ -488,6 +490,11 @@ class Orchestrator:
             return Outcome(repo.slug, meta.number, "failed", f"publish: {ex}")
 
         if result.posted:
+            # how many of them reached a diff line, which is not the same number
+            self.db.finish_review(
+                key, state="published", verdict=blocks.verdict,
+                inline=result.inline, **common,
+            )
             await self._notify(repo, meta, blocks.verdict, findings)
         return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
 

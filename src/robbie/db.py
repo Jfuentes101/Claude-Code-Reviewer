@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS reviews (
     duration_s   REAL,
     transcript   TEXT,
     model        TEXT,                      -- null = whatever the account defaults to
+    findings     INTEGER,                   -- what the run reported, by severity
+    blocking     INTEGER,                   -- critical + must-fix
+    should_fix   INTEGER,
+    inline       INTEGER,                   -- of those, anchored to a diff line
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
 );
@@ -90,7 +94,7 @@ class ReviewRow:
     hold_reason: str | None
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Db:
@@ -107,10 +111,16 @@ class Db:
         column has to be added here or nothing fails until a query names it.
         """
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
-        if version < 1:
+        added = {
+            1: [("model", "TEXT")],
+            2: [("findings", "INTEGER"), ("blocking", "INTEGER"),
+                ("should_fix", "INTEGER"), ("inline", "INTEGER")],
+        }
+        for step in range(version + 1, SCHEMA_VERSION + 1):
             columns = {row[1] for row in self.conn.execute("PRAGMA table_info(reviews)")}
-            if "model" not in columns:
-                self.conn.execute("ALTER TABLE reviews ADD COLUMN model TEXT")
+            for name, kind in added.get(step, []):
+                if name not in columns:
+                    self.conn.execute(f"ALTER TABLE reviews ADD COLUMN {name} {kind}")
         self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -162,13 +172,19 @@ class Db:
         duration_s: float | None = None,
         transcript: str | None = None,
         model: str | None = None,
+        findings: int | None = None,
+        blocking: int | None = None,
+        should_fix: int | None = None,
+        inline: int | None = None,
     ) -> None:
         self.conn.execute(
             "UPDATE reviews SET state=?, verdict=?, hold_reason=?, cost_usd=?, "
-            "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, model=?, finished_at=? "
+            "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, model=?, "
+            "findings=?, blocking=?, should_fix=?, inline=?, finished_at=? "
             "WHERE key=?",
             (state, verdict, hold_reason, cost_usd, tokens_in, tokens_out,
-             duration_s, transcript, model, now_ms(), key),
+             duration_s, transcript, model, findings, blocking, should_fix, inline,
+             now_ms(), key),
         )
 
     def record_hold(self, *, key: str, repo: str, pr: int, head_sha: str,

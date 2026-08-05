@@ -411,6 +411,28 @@ async def test_a_publish_crash_still_counts_as_judged(orch, repo, monkeypatch):
     assert "post by hand" in orch.slack.owner[0]
 
 
+async def test_what_each_model_found_is_recorded_for_the_comparison(orch, repo, monkeypatch):
+    """Verdict alone cannot compare models; how much they found at what severity can."""
+    inline = json.dumps([
+        {"path": "a.rb", "line": 1, "severity": "Critical", "title": "t", "body": "b"},
+        {"path": "a.rb", "line": 2, "severity": "Must-fix", "title": "t", "body": "b"},
+        {"path": "a.rb", "line": 3, "severity": "Should-fix", "title": "t", "body": "b"},
+        {"path": "a.rb", "line": 4, "severity": "Nitpick", "title": "t", "body": "b"},
+    ])
+    monkeypatch.setattr(
+        publish_mod, "publish_review",
+        _async(PublishResult(True, "posted", inline=3)),
+    )
+    stub_run(monkeypatch, ok_run("needs-work", inline=inline))
+    await orch._review(repo, pr(), KEY, REQ)
+
+    row = orch.db.conn.execute(
+        "SELECT findings, blocking, should_fix, inline, model FROM reviews WHERE key=?", (KEY,)
+    ).fetchone()
+    assert (row["findings"], row["blocking"], row["should_fix"]) == (4, 2, 1)
+    assert row["inline"] == 3, "one of the four could not be anchored to the diff"
+
+
 async def test_cost_and_tokens_are_recorded(orch, repo, monkeypatch):
     monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "did it")))
     stub_run(monkeypatch, ok_run("comment"))

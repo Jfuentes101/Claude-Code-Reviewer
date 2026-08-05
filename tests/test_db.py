@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from robbie.db import Db, now_ms
+from robbie.db import SCHEMA_VERSION, Db, now_ms
 
 KEY = "acme/app:7:abc123:2026-01-01T00:00:00Z"
 
@@ -87,11 +87,13 @@ def test_the_model_is_recorded_so_runs_can_be_compared(db):
     assert row["model"] == "glm-5.2:cloud"
 
 
-def test_a_database_from_before_the_column_gets_it_added(tmp_path):
-    """`CREATE TABLE IF NOT EXISTS` skips a new column, so the ALTER has to run.
+@pytest.mark.parametrize("start_version", [0, 1])
+def test_a_database_older_than_the_code_is_stepped_up(tmp_path, start_version):
+    """`CREATE TABLE IF NOT EXISTS` skips a new column, so the ALTERs have to run.
 
-    Built here the way the old code built it — without `model` — because a
-    migration that is only ever tested against a fresh schema tests nothing.
+    Built here the way the old code built it, and from each version it could have
+    stopped at: a migration only ever tested against a fresh schema tests nothing,
+    and one only tested from zero misses resuming halfway.
     """
     import sqlite3
 
@@ -110,15 +112,19 @@ def test_a_database_from_before_the_column_gets_it_added(tmp_path):
         INSERT INTO reviews (key, repo, pr, head_sha, requested_at, state, cost_usd, created_at)
         VALUES ('old-key', 'acme/app', 7, 'abc', 't', 'published', 2.5, 1);
     """)
+    if start_version:
+        old.execute("ALTER TABLE reviews ADD COLUMN model TEXT")
+        old.execute(f"PRAGMA user_version = {start_version}")
     old.commit()
     old.close()
 
     migrated = Db(path)
     try:
-        assert {r[1] for r in migrated.conn.execute("PRAGMA table_info(reviews)")} >= {"model"}
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        columns = {r[1] for r in migrated.conn.execute("PRAGMA table_info(reviews)")}
+        assert columns >= {"model", "findings", "blocking", "should_fix", "inline"}
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert migrated.spend_since(0) == 2.5, "the rows that were already there survive"
-        migrated.finish_review("old-key", state="published", model="glm-5.2:cloud")
+        migrated.finish_review("old-key", state="published", model="glm-5.2:cloud", findings=3)
     finally:
         migrated.close()
 

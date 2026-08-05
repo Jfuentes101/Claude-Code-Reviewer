@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""What each model did, from the rows robbie already writes.
+
+    scripts/model-compare [--db PATH] [--pr N]
+
+`cost_usd` is only meaningful for runs on the account: for a third-party endpoint
+the CLI prices tokens off its own table, which is not that provider's bill. Read
+the endpoint's own meter for that. Tokens are not comparable across providers
+either — Anthropic's `tokens_in` excludes cached reads and ollama has no cache —
+so the comparable columns are the verdict, the findings and the wall clock.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sqlite3
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--db", default=os.path.expanduser("~/.local/state/robbie/robbie.db"))
+ap.add_argument("--pr", type=int, default=None)
+args = ap.parse_args()
+
+conn = sqlite3.connect(args.db)
+conn.row_factory = sqlite3.Row
+where = "AND pr = ?" if args.pr else ""
+params = [args.pr] if args.pr else []
+
+print(f"{'model':<24}{'runs':>5}{'ok':>4}{'cmt':>5}{'nw':>4}{'find':>6}"
+      f"{'block':>6}{'inline':>7}{'median s':>10}{'out tok':>10}")
+print("-" * 87)
+rows = conn.execute(f"""
+    SELECT COALESCE(model, '(account default)') AS m, verdict, findings, blocking,
+           inline, duration_s, tokens_out
+    FROM reviews WHERE state = 'published' {where}
+""", params).fetchall()
+
+by_model: dict[str, list[sqlite3.Row]] = {}
+for r in rows:
+    by_model.setdefault(r["m"], []).append(r)
+
+
+def mid(values: list[float]) -> float:
+    values = sorted(v for v in values if v is not None)
+    return values[len(values) // 2] if values else 0.0
+
+
+for model, runs in sorted(by_model.items(), key=lambda kv: -len(kv[1])):
+    verdicts = [r["verdict"] for r in runs]
+    print(
+        f"{model:<24}{len(runs):>5}{verdicts.count('ok'):>4}"
+        f"{verdicts.count('comment'):>5}{verdicts.count('needs-work'):>4}"
+        f"{sum(r['findings'] or 0 for r in runs):>6}"
+        f"{sum(r['blocking'] or 0 for r in runs):>6}"
+        f"{sum(r['inline'] or 0 for r in runs):>7}"
+        f"{mid([r['duration_s'] for r in runs]):>10.0f}"
+        f"{sum(r['tokens_out'] or 0 for r in runs):>10}"
+    )
+
+print("\nsame commit, side by side:")
+for r in conn.execute(f"""
+    SELECT pr, substr(head_sha, 1, 8) sha, COALESCE(model, 'account') m, verdict,
+           findings, round(duration_s) d
+    FROM reviews WHERE state = 'published' {where}
+      AND head_sha IN (SELECT head_sha FROM reviews WHERE state = 'published'
+                       GROUP BY head_sha HAVING COUNT(DISTINCT COALESCE(model, '')) > 1)
+    ORDER BY pr, head_sha, m
+""", params):
+    print(f"  #{r['pr']} {r['sha']}  {r['m']:<24} {str(r['verdict']):<11} "
+          f"findings={r['findings'] or 0:<3} {r['d']}s")
+conn.close()
