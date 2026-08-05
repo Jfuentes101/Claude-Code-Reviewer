@@ -322,11 +322,7 @@ class Orchestrator:
             )
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
-        choice = self._choice(key)
-        gate = budget.check(
-            self.cfg, self.secrets, self.db, self._inflight,
-            via_endpoint=choice.via_endpoint,
-        )
+        _, gate = self._admit(key)
         if not gate.allowed:
             if gate.notice_key:
                 await self._dm_owner_once(
@@ -347,6 +343,35 @@ class Orchestrator:
         if self.model:
             return self.cfg.named_model(self.model)
         return self.cfg.choose_model(key)
+
+    def _admit(self, key: str) -> tuple[Choice, budget.Verdict]:
+        """The arm that will review this key, and whether its meter allows it.
+
+        The arms cover for each other: a PR held while the other provider sits idle
+        is a review nobody gets, which trades the exact ratio for coverage. What a
+        run fell back *from* stays recoverable, since `choose_model` is a pure
+        function of the key. A model named on the CLI is never substituted — that
+        one was a request, not a routing preference.
+        """
+        first = self._choice(key)
+        verdict = budget.check(
+            self.cfg, self.secrets, self.db, self._inflight, via_endpoint=first.via_endpoint
+        )
+        if verdict.allowed or self.model:
+            return first, verdict
+        other = self.cfg.fallback_for(first)
+        if other is None:
+            return first, verdict
+        spare = budget.check(
+            self.cfg, self.secrets, self.db, self._inflight, via_endpoint=other.via_endpoint
+        )
+        if not spare.allowed:
+            return first, verdict
+        logger.info(
+            "%s: %s has no room (%s), falling back to %s",
+            key, first.model or "the account", verdict.detail, other.model,
+        )
+        return other, spare
 
     async def _dm_owner_once(self, key: str, text: str) -> None:
         """One DM per key, ever — and a run that cannot send must not spend the key.
@@ -378,13 +403,9 @@ class Orchestrator:
             history=self._pass_history(repo, meta),
         )
 
-        choice = self._choice(key)
         async with self._sem:
             # the gate ruled minutes ago, behind however many reviews queued here
-            gate = budget.check(
-                self.cfg, self.secrets, self.db, self._inflight,
-                via_endpoint=choice.via_endpoint,
-            )
+            choice, gate = self._admit(key)
             if not gate.allowed:
                 logger.info("budget closed while %s#%s waited: %s",
                             repo.slug, meta.number, gate.detail)

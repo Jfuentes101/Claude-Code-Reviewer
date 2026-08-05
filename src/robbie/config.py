@@ -143,6 +143,19 @@ class Config(_Strict):
         arm = arms[int.from_bytes(digest[:8], "big") % len(arms)]
         return Choice(model=arm.model, via_endpoint=arm.via == "endpoint")
 
+    def fallback_for(self, choice: Choice) -> Choice | None:
+        """The arm to try when `choice`'s own meter is spent, if there is one.
+
+        The heaviest arm on the other side of the endpoint divide, since that is
+        the one the split leans on anyway. None when nothing is configured over
+        there: an arm nobody asked for is not a fallback, it is a surprise.
+        """
+        others = [m for m in self.review_models if (m.via == "endpoint") != choice.via_endpoint]
+        if not others:
+            return None
+        best = max(others, key=lambda m: m.weight)
+        return Choice(model=best.model, via_endpoint=best.via == "endpoint")
+
     def named_model(self, model: str) -> Choice:
         """A model asked for by name on the CLI, routed by what the config says.
 

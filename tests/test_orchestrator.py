@@ -14,7 +14,8 @@ import pytest
 
 from robbie import orchestrator as orch_mod
 from robbie import publish as publish_mod
-from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
+from robbie.budget import Verdict
+from robbie.config import Config, DockerConfig, RepoConfig, ReviewModel, Secrets, SlackConfig
 from robbie.contract import Blocks
 from robbie.db import Db
 from robbie.gates import Decision, dedup_key
@@ -126,6 +127,80 @@ async def test_the_gate_cache_does_not_cross_repos(orch, cfg, monkeypatch):
     await orch._gate(cfg.repos[0], 7)
     prior = await orch._prior_threads(other, pr())
     assert [t.path for t in prior] == ["acme/other#7"]
+
+
+# ----- which arm reviews, and what covers for it ---------------------------
+
+
+def _arms(cfg) -> None:
+    cfg.review_models = [
+        ReviewModel(model="glm-5.2:cloud", via="endpoint", weight=2),
+        ReviewModel(model="sonnet", weight=1),
+    ]
+
+
+def _meters(monkeypatch, *, account: bool, endpoint: bool) -> list[bool]:
+    """Answer each arm's gate independently, and record which was asked."""
+    asked: list[bool] = []
+
+    def gate(cfg, secrets, db, inflight=0, *, via_endpoint=False):
+        asked.append(via_endpoint)
+        ok = endpoint if via_endpoint else account
+        return Verdict(ok, "endpoint" if via_endpoint else "account")
+
+    monkeypatch.setattr(orch_mod.budget, "check", gate)
+    return asked
+
+
+async def test_a_spent_account_falls_back_to_the_endpoint(orch, cfg, monkeypatch):
+    """Today's live case: the plan window full while the endpoint sits at 0.1%."""
+    _arms(cfg)
+    _meters(monkeypatch, account=False, endpoint=True)
+    key = next(k for k in (f"k{n}" for n in range(50)) if not cfg.choose_model(k).via_endpoint)
+    choice, verdict = orch._admit(key)
+    assert verdict.allowed
+    assert (choice.model, choice.via_endpoint) == ("glm-5.2:cloud", True)
+
+
+async def test_a_spent_endpoint_falls_back_to_the_account(orch, cfg, monkeypatch):
+    _arms(cfg)
+    _meters(monkeypatch, account=True, endpoint=False)
+    key = next(k for k in (f"k{n}" for n in range(50)) if cfg.choose_model(k).via_endpoint)
+    choice, verdict = orch._admit(key)
+    assert verdict.allowed
+    assert (choice.model, choice.via_endpoint) == ("sonnet", False)
+
+
+async def test_both_spent_refuses_with_the_reason_of_the_arm_it_wanted(orch, cfg, monkeypatch):
+    _arms(cfg)
+    _meters(monkeypatch, account=False, endpoint=False)
+    choice, verdict = orch._admit("k1")
+    assert not verdict.allowed
+    assert verdict.detail == ("endpoint" if choice.via_endpoint else "account")
+
+
+async def test_a_room_to_spare_arm_is_never_asked(orch, cfg, monkeypatch):
+    _arms(cfg)
+    asked = _meters(monkeypatch, account=True, endpoint=True)
+    orch._admit("k1")
+    assert len(asked) == 1, "the second meter is only read when the first says no"
+
+
+async def test_nothing_configured_has_nothing_to_fall_back_to(orch, monkeypatch):
+    _meters(monkeypatch, account=False, endpoint=True)
+    choice, verdict = orch._admit("k1")
+    assert not verdict.allowed
+    assert choice.model is None, "the account's own model is the only arm there is"
+
+
+async def test_a_model_named_on_the_cli_is_never_substituted(orch, cfg, monkeypatch):
+    """An explicit --model is a request, not a routing preference."""
+    _arms(cfg)
+    _meters(monkeypatch, account=True, endpoint=False)
+    orch.model = "glm-5.2:cloud"
+    choice, verdict = orch._admit("k1")
+    assert not verdict.allowed
+    assert choice.model == "glm-5.2:cloud"
 
 
 # ----- holds ---------------------------------------------------------------
