@@ -168,13 +168,17 @@ class Db:
             )
         )
 
-    def reviewed_prs(self, repo: str) -> list[int]:
-        """PRs this repo has published reviews on — where threads of ours can exist."""
+    def reviewed_prs(self, repo: str, *, since_ms: int = 0) -> list[int]:
+        """PRs reviewed since `since_ms` — where threads of ours can exist.
+
+        Windowed because every one of these costs an API read on every tick, and
+        the list only ever grows: most of it is PRs that merged months ago.
+        """
         return [
             int(r["pr"]) for r in self.conn.execute(
                 "SELECT DISTINCT pr FROM reviews WHERE repo=? AND state='published' "
-                "ORDER BY pr DESC",
-                (repo,),
+                "AND created_at >= ? ORDER BY pr DESC",
+                (repo, since_ms),
             )
         ]
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 from robbie import budget, publish
 from robbie import slack as slackmod
@@ -25,7 +26,7 @@ from robbie.contract import (
     thread_preamble,
     threads_block,
 )
-from robbie.db import Db
+from robbie.db import Db, now_ms
 from robbie.gates import Decision, already_judged, dedup_key, evaluate, label_hold
 from robbie.github import (
     GhError,
@@ -43,12 +44,16 @@ from robbie.slack import Slack
 
 logger = logging.getLogger(__name__)
 
+# a reply this long after the review is a conversation a human should pick up, and
+# every PR inside the window costs a thread read on every tick
+SWEEP_DAYS = 30
+
 
 @dataclass(frozen=True)
 class Outcome:
     repo: str
     pr: int
-    action: str  # review | skip | hold | ci-note | failed | budget
+    action: Literal["review", "skip", "hold", "ci-note", "threads", "failed", "budget"]
     detail: str = ""
 
     def __str__(self) -> str:
@@ -124,29 +129,30 @@ class Orchestrator:
         rows: list[str] = []
         for repo in self.cfg.repos:
             prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
-            for pr in prs:
-                meta = await pr_meta(repo.slug, pr)
-                if meta.has_label(repo.needs_work_label):
-                    mark = f"⛔ blocked ({repo.needs_work_label} still on)"
-                else:
-                    requested_at = await _requested_at_or_blank(
-                        repo.slug, pr, repo.reviewer_login
-                    )
-                    prior = self.db.get_review(
-                        dedup_key(repo.slug, pr, meta.head_sha, requested_at)
-                    )
-                    if prior is None and self.db.sha_was_judged(repo.slug, pr, meta.head_sha):
-                        mark = "↻ needs re-review (re-requested since last pass)"
-                    elif prior is None:
-                        mark = "• not reviewed yet"
-                    elif prior.state == "held":
-                        mark = f"⏸ held — {prior.hold_reason}"
-                    elif prior.state == "published":
-                        mark = f"✓ reviewed ({prior.verdict})"
-                    else:
-                        mark = f"… {prior.state}"
-                rows.append(f"  {repo.slug}#{pr:<6} {mark}  — {meta.title[:60]}")
+            rows += await asyncio.gather(*(self._status_row(repo, pr) for pr in prs))
         return rows
+
+    async def _status_row(self, repo: RepoConfig, pr: int) -> str:
+        async with self._gate_sem:  # two gh calls each; a full queue is a lot at once
+            meta = await pr_meta(repo.slug, pr)
+            if meta.has_label(repo.needs_work_label):
+                mark = f"⛔ blocked ({repo.needs_work_label} still on)"
+            else:
+                requested_at = await _requested_at_or_blank(repo.slug, pr, repo.reviewer_login)
+                prior = self.db.get_review(
+                    dedup_key(repo.slug, pr, meta.head_sha, requested_at)
+                )
+                if prior is None and self.db.sha_was_judged(repo.slug, pr, meta.head_sha):
+                    mark = "↻ needs re-review (re-requested since last pass)"
+                elif prior is None:
+                    mark = "• not reviewed yet"
+                elif prior.state == "held":
+                    mark = f"⏸ held — {prior.hold_reason}"
+                elif prior.state == "published":
+                    mark = f"✓ reviewed ({prior.verdict})"
+                else:
+                    mark = f"… {prior.state}"
+        return f"  {repo.slug}#{pr:<6} {mark}  — {meta.title[:60]}"
 
     async def answer_threads(
         self, slug: str | None = None, only: tuple[int, ...] = ()
@@ -163,7 +169,7 @@ class Orchestrator:
             if slug and repo.slug != slug:
                 continue
             # named PRs override the DB: threads can predate robbie's own passes
-            for pr in only or self.db.reviewed_prs(repo.slug):
+            for pr in only or self.db.reviewed_prs(repo.slug, since_ms=_sweep_from()):
                 try:
                     threads = await my_threads(repo.slug, pr, repo.reviewer_login)
                 except GhError as ex:
@@ -544,6 +550,11 @@ class Orchestrator:
             "and will review *new* requests from here on. Run "
             f"`robbie once --repo {repo.slug} --pr <n>` to go through one from the backlog."
         )
+
+
+def _sweep_from() -> int:
+    """How far back the reply sweep looks. `robbie threads --pr N` ignores it."""
+    return now_ms() - SWEEP_DAYS * 86_400_000
 
 
 def _thread_state(slug: str, pr: int, thread: Thread) -> str:

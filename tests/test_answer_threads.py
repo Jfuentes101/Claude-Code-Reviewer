@@ -459,6 +459,15 @@ async def test_a_closed_pr_is_skipped_before_spawning_anything(orch, monkeypatch
     assert ran == []
 
 
+async def test_a_review_older_than_the_window_is_not_swept(orch, monkeypatch, acted):
+    """The sweep costs one read per PR per tick, so it does not keep the whole list."""
+    monkeypatch.setattr(orch_mod, "_sweep_from", lambda: orch_mod.now_ms() + 1000)
+    looked: list[int] = []
+    monkeypatch.setattr(orch_mod, "my_threads", lambda *a, **k: looked.append(1))
+    assert await orch.answer_threads() == []
+    assert looked == []
+
+
 async def test_only_prs_with_published_reviews_are_looked_at(orch, monkeypatch, acted):
     looked: list[int] = []
 

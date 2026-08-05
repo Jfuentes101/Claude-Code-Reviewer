@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from robbie.db import Db
+from robbie.db import Db, now_ms
 
 KEY = "acme/app:7:abc123:2026-01-01T00:00:00Z"
 
@@ -78,6 +78,14 @@ def test_spend_only_counts_recorded_cost(db):
     start(db, key="acme/app:8:zzz:t", sha="zzz")
     db.finish_review("acme/app:8:zzz:t", state="failed")
     assert db.spend_since(0) == pytest.approx(1.25)
+
+
+def test_the_reviewed_list_is_windowed(db):
+    """Every PR in it costs a thread read every tick, and the list only grows."""
+    db.start_review(key="k1", repo="acme/app", pr=7, head_sha="abc", requested_at="t")
+    db.finish_review("k1", state="published", verdict="ok")
+    assert db.reviewed_prs("acme/app") == [7]
+    assert db.reviewed_prs("acme/app", since_ms=now_ms() + 1000) == []
 
 
 def test_seeding_is_per_repo(db):
