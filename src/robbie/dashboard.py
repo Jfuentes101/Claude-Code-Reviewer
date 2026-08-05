@@ -53,7 +53,9 @@ td.wide { white-space: normal; }
 .card { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .8rem; }
 .card b { display: block; font-size: 1.35rem; font-weight: 600; }
 .card span { color: var(--dim); font-size: .78rem; }
-a { color: inherit; }
+a { color: inherit; text-decoration: underline;
+    text-decoration-color: var(--dim); text-underline-offset: 2px; }
+a:hover { text-decoration-color: currentColor; }
 .ok { color: #2a9d4a; } .warn { color: #c77700; } .bad { color: #c0392b; }
 pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line);
       padding: 1rem; border-radius: 6px; }
@@ -62,6 +64,14 @@ pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--lin
 
 def _esc(value: object) -> str:
     return html.escape(str(value if value is not None else "—"))
+
+
+def _pr_link(repo: str, pr: int) -> str:
+    """github.com is the only host robbie speaks to, so the URL is derivable."""
+    return (
+        f'<a href="https://github.com/{_esc(repo)}/pull/{int(pr)}" '
+        f'target="_blank" rel="noopener">{_esc(f"{repo}#{pr}")}</a>'
+    )
 
 
 def _card(value: object, label: str, tone: str = "") -> str:
@@ -192,7 +202,7 @@ def _arms(cfg: Config, db: Db) -> str:
 def _queue(db: Db) -> str:
     rows = [
         [
-            _esc(f"{r['repo']}#{r['pr']}"),
+            _pr_link(r["repo"], r["pr"]),
             _esc(r["state"]),
             _esc(r["hold_reason"]),
             _esc(_ago(r["created_at"])),
@@ -211,7 +221,7 @@ def _queue(db: Db) -> str:
 def _reviews(db: Db) -> str:
     rows = [
         [
-            _esc(f"{r['repo']}#{r['pr']}"),
+            _pr_link(r["repo"], r["pr"]),
             _esc((r["head_sha"] or "")[:8]),
             _esc(r["verdict"]),
             _esc(r["model"] or "account"),

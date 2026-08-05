@@ -115,3 +115,17 @@ def test_it_answers_over_http(cfg, db):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_the_pr_cells_link_to_github(cfg, db):
+    db.start_review(key="k", repo="acme/app", pr=10389, head_sha="abc", requested_at="t")
+    db.finish_review("k", state="published", verdict="ok", model="sonnet")
+    page = render(cfg, None, db)
+    assert '<a href="https://github.com/acme/app/pull/10389"' in page
+    assert ">acme/app#10389</a>" in page
+
+
+def test_a_held_pr_links_too(cfg, db):
+    db.record_hold(key="h", repo="acme/app", pr=42, head_sha="abc",
+                   requested_at="t", reason="nothing new pushed")
+    assert 'href="https://github.com/acme/app/pull/42"' in render(cfg, None, db)
