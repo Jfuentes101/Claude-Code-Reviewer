@@ -53,8 +53,12 @@ class Slack:
         return await self.post(self.owner_id, text)
 
     async def dm_reviewers(self, text: str) -> bool:
-        """Everyone who shares the review queue, for the verdict nobody can see."""
-        sent = [await self.post(member, text) for member in self.approved_ids]
+        """Everyone who shares the review queue, for the verdict nobody can see.
+
+        Falls back to the owner rather than to nobody: this line is the only trace
+        an approval leaves anywhere.
+        """
+        sent = [await self.post(m, text) for m in self.approved_ids or (self.owner_id,)]
         return all(sent)
 
     async def dm_author(self, login: str, text: str) -> str:

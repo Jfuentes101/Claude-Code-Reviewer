@@ -76,10 +76,6 @@ class SlackConfig(_Strict):
     # shares the review queue wants the line. Empty means just the owner.
     approved_ids: list[str] = Field(default_factory=list)
 
-    @property
-    def approved_dm(self) -> tuple[str, ...]:
-        return tuple(self.approved_ids) or (self.owner_id,)
-
 
 class Config(_Strict):
     slack: SlackConfig

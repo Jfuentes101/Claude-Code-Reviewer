@@ -94,7 +94,7 @@ async def _run(args: argparse.Namespace) -> int:
         token=secrets.slack_bot_token,
         owner_id=cfg.slack.owner_id,
         users_file=cfg.slack.users_file,
-        approved_ids=cfg.slack.approved_dm,
+        approved_ids=tuple(cfg.slack.approved_ids),
         dry_run=args.dry_run or args.no_publish,
     )
     orch = Orchestrator(
