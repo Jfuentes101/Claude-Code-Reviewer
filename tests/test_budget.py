@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from robbie import budget
-from robbie.config import BudgetConfig, Config, RepoConfig, Secrets, SlackConfig
+from robbie.config import BudgetConfig, Config, RepoConfig, ReviewModel, Secrets, SlackConfig
 from robbie.db import Db
 
 
@@ -35,7 +35,8 @@ def db(tmp_path) -> Db:
 
 @pytest.fixture(autouse=True)
 def _no_reading_carried_between_tests(monkeypatch):
-    monkeypatch.setattr(budget, "_window", budget._Window())
+    monkeypatch.setattr(budget, "_plan", budget._Window())
+    monkeypatch.setattr(budget, "_endpoint", budget._Window())
 
 
 def secrets(tmp_path: Path) -> Secrets:
@@ -57,9 +58,23 @@ class FakeResponse:
         return self._payload
 
 
-def usage(monkeypatch, pct: float) -> None:
-    payload = {"five_hour": {"utilization": pct, "resets_at": "2026-08-04T19:10:00Z"}}
-    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: FakeResponse(payload))
+def usage(monkeypatch, pct: float, *, session: float = 0.0, weekly: float = 0.0) -> None:
+    """Both meters answer, dispatched on the URL like the real ones are."""
+    plan = {"five_hour": {"utilization": pct, "resets_at": "2026-08-04T19:10:00Z"}}
+    endpoint = {"limits": {"session": {"usage": session}, "weekly": {"usage": weekly}}}
+    monkeypatch.setattr(
+        budget.httpx, "get",
+        lambda url, **k: FakeResponse(endpoint if "/api/usage" in url else plan),
+    )
+
+
+def endpoint_cfg(tmp_path, **kw):
+    conf = cfg(tmp_path, **kw)
+    conf.review_models = [
+        ReviewModel(model="glm-5.2:cloud", via="endpoint", weight=2),
+        ReviewModel(model="sonnet", weight=1),
+    ]
+    return conf
 
 
 # ----- oauth: percent of the five-hour window ----------------------------
@@ -178,6 +193,52 @@ def test_a_reading_too_old_to_trust_gives_up_on_it(tmp_path, db, monkeypatch):
     monkeypatch.setattr(budget, "USAGE_STALE_S", 0)
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
     assert budget.check(cfg(tmp_path), secrets(tmp_path), db).notice_key == "budget:unreadable"
+
+
+# ----- the review endpoint's own limits ----------------------------------
+
+
+def test_the_endpoint_arm_is_not_held_against_the_account_window(tmp_path, db, monkeypatch):
+    """The bug this fixes refused a real review for a reason that did not apply.
+
+    The account window sat at 65% with a 70% cutoff, so the gate said no — to a run
+    that was about to be billed by a third party and would not touch the plan.
+    """
+    usage(monkeypatch, 100, session=0.01)
+    conf = endpoint_cfg(tmp_path, stop_pct=70)
+    assert not budget.check(conf, secrets(tmp_path), db).allowed, "the account is full"
+    assert budget.check(conf, secrets(tmp_path), db, via_endpoint=True).allowed
+
+
+def test_the_endpoint_arm_stops_on_its_own_limit(tmp_path, db, monkeypatch):
+    usage(monkeypatch, 0, session=0.90)
+    conf = endpoint_cfg(tmp_path, endpoint_stop_pct=80)
+    v = budget.check(conf, secrets(tmp_path), db, via_endpoint=True)
+    assert not v.allowed
+    assert "session 90.0%" in v.detail
+
+
+def test_the_worse_of_session_and_weekly_is_what_stops_it(tmp_path, db, monkeypatch):
+    """Either one running out stops reviews, so the gate cannot read only one."""
+    usage(monkeypatch, 0, session=0.10, weekly=0.95)
+    conf = endpoint_cfg(tmp_path, endpoint_stop_pct=80)
+    assert not budget.check(conf, secrets(tmp_path), db, via_endpoint=True).allowed
+
+
+def test_each_endpoint_review_in_flight_holds_back_its_share(tmp_path, db, monkeypatch):
+    usage(monkeypatch, 0, session=0.70)
+    conf = endpoint_cfg(tmp_path, endpoint_stop_pct=80, endpoint_reserve_pct=5)
+    ask = lambda n: budget.check(  # noqa: E731
+        conf, secrets(tmp_path), db, inflight=n, via_endpoint=True
+    ).allowed
+    assert ask(1), "70 + 10 held is exactly the cutoff"
+    assert not ask(2), "70 + 15 is past it"
+
+
+def test_an_unreadable_endpoint_says_so_rather_than_guessing(tmp_path, db, monkeypatch):
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
+    v = budget.check(endpoint_cfg(tmp_path), secrets(tmp_path), db, via_endpoint=True)
+    assert v.allowed and v.notice_key == "budget:endpoint-unreadable"
 
 
 # ----- api: dollars ------------------------------------------------------

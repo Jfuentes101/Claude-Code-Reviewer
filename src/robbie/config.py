@@ -6,7 +6,9 @@ file is safe to commit and to mount into a container.
 
 from __future__ import annotations
 
+import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -57,6 +59,25 @@ class DockerConfig(_Strict):
     no_new_privileges: bool = True
 
 
+class ReviewModel(_Strict):
+    """One arm of a model comparison, and how many reviews it takes.
+
+    `via: endpoint` sends the run to REVIEW_BASE_URL with its own token instead of
+    to the account's backend, which is also what tells the spend gate whose meter
+    it is about to spend.
+    """
+
+    model: str
+    via: Literal["backend", "endpoint"] = "backend"
+    weight: int = Field(default=1, ge=1)
+
+
+@dataclass(frozen=True)
+class Choice:
+    model: str | None = None  # None = whatever the account defaults to
+    via_endpoint: bool = False
+
+
 class BudgetConfig(_Strict):
     daily_usd: float = 20.0  # backend=api
     stop_pct: int = 70  # backend=oauth: pause at this % of the 5h window
@@ -67,6 +88,9 @@ class BudgetConfig(_Strict):
     # that in practice. Erring high costs idle quota, erring low costs the cutoff.
     reserve_pct: float = 8.0  # backend=oauth
     reserve_usd: float = 5.0  # backend=api, the p90 of 50 observed reviews
+    # the review endpoint's own session/weekly allowance, in percent of it
+    endpoint_stop_pct: int = 80
+    endpoint_reserve_pct: float = 5.0
 
 
 class SlackConfig(_Strict):
@@ -94,8 +118,38 @@ class Config(_Strict):
     policy_dir: Path | None = None
     # passed to the reviewer as --mcp-config; empty means no MCP servers at all
     review_mcp: str = ""
+    # Empty (the default) means every review runs on the account's own model, which
+    # is the only shape the spend gates can price. Listing arms splits reviews
+    # between them by weight, for comparing models on one unchanged harness.
+    review_models: list[ReviewModel] = Field(default_factory=list)
     docker: DockerConfig = DockerConfig()
     budget: BudgetConfig = BudgetConfig()
+
+    @property
+    def endpoint_models(self) -> tuple[str, ...]:
+        return tuple(m.model for m in self.review_models if m.via == "endpoint")
+
+    def choose_model(self, key: str) -> Choice:
+        """Which arm reviews this key. Stable per key, so a re-review is comparable.
+
+        Bucketed by hashing the dedup key rather than counting: no state to keep,
+        and the same commit always lands on the same model, so a second pass
+        compares like with like instead of moving the variable being measured.
+        """
+        arms = [m for m in self.review_models for _ in range(m.weight)]
+        if not arms:
+            return Choice()
+        digest = hashlib.sha256(key.encode()).digest()
+        arm = arms[int.from_bytes(digest[:8], "big") % len(arms)]
+        return Choice(model=arm.model, via_endpoint=arm.via == "endpoint")
+
+    def named_model(self, model: str) -> Choice:
+        """A model asked for by name on the CLI, routed by what the config says.
+
+        A tag nobody configured runs on the account, where an unknown name fails
+        cleanly — the alternative is handing a third party the account's own key.
+        """
+        return Choice(model=model, via_endpoint=model in self.endpoint_models)
 
     @property
     def db_path(self) -> Path:

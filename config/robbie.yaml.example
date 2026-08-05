@@ -29,9 +29,26 @@ docker:
   # cannot resolve the sidecars. null keeps them off the compose network.
   network: robbie
 
+# Comparing models on one unchanged harness. Empty (the default) runs every review
+# on the account's own model. Listing arms splits reviews between them by weight —
+# below is two reviews on the third-party endpoint for every one on the account.
+#
+# `via: endpoint` sends the run to REVIEW_BASE_URL with REVIEW_API_TOKEN, and that
+# is also what picks the meter the spend gate reads: a run billed by a third party
+# must not be held against the account's window, and vice versa. A model listed
+# here is also the only kind `robbie once --model <tag>` will route off-account.
+# review_models:
+#   - {model: glm-5.2:cloud, via: endpoint, weight: 2}
+#   - {model: sonnet, weight: 1}
+
 budget:
   daily_usd: 20.0       # backend=api: measured from each run's reported cost
   stop_pct: 70          # backend=oauth: pause at this % of the 5h window
+  # the endpoint's own session/weekly allowance, as a percentage of it. Its cost
+  # cannot be gated in dollars: the CLI reports a price from its own table for a
+  # model it does not price, and that number is not the third party's bill.
+  endpoint_stop_pct: 80
+  endpoint_reserve_pct: 5.0
   # Held back for each review in flight and for the one asking, because both
   # numbers above measure what has been SPENT and a running container has not
   # finished spending. Without it a free slot starts on a stale reading.

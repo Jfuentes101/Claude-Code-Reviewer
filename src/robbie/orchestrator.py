@@ -19,7 +19,7 @@ from typing import Literal
 from robbie import budget, publish
 from robbie import slack as slackmod
 from robbie.anchor import parse_findings, severity_count
-from robbie.config import Config, RepoConfig, Secrets
+from robbie.config import Choice, Config, RepoConfig, Secrets
 from robbie.contract import (
     parse_thread_verdicts,
     preamble,
@@ -322,7 +322,11 @@ class Orchestrator:
             )
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
-        gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
+        choice = self._choice(key)
+        gate = budget.check(
+            self.cfg, self.secrets, self.db, self._inflight,
+            via_endpoint=choice.via_endpoint,
+        )
         if not gate.allowed:
             if gate.notice_key:
                 await self._dm_owner_once(
@@ -337,6 +341,12 @@ class Orchestrator:
             )
 
         return await self._review(repo, meta, key, requested_at)
+
+    def _choice(self, key: str) -> Choice:
+        """Which model reviews this key, and therefore whose meter it spends."""
+        if self.model:
+            return self.cfg.named_model(self.model)
+        return self.cfg.choose_model(key)
 
     async def _dm_owner_once(self, key: str, text: str) -> None:
         """One DM per key, ever — and a run that cannot send must not spend the key.
@@ -368,9 +378,13 @@ class Orchestrator:
             history=self._pass_history(repo, meta),
         )
 
+        choice = self._choice(key)
         async with self._sem:
             # the gate ruled minutes ago, behind however many reviews queued here
-            gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
+            gate = budget.check(
+                self.cfg, self.secrets, self.db, self._inflight,
+                via_endpoint=choice.via_endpoint,
+            )
             if not gate.allowed:
                 logger.info("budget closed while %s#%s waited: %s",
                             repo.slug, meta.number, gate.detail)
@@ -382,7 +396,7 @@ class Orchestrator:
             self._inflight += 1
             try:
                 run = await run_review(
-                    self.cfg, self.secrets, repo, meta, prompt=prompt, model=self.model
+                    self.cfg, self.secrets, repo, meta, prompt=prompt, model=choice.model
                 )
             finally:
                 self._inflight -= 1
@@ -392,7 +406,7 @@ class Orchestrator:
             self.db.finish_review(
                 key, state="failed", hold_reason=run.error, duration_s=run.duration_s,
                 cost_usd=run.cost_usd, transcript=str(run.transcript or ""),
-                model=self.model,
+                model=choice.model,
             )
             await self.slack.dm_owner(
                 f"I tried to review *{meta.title}* ({meta.url}) but the run failed: "
@@ -405,7 +419,7 @@ class Orchestrator:
         common = {
             "cost_usd": run.cost_usd, "tokens_in": run.tokens_in,
             "tokens_out": run.tokens_out, "duration_s": run.duration_s,
-            "transcript": str(run.transcript or ""), "model": self.model,
+            "transcript": str(run.transcript or ""), "model": choice.model,
         }
 
         if blocks.verdict is None:

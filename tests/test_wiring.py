@@ -268,6 +268,49 @@ def test_a_policy_dir_that_is_not_there_refuses_to_boot(tmp_path):
         configmod.load(path)
 
 
+def _split(tmp_path) -> Config:
+    return _cfg(tmp_path, review_models=[
+        {"model": "glm-5.2:cloud", "via": "endpoint", "weight": 2},
+        {"model": "sonnet", "weight": 1},
+    ])
+
+
+def test_no_arms_configured_keeps_every_review_on_the_account(tmp_path):
+    choice = _cfg(tmp_path).choose_model("acme/app:7:abc:t")
+    assert (choice.model, choice.via_endpoint) == (None, False)
+
+
+def test_the_weights_are_the_ratio(tmp_path):
+    cfg = _split(tmp_path)
+    picks = [cfg.choose_model(f"acme/app:{n}:sha{n}:t").model for n in range(600)]
+    third = picks.count("sonnet") / len(picks)
+    assert 0.28 < third < 0.39, f"one in three should be sonnet, got {third:.2f}"
+
+
+def test_the_same_commit_always_lands_on_the_same_model(tmp_path):
+    """Otherwise a re-review moves the very variable being measured."""
+    cfg = _split(tmp_path)
+    key = "acme/app:7:abc1234:2026-01-01T00:00:00Z"
+    assert len({cfg.choose_model(key).model for _ in range(20)}) == 1
+
+
+def test_the_arm_decides_whose_meter_the_run_spends(tmp_path):
+    cfg = _split(tmp_path)
+    endpoint = [c for c in (cfg.choose_model(f"k{n}") for n in range(200)) if c.via_endpoint]
+    assert {c.model for c in endpoint} == {"glm-5.2:cloud"}
+    assert cfg.endpoint_models == ("glm-5.2:cloud",)
+
+
+def test_a_model_named_on_the_cli_is_routed_by_the_config(tmp_path):
+    cfg = _split(tmp_path)
+    assert cfg.named_model("glm-5.2:cloud").via_endpoint
+    assert not cfg.named_model("sonnet").via_endpoint
+    assert not cfg.named_model("something-nobody-configured").via_endpoint, (
+        "an unconfigured tag runs on the account, where it fails cleanly — the "
+        "alternative hands a third party the account's own key"
+    )
+
+
 def test_api_backend_without_a_key_refuses_to_boot(tmp_path, monkeypatch):
     monkeypatch.setenv("GH_TOKEN", "g")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "s")
