@@ -145,6 +145,25 @@ async def test_a_silent_hold_never_dms(orch, repo):
     assert orch.slack.owner == []
 
 
+async def test_a_dry_run_does_not_spend_the_one_shot_dm(orch, repo):
+    """--dry-run is how a deployment is proved before it reviews anything.
+
+    Recording the notice there would make the operator DM for every held PR
+    vanish from the next real tick, which is the opposite of writing nothing.
+    """
+    decision = Decision("hold", "nothing new pushed", dm="they asked again")
+    orch.dry_run = True
+    await orch._act(repo, pr(), KEY, REQ, decision)
+    assert orch.slack.owner == ["they asked again"], "a dry run still says what it would send"
+
+    orch.dry_run = False
+    await orch._act(repo, pr(), KEY, REQ, decision)
+    assert orch.slack.owner == ["they asked again"] * 2, "the real tick still owes the DM"
+
+    await orch._act(repo, pr(), KEY, REQ, decision)
+    assert len(orch.slack.owner) == 2, "and owes it once, which is what the key is for"
+
+
 # ----- a failed run --------------------------------------------------------
 
 

@@ -305,8 +305,8 @@ class Orchestrator:
             return Outcome(repo.slug, meta.number, "skip", decision.reason)
 
         if decision.action == "hold":
-            if decision.dm and self.db.notice_once(f"hold:{key}"):
-                await self.slack.dm_owner(decision.dm)
+            if decision.dm:
+                await self._dm_owner_once(f"hold:{key}", decision.dm)
             if decision.record and not self.dry_run:
                 self.db.record_hold(
                     key=key, repo=repo.slug, pr=meta.number, head_sha=meta.head_sha,
@@ -322,16 +322,33 @@ class Orchestrator:
 
         gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
         if not gate.allowed:
-            if gate.notice_key and self.db.notice_once(gate.notice_key):
-                await self.slack.dm_owner(
-                    f"Holding off on reviews — {gate.detail}. I'll start again on my own."
+            if gate.notice_key:
+                await self._dm_owner_once(
+                    gate.notice_key,
+                    f"Holding off on reviews — {gate.detail}. I'll start again on my own.",
                 )
             logger.info("budget gate closed: %s", gate.detail)
             return Outcome(repo.slug, meta.number, "budget", gate.detail)
-        if gate.notice_key == "budget:unreadable" and self.db.notice_once(gate.notice_key):
-            await self.slack.dm_owner(f"I can't read the spend budget: {gate.detail}")
+        if gate.notice_key == "budget:unreadable":
+            await self._dm_owner_once(
+                gate.notice_key, f"I can't read the spend budget: {gate.detail}"
+            )
 
         return await self._review(repo, meta, key, requested_at)
+
+    async def _dm_owner_once(self, key: str, text: str) -> None:
+        """One DM per key, ever — and a run that cannot send must not spend the key.
+
+        `--dry-run` is the documented way to prove a deployment before it reviews
+        anything. Recording the notice there would make the operator DMs for every
+        currently-held PR disappear from the next real tick instead.
+        """
+        if self.dry_run or self.no_publish:
+            if not self.db.notice_seen(key):
+                await self.slack.dm_owner(text)  # this Slack only logs
+            return
+        if self.db.notice_once(key):
+            await self.slack.dm_owner(text)
 
     async def _review(
         self, repo: RepoConfig, meta: PrMeta, key: str, requested_at: str
