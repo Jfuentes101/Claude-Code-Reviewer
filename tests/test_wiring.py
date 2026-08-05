@@ -13,7 +13,7 @@ from robbie.anchor import Anchored
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.github import PrMeta
 from robbie.publish import MAX_BYTES, _assemble, _truncate
-from robbie.runner import _docker_argv, _docker_env, _why_it_failed
+from robbie.runner import _docker_argv, _docker_env, _stem, _why_it_failed
 
 NW = "❌ NEEDS WORK! ❌"
 
@@ -360,3 +360,21 @@ def test_without_an_envelope_it_takes_the_end_of_stderr_not_the_start():
 
 def test_an_empty_envelope_still_says_the_exit_code():
     assert "exited 9" in _why_it_failed(9, b"{}", b"")
+
+
+def test_each_model_writes_its_own_transcript(tmp_path):
+    """Five models on one commit wrote over each other's transcript and left one."""
+    cfg = _cfg(tmp_path)
+    stems = {
+        _stem(cfg, cfg.repos[0], _pr(), m)
+        for m in ("glm-5.2:cloud", "qwen3.5:397b-cloud", None)
+    }
+    assert len(stems) == 3
+
+
+def test_a_container_name_stays_legal_for_docker(tmp_path):
+    """A model tag carries colons and dots; a --name may not."""
+    import re as _re
+    cfg = _cfg(tmp_path)
+    name = _stem(cfg, cfg.repos[0], _pr(), "glm-5.2:cloud")
+    assert _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", f"robbie-{name}"), name

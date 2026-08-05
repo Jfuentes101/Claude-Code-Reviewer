@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,9 +53,7 @@ async def run_review(
     model: str | None = None,
 ) -> ReviewRun:
     """Run the review in a throwaway container and parse its output."""
-    tag = f"{repo.name}-{meta.number}-{meta.head_sha[:8]}"
-    if mode != "review":
-        tag = f"{tag}-{mode}"
+    tag = _stem(cfg, repo, meta, model, mode=mode)
     name = f"robbie-{tag}"
     stem = cfg.transcript_dir / tag
     argv = _docker_argv(cfg, secrets, repo, meta, name=name, mode=mode, model=model)
@@ -118,6 +117,19 @@ async def run_review(
         duration_s=elapsed,
         transcript=stem.with_suffix(".md"),
     )
+
+
+def _stem(
+    cfg: Config, repo: RepoConfig, meta: PrMeta, model: str | None, *, mode: str = "review"
+) -> str:
+    """Names this run's transcripts and its container — one per model per commit."""
+    tag = f"{repo.name}-{meta.number}-{meta.head_sha[:8]}"
+    if mode != "review":
+        tag = f"{tag}-{mode}"
+    if model:
+        # a docker name and a filename both refuse most of what a model tag holds
+        tag = f"{tag}-{re.sub(r'[^A-Za-z0-9]+', '-', model).strip('-')}"
+    return tag
 
 
 def _why_it_failed(code: int, out: bytes, err: bytes) -> str:
