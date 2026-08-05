@@ -14,6 +14,7 @@ workers in docker (same argv, no socket mount).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -91,7 +92,7 @@ async def run_review(
             ok=False,
             duration_s=elapsed,
             transcript=stem.with_suffix(".json"),
-            error=f"container exited {proc.returncode}: {err.decode(errors='replace')[:400]}",
+            error=_why_it_failed(proc.returncode, out, err),
         )
 
     try:
@@ -117,6 +118,25 @@ async def run_review(
         duration_s=elapsed,
         transcript=stem.with_suffix(".md"),
     )
+
+
+def _why_it_failed(code: int, out: bytes, err: bytes) -> str:
+    """Whatever the run itself said, in the order the reason is likeliest to be in.
+
+    The CLI reports its own failures in the envelope on stdout, and stderr here
+    opens with git's fetch and checkout chatter — enough of it to fill a
+    head-anchored excerpt on its own and bury the line that explains anything.
+    """
+    with contextlib.suppress(Exception):
+        envelope = json.loads(out.decode(errors="replace"))
+        said = str(envelope.get("result") or envelope.get("error") or "").strip()
+        status = envelope.get("api_error_status")
+        if said:
+            return (
+                f"container exited {code}: {said[:300]}"
+                + (f" (api {status})" if status else "")
+            )
+    return f"container exited {code}: {err.decode(errors='replace').strip()[-400:]}"
 
 
 def _docker_argv(

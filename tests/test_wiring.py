@@ -3,6 +3,7 @@ GitHub in it but would still break production if it were wrong."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from robbie.anchor import Anchored
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.github import PrMeta
 from robbie.publish import MAX_BYTES, _assemble, _truncate
-from robbie.runner import _docker_argv, _docker_env
+from robbie.runner import _docker_argv, _docker_env, _why_it_failed
 
 NW = "❌ NEEDS WORK! ❌"
 
@@ -333,3 +334,29 @@ def test_the_reviewer_token_falls_back_to_the_write_token(tmp_path, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
     monkeypatch.delenv("GH_TOKEN_REVIEWER", raising=False)
     assert configmod.load_secrets(_cfg(tmp_path)).reviewer_gh_token == "only-one"
+
+
+# ----- why a run failed ----------------------------------------------------
+
+
+def test_the_cli_own_reason_wins_over_git_chatter():
+    """Observed live: a 404 on the model, reported as "Switched to a new branch"."""
+    envelope = json.dumps({
+        "is_error": True, "api_error_status": 404,
+        "result": "There's an issue with the selected model (claude-opus-5[1m]).",
+    }).encode()
+    noise = b"From https://github.com/acme/app\n  Switched to a new branch 'x'\n"
+    why = _why_it_failed(1, envelope, noise)
+    assert "selected model" in why and "api 404" in why
+    assert "Switched to a new branch" not in why
+
+
+def test_without_an_envelope_it_takes_the_end_of_stderr_not_the_start():
+    """A failure explains itself last; the clone and the checkout come first."""
+    err = ("git noise\n" * 200).encode() + b"fatal: the actual problem\n"
+    why = _why_it_failed(3, b"not json at all", err)
+    assert "fatal: the actual problem" in why
+
+
+def test_an_empty_envelope_still_says_the_exit_code():
+    assert "exited 9" in _why_it_failed(9, b"{}", b"")
