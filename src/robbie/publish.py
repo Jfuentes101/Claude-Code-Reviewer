@@ -209,6 +209,35 @@ async def post_ci_note(
     return PublishResult(True, f"posted the CI note ({', '.join(checks) or 'red'})")
 
 
+async def report_red_build(
+    repo: RepoConfig, meta: PrMeta, checks: tuple[str, ...], *, dry_run: bool = False
+) -> PublishResult:
+    """The build robbie's approval paid for came back red.
+
+    No label and no review event: the approval was about the code as read, and this
+    is news about the build, which is the author's to act on. One per commit.
+    """
+    marker = f"<!-- robbie-approved-red sha={meta.head_sha} -->"
+    if await _already_posted(repo.slug, f"issues/{meta.number}/comments", marker):
+        return PublishResult(False, f"already reported the red build for {meta.head_sha[:8]}")
+    what = "`" + "`, `".join(checks) + "`" if checks else "CI"
+    body = (
+        f"{marker}\n{SIGNATURE}\n\nI read this as ready and asked for a build, and "
+        f"{what} came back red on {meta.head_sha[:8]}. Nothing I found is blocking, so "
+        "this is the build's news rather than mine — worth a look before a human "
+        "spends time on it. Push a fix and the next pass picks it up; no need to "
+        "re-request the review."
+    )
+    if dry_run:
+        logger.info("DRY red-build note on %s#%s:\n%s", repo.slug, meta.number, body)
+        return PublishResult(False, "dry run")
+    await gh(
+        "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
+        "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": body}),
+    )
+    return PublishResult(True, f"reported the red build ({', '.join(checks) or 'red'})")
+
+
 async def request_ci(
     repo: RepoConfig, meta: PrMeta, *, dry_run: bool = False
 ) -> PublishResult:

@@ -129,3 +129,30 @@ def test_a_held_pr_links_too(cfg, db):
     db.record_hold(key="h", repo="acme/app", pr=42, head_sha="abc",
                    requested_at="t", reason="nothing new pushed")
     assert 'href="https://github.com/acme/app/pull/42"' in render(cfg, None, db)
+
+
+def test_an_approval_shows_who_made_it_and_what_ci_said(cfg, db):
+    for pr_num, model, state in ((1, "glm-5.2:cloud", "green"),
+                                 (2, "sonnet", "waiting"),
+                                 (3, "qwen3.5:397b-cloud", "red")):
+        key = f"k{pr_num}"
+        db.start_review(key=key, repo="acme/app", pr=pr_num, head_sha="abc", requested_at="t")
+        db.finish_review(key, state="published", verdict="ok", model=model, ci_state=state)
+    page = render(cfg, None, db)
+    assert "ready for a human" in page
+    assert "waiting on the build" in page and "build went red" in page
+    assert "glm-5.2:cloud" in page and "sonnet" in page
+
+
+def test_a_third_party_approval_is_marked_as_such(cfg, db):
+    """He is checking the non-Anthropic ones personally, so they have to stand out."""
+    db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
+    db.finish_review("k", state="published", verdict="ok",
+                     model="glm-5.2:cloud", ci_state="green")
+    assert "3rd-party" in render(cfg, None, db)
+
+
+def test_an_account_approval_is_not_marked(cfg, db):
+    db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
+    db.finish_review("k", state="published", verdict="ok", model="sonnet", ci_state="green")
+    assert "3rd-party" not in render(cfg, None, db)

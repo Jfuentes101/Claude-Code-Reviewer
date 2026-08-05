@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS reviews (
     should_fix   INTEGER,
     inline       INTEGER,                   -- of those, anchored to a diff line
     summary_findings INTEGER,               -- indexed in the summary instead
+    ci_state     TEXT,                     -- after an ok: waiting|green|red|stale|gone
+    ci_seen_at   INTEGER,
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
 );
@@ -95,7 +97,7 @@ class ReviewRow:
     hold_reason: str | None
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class Db:
@@ -125,6 +127,7 @@ class Db:
             2: [("findings", "INTEGER"), ("blocking", "INTEGER"),
                 ("should_fix", "INTEGER"), ("inline", "INTEGER")],
             3: [("summary_findings", "INTEGER")],
+            4: [("ci_state", "TEXT"), ("ci_seen_at", "INTEGER")],
         }
         for step in range(version + 1, SCHEMA_VERSION + 1):
             columns = {row[1] for row in self.conn.execute("PRAGMA table_info(reviews)")}
@@ -187,16 +190,17 @@ class Db:
         should_fix: int | None = None,
         inline: int | None = None,
         summary_findings: int | None = None,
+        ci_state: str | None = None,
     ) -> None:
         self.conn.execute(
             "UPDATE reviews SET state=?, verdict=?, hold_reason=?, cost_usd=?, "
             "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, model=?, "
             "findings=?, blocking=?, should_fix=?, inline=?, summary_findings=?, "
-            "finished_at=? "
+            "ci_state=?, finished_at=? "
             "WHERE key=?",
             (state, verdict, hold_reason, cost_usd, tokens_in, tokens_out,
              duration_s, transcript, model, findings, blocking, should_fix, inline,
-             summary_findings, now_ms(), key),
+             summary_findings, ci_state, now_ms(), key),
         )
 
     def record_hold(self, *, key: str, repo: str, pr: int, head_sha: str,
@@ -207,6 +211,34 @@ class Db:
             "(key, repo, pr, head_sha, requested_at, state, hold_reason, created_at, finished_at) "
             "VALUES (?,?,?,?,?, 'held', ?, ?, ?)",
             (key, repo, pr, head_sha, requested_at, reason, now_ms(), now_ms()),
+        )
+
+    def watching_ci(self, since_ms: int) -> list[sqlite3.Row]:
+        """Approvals still waiting on the build robbie asked for."""
+        return list(
+            self.conn.execute(
+                "SELECT key, repo, pr, head_sha, model, created_at FROM reviews "
+                "WHERE verdict='ok' AND state='published' AND ci_state='waiting' "
+                "AND created_at >= ? ORDER BY created_at",
+                (since_ms,),
+            )
+        )
+
+    def set_ci_state(self, key: str, state: str) -> None:
+        self.conn.execute(
+            "UPDATE reviews SET ci_state=?, ci_seen_at=? WHERE key=?", (state, now_ms(), key)
+        )
+
+    def approved_and_green(self, since_ms: int) -> list[sqlite3.Row]:
+        """What a human could pick up: robbie approved it and the build went green."""
+        return list(
+            self.conn.execute(
+                "SELECT repo, pr, head_sha, model, verdict, ci_state, ci_seen_at, created_at "
+                "FROM reviews WHERE verdict='ok' AND state='published' "
+                "AND ci_state IN ('green','waiting','red') AND created_at >= ? "
+                "ORDER BY ci_state='green' DESC, created_at DESC",
+                (since_ms,),
+            )
         )
 
     def passes_for(self, repo: str, pr: int) -> list[sqlite3.Row]:

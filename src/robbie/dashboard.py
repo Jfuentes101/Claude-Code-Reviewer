@@ -40,6 +40,7 @@ h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
 h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
      margin: 2rem 0 .5rem; color: var(--dim); font-weight: 600; }
 .sub { color: var(--dim); margin: 0 0 1rem; }
+.dim { color: var(--dim); font-size: .8em; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: .3rem .6rem .3rem 0;
          border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -115,6 +116,7 @@ def render(cfg: Config, secrets: Secrets | None, db: Db) -> str:
         f"{len(cfg.repos)} repo(s) · {cfg.max_concurrent_reviews} concurrent · "
         f"tick {cfg.poll_interval_s}s · refreshed "
         f"{datetime.now(UTC):%H:%M:%S} UTC</p>",
+        _ready(cfg, db),
         _system(cfg, db),
         _meters(cfg, secrets, db),
         _arms(cfg, db),
@@ -127,6 +129,31 @@ def render(cfg: Config, secrets: Secrets | None, db: Db) -> str:
         f"<meta http-equiv='refresh' content='{REFRESH_S}'>"
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>robbie</title><style>{CSS}</style>" + "".join(parts)
+    )
+
+
+CI_TONE = {"green": ("ok", "ready for a human"), "red": ("bad", "build went red"),
+           "waiting": ("warn", "waiting on the build")}
+
+
+def _ready(cfg: Config, db: Db) -> str:
+    """Approvals and what the build robbie asked for made of them."""
+    rows = []
+    for r in db.approved_and_green(_midnight_ms() - 7 * 86_400_000):
+        tone, label = CI_TONE.get(r["ci_state"] or "", ("", r["ci_state"] or "—"))
+        model = r["model"] or "account"
+        third = ' <span class="dim">3rd-party</span>' if model in cfg.endpoint_models else ""
+        rows.append([
+            _pr_link(r["repo"], r["pr"]),
+            f'<span class="{tone}">{_esc(label)}</span>',
+            f"{_esc(model)}{third}",
+            _esc((r["head_sha"] or "")[:8]),
+            _esc(_ago(r["ci_seen_at"] or r["created_at"])),
+        ])
+    return (
+        "<h2>approved by robbie</h2>"
+        "<p class='sub'>an `ok` asks CI to run; this is what came back</p>"
+        + _table(["pr", "state", "approved by", "commit", "last seen"], rows, numeric={4})
     )
 
 

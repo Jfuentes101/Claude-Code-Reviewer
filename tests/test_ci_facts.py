@@ -7,7 +7,7 @@ review happen, and a linter missing from the image is never reported as a gap.
 from __future__ import annotations
 
 from robbie.contract import preamble
-from robbie.github import PrMeta, summarize_checks
+from robbie.github import PrMeta, ci_outcome, summarize_checks
 
 
 def pr(*checks) -> PrMeta:
@@ -139,3 +139,41 @@ def test_without_ci_data_the_block_is_omitted_entirely():
 def test_the_summary_is_forbidden_from_guessing_the_ci_line():
     text = preamble(author="dev", ci="x")
     assert "never from a guess" in text
+
+
+# ----- what the build said about a commit robbie approved -------------------
+
+
+def _outcome(checks, ignore=("CodeRabbit",)):
+    return ci_outcome(pr(*checks), ignore=ignore)
+
+
+def test_all_green_is_green():
+    assert _outcome(({"context": "ci/build", "state": "SUCCESS"},)) == "green"
+
+
+def test_anything_still_running_is_not_green_yet():
+    assert _outcome((
+        {"context": "ci/build", "state": "SUCCESS"},
+        {"name": "rspec", "status": "IN_PROGRESS"},
+    )) == "waiting"
+
+
+def test_nothing_reporting_is_waiting_not_green():
+    """The build the approval asked for may not have started; that is not a pass."""
+    assert _outcome(()) == "waiting"
+
+
+def test_a_failure_is_red():
+    assert _outcome((
+        {"context": "ci/build", "state": "SUCCESS"},
+        {"name": "rspec", "conclusion": "FAILURE"},
+    )) == "red"
+
+
+def test_an_ignored_check_cannot_make_it_red():
+    """CodeRabbit reports as a status and is never a broken build — gate 6's rule."""
+    assert _outcome((
+        {"context": "ci/build", "state": "SUCCESS"},
+        {"context": "CodeRabbit", "state": "FAILURE"},
+    )) == "green"

@@ -524,3 +524,93 @@ def _mark(sink, value):
         return value
 
     return _noop()
+
+
+# ----- what the build said about an approval --------------------------------
+
+
+def _approve(orch, *, sha="abc1234567", model="glm-5.2:cloud", key="ok-key") -> str:
+    orch.db.start_review(key=key, repo="acme/app", pr=7, head_sha=sha, requested_at=REQ)
+    orch.db.finish_review(key, state="published", verdict="ok", model=model, ci_state="waiting")
+    return key
+
+
+def _ci_state(orch, key: str) -> str | None:
+    return orch.db.conn.execute(
+        "SELECT ci_state FROM reviews WHERE key=?", (key,)
+    ).fetchone()["ci_state"]
+
+
+async def test_a_green_build_after_an_approval_is_ready_for_a_human(orch, monkeypatch):
+    key = _approve(orch)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+        pr(checks=({"context": "ci/build", "state": "SUCCESS"},))
+    ))
+    out = await orch.watch_ci()
+    assert [o.action for o in out] == ["ready"]
+    assert "glm-5.2:cloud" in out[0].detail
+    assert _ci_state(orch, key) == "green"
+
+
+async def test_a_red_build_after_an_approval_is_reported_on_the_pr(orch, monkeypatch):
+    key = _approve(orch)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+        pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
+    ))
+    told = []
+    monkeypatch.setattr(
+        publish_mod, "report_red_build",
+        lambda *a, **k: _mark(told, PublishResult(True, "reported the red build (rspec)")),
+    )
+    out = await orch.watch_ci()
+    assert told, "the author is the only one who can act on it"
+    assert [o.action for o in out] == ["ci-note"]
+    assert _ci_state(orch, key) == "red"
+
+
+async def test_a_build_still_running_stays_on_the_list(orch, monkeypatch):
+    key = _approve(orch)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+        pr(checks=({"name": "rspec", "status": "IN_PROGRESS"},))
+    ))
+    assert await orch.watch_ci() == []
+    assert _ci_state(orch, key) == "waiting", "so the next tick looks again"
+
+
+async def test_a_push_after_the_approval_makes_the_build_irrelevant(orch, monkeypatch):
+    """The red belongs to code nobody approved, so it is not news about the approval."""
+    key = _approve(orch, sha="oldsha")
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+        pr(head_sha="newsha", checks=({"name": "rspec", "conclusion": "FAILURE"},))
+    ))
+    told = []
+    monkeypatch.setattr(publish_mod, "report_red_build",
+                        lambda *a, **k: _mark(told, PublishResult(True, "x")))
+    assert await orch.watch_ci() == []
+    assert _ci_state(orch, key) == "stale"
+    assert told == [], "nothing to say about a commit that moved"
+
+
+async def test_a_closed_pr_leaves_the_list(orch, monkeypatch):
+    key = _approve(orch)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(pr(state="MERGED")))
+    assert await orch.watch_ci() == []
+    assert _ci_state(orch, key) == "gone"
+
+
+async def test_an_ok_joins_the_watch_list(orch, repo, monkeypatch):
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(True, "asked")))
+    stub_run(monkeypatch, ok_run("ok"))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert _ci_state(orch, KEY) == "waiting"
+
+
+async def test_a_no_publish_ok_waits_for_nothing(orch, repo, monkeypatch):
+    """It asked no CI, so there is no build coming to wait for."""
+    orch.no_publish = True
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(False, "-")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(False, "dry")))
+    stub_run(monkeypatch, ok_run("ok"))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert _ci_state(orch, KEY) is None

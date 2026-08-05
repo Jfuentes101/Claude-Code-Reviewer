@@ -32,6 +32,8 @@ from robbie.github import (
     GhError,
     PrMeta,
     Thread,
+    ci_outcome,
+    failing_checks,
     last_review_request,
     my_threads,
     pr_meta,
@@ -47,13 +49,17 @@ logger = logging.getLogger(__name__)
 # a reply this long after the review is a conversation a human should pick up, and
 # every PR inside the window costs a thread read on every tick
 SWEEP_DAYS = 30
+# an approval whose build never reports stops being news; it also stops being a read
+CI_WATCH_HOURS = 24
 
 
 @dataclass(frozen=True)
 class Outcome:
     repo: str
     pr: int
-    action: Literal["review", "skip", "hold", "ci-note", "threads", "failed", "budget"]
+    action: Literal[
+        "review", "skip", "hold", "ci-note", "threads", "failed", "budget", "ready"
+    ]
     detail: str = ""
 
     def __str__(self) -> str:
@@ -101,6 +107,7 @@ class Orchestrator:
         answered: list[Outcome] = []
         if budget.check(self.cfg, self.secrets, self.db, self._inflight).allowed:
             answered = await self.answer_threads()  # a container, so the same spend gate
+        answered += await self.watch_ci()  # gh reads only, so no gate of its own
         jobs: list[asyncio.Task[Outcome]] = []
         async with asyncio.TaskGroup() as tg:
             for repo in self.cfg.repos:
@@ -187,6 +194,51 @@ class Orchestrator:
                 if not pending:
                     continue
                 out.append(await self._answer_one(repo, pr, pending))
+        return out
+
+    async def watch_ci(self) -> list[Outcome]:
+        """What the build said about a commit robbie approved.
+
+        An `ok` asks CI to run and, until this, never looked at the answer. Green is
+        what makes a PR ready for a human to pick up; red is news the author needs
+        and nobody else has, since robbie is what asked for that build.
+        """
+        out: list[Outcome] = []
+        for row in self.db.watching_ci(now_ms() - CI_WATCH_HOURS * 3_600_000):
+            try:
+                repo = self.cfg.repo(row["repo"])
+            except KeyError:
+                continue  # the repo left the config; its approvals are not ours to chase
+            try:
+                meta = await pr_meta(row["repo"], row["pr"])
+            except GhError as ex:
+                logger.warning("%s#%s: could not read CI: %s", row["repo"], row["pr"], ex)
+                continue
+
+            where = f"{row['repo']}#{row['pr']}"
+            if meta.state != "OPEN":
+                self.db.set_ci_state(row["key"], "gone")
+                continue
+            if meta.head_sha != row["head_sha"]:
+                # they pushed after the approval, so this build is about older code
+                self.db.set_ci_state(row["key"], "stale")
+                continue
+
+            outcome = ci_outcome(meta, ignore=repo.ignore_checks)
+            if outcome == "waiting":
+                continue
+            self.db.set_ci_state(row["key"], outcome)
+            by = row["model"] or "the account's model"
+            if outcome == "green":
+                logger.info("%s: green after %s approved it — ready for a human", where, by)
+                out.append(Outcome(row["repo"], row["pr"], "ready", f"green after {by}"))
+                continue
+            red = tuple(failing_checks(meta, ignore=repo.ignore_checks))
+            result = await publish.report_red_build(
+                repo, meta, red, dry_run=self.dry_run or self.no_publish
+            )
+            logger.info("%s: red after %s approved it — %s", where, by, result.detail)
+            out.append(Outcome(row["repo"], row["pr"], "ci-note", result.detail))
         return out
 
     async def _answer_one(self, repo: RepoConfig, pr: int, pending: list[Thread]) -> Outcome:
@@ -463,7 +515,12 @@ class Orchestrator:
         if blocks.verdict == "ok":
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             ci = await self._request_ci(repo, meta)
-            self.db.finish_review(key, state="published", verdict="ok", **common)
+            self.db.finish_review(
+                key, state="published", verdict="ok",
+                # nothing asked CI on a run that publishes nothing, so nothing to wait for
+                ci_state=None if self.no_publish else "waiting",
+                **common,
+            )
             await self._announce_approval(meta, ci)
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 

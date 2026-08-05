@@ -310,6 +310,21 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
     )
 
 
+def ci_outcome(meta: PrMeta, *, ignore: tuple[str, ...]) -> str:
+    """`green`, `red` or `waiting` for a commit robbie already approved.
+
+    Read off the same buckets gate 6 reads, so "red" means here what it means
+    there. Nothing reporting yet is `waiting`, not green: the build robbie asked
+    for may not have started, and an approval is not evidence about a test.
+    """
+    summary = summarize_checks(meta)
+    if [name for name in summary.failing if name not in ignore]:
+        return "red"
+    if summary.running or not summary.passing:
+        return "waiting"
+    return "green"
+
+
 def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
     """Gate 6's red list: what the summary calls failing, minus the ignored ones.
 
