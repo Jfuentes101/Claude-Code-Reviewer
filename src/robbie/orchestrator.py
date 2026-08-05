@@ -70,6 +70,7 @@ class Orchestrator:
         *,
         dry_run: bool = False,
         no_publish: bool = False,
+        model: str | None = None,
     ) -> None:
         self.cfg = cfg
         self.secrets = secrets
@@ -78,6 +79,7 @@ class Orchestrator:
         self.dry_run = dry_run
         # unlike dry_run, the review still runs; only the outward writes stop
         self.no_publish = no_publish
+        self.model = model  # `once --model` only; see Secrets.review_base_url
         self._self_login: str | None = None
         # (repo, pr) → what the gate read, handed to the prompt in the same tick
         self._threads: dict[tuple[str, int], list[Thread]] = {}
@@ -379,7 +381,9 @@ class Orchestrator:
             )
             self._inflight += 1
             try:
-                run = await run_review(self.cfg, self.secrets, repo, meta, prompt=prompt)
+                run = await run_review(
+                    self.cfg, self.secrets, repo, meta, prompt=prompt, model=self.model
+                )
             finally:
                 self._inflight -= 1
 
@@ -388,6 +392,7 @@ class Orchestrator:
             self.db.finish_review(
                 key, state="failed", hold_reason=run.error, duration_s=run.duration_s,
                 cost_usd=run.cost_usd, transcript=str(run.transcript or ""),
+                model=self.model,
             )
             await self.slack.dm_owner(
                 f"I tried to review *{meta.title}* ({meta.url}) but the run failed: "
@@ -400,7 +405,7 @@ class Orchestrator:
         common = {
             "cost_usd": run.cost_usd, "tokens_in": run.tokens_in,
             "tokens_out": run.tokens_out, "duration_s": run.duration_s,
-            "transcript": str(run.transcript or ""),
+            "transcript": str(run.transcript or ""), "model": self.model,
         }
 
         if blocks.verdict is None:

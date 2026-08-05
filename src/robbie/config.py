@@ -119,6 +119,11 @@ class Secrets(_Strict):
     reviewer_gh_token: str
     anthropic_api_key: str | None = None
     claude_credentials: Path | None = None
+    # Any endpoint speaking the Anthropic Messages API, for comparing models
+    # against the same harness. Used only by `robbie once --model`, so the daemon
+    # cannot pick one up: neither budget backend can measure spend there.
+    review_base_url: str | None = None
+    review_api_token: str | None = None
 
 
 def load(path: str | Path | None = None) -> Config:
@@ -170,6 +175,8 @@ def load_secrets(cfg: Config) -> Secrets:
             if os.environ.get("CLAUDE_CREDENTIALS")
             else None
         ),
+        review_base_url=os.environ.get("REVIEW_BASE_URL", "").strip() or None,
+        review_api_token=os.environ.get("REVIEW_API_TOKEN", "").strip() or None,
     )
     if cfg.backend == "api" and not s.anthropic_api_key:
         raise SystemExit("backend=api needs ANTHROPIC_API_KEY")

@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     tokens_out   INTEGER,
     duration_s   REAL,
     transcript   TEXT,
+    model        TEXT,                      -- null = whatever the account defaults to
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
 );
@@ -89,11 +90,28 @@ class ReviewRow:
     hold_reason: str | None
 
 
+SCHEMA_VERSION = 1
+
+
 class Db:
     def __init__(self, path: Path) -> None:
         self.conn = sqlite3.connect(path, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring an existing database up to what the code above assumes.
+
+        `IF NOT EXISTS` covers a new table but skips a new column entirely, so a
+        column has to be added here or nothing fails until a query names it.
+        """
+        version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if version < 1:
+            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(reviews)")}
+            if "model" not in columns:
+                self.conn.execute("ALTER TABLE reviews ADD COLUMN model TEXT")
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         self.conn.close()
@@ -143,13 +161,14 @@ class Db:
         tokens_out: int | None = None,
         duration_s: float | None = None,
         transcript: str | None = None,
+        model: str | None = None,
     ) -> None:
         self.conn.execute(
             "UPDATE reviews SET state=?, verdict=?, hold_reason=?, cost_usd=?, "
-            "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, finished_at=? "
+            "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, model=?, finished_at=? "
             "WHERE key=?",
             (state, verdict, hold_reason, cost_usd, tokens_in, tokens_out,
-             duration_s, transcript, now_ms(), key),
+             duration_s, transcript, model, now_ms(), key),
         )
 
     def record_hold(self, *, key: str, repo: str, pr: int, head_sha: str,

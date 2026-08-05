@@ -49,6 +49,10 @@ fi
 mcp="${REVIEW_MCP:-}"
 [[ -n "$mcp" ]] || mcp='{"mcpServers":{}}'
 
+# only `robbie once --model` sets this; everything else runs the account default
+model=()
+[[ -n "${REVIEW_MODEL:-}" ]] && model=(--model "$REVIEW_MODEL")
+
 exec claude -p \
   --output-format json \
   --permission-mode bypassPermissions \
@@ -56,4 +60,5 @@ exec claude -p \
   --strict-mcp-config --mcp-config "$mcp" \
   --effort "${REVIEW_EFFORT:-high}" \
   --no-session-persistence \
+  "${model[@]}" \
   <<<"$preamble$body"

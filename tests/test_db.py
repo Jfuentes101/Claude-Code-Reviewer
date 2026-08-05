@@ -80,6 +80,49 @@ def test_spend_only_counts_recorded_cost(db):
     assert db.spend_since(0) == pytest.approx(1.25)
 
 
+def test_the_model_is_recorded_so_runs_can_be_compared(db):
+    db.start_review(key=KEY, repo="acme/app", pr=7, head_sha="abc", requested_at="t")
+    db.finish_review(KEY, state="published", verdict="ok", model="glm-5.2:cloud")
+    row = db.conn.execute("SELECT model FROM reviews WHERE key=?", (KEY,)).fetchone()
+    assert row["model"] == "glm-5.2:cloud"
+
+
+def test_a_database_from_before_the_column_gets_it_added(tmp_path):
+    """`CREATE TABLE IF NOT EXISTS` skips a new column, so the ALTER has to run.
+
+    Built here the way the old code built it — without `model` — because a
+    migration that is only ever tested against a fresh schema tests nothing.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE,
+            repo TEXT NOT NULL, pr INTEGER NOT NULL, head_sha TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('running','published','held','failed')),
+            verdict TEXT, hold_reason TEXT, cost_usd REAL, tokens_in INTEGER,
+            tokens_out INTEGER, duration_s REAL, transcript TEXT,
+            created_at INTEGER NOT NULL, finished_at INTEGER
+        );
+        INSERT INTO reviews (key, repo, pr, head_sha, requested_at, state, cost_usd, created_at)
+        VALUES ('old-key', 'acme/app', 7, 'abc', 't', 'published', 2.5, 1);
+    """)
+    old.commit()
+    old.close()
+
+    migrated = Db(path)
+    try:
+        assert {r[1] for r in migrated.conn.execute("PRAGMA table_info(reviews)")} >= {"model"}
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert migrated.spend_since(0) == 2.5, "the rows that were already there survive"
+        migrated.finish_review("old-key", state="published", model="glm-5.2:cloud")
+    finally:
+        migrated.close()
+
+
 def test_the_reviewed_list_is_windowed(db):
     """Every PR in it costs a thread read every tick, and the list only grows."""
     db.start_review(key="k1", repo="acme/app", pr=7, head_sha="abc", requested_at="t")

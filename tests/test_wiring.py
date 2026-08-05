@@ -145,6 +145,43 @@ def test_the_image_is_the_last_argument(tmp_path):
     assert argv[-1] == "robbie-reviewer:latest"
 
 
+def test_no_model_override_leaves_the_container_exactly_as_it_was(tmp_path):
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert not any(a.startswith("REVIEW_MODEL") for a in argv)
+    assert "ANTHROPIC_AUTH_TOKEN" not in argv
+    assert "ANTHROPIC_API_KEY" in argv, "the backend's own auth still applies"
+
+
+def test_a_model_override_brings_its_own_endpoint_and_auth(tmp_path, monkeypatch):
+    """The override replaces the backend's credentials rather than joining them.
+
+    Pointing a run at another endpoint with the account's key attached would send
+    the wrong secret to a third party, and `ANTHROPIC_API_KEY` would win anyway.
+    """
+    cfg = _cfg(tmp_path)
+    secrets = _secrets(review_base_url="https://ollama.com", review_api_token="k-ollama")
+    argv = _docker_argv(cfg, secrets, cfg.repos[0], _pr(), name="n", model="glm-5.2:cloud")
+    assert "REVIEW_MODEL=glm-5.2:cloud" in argv
+    assert "ANTHROPIC_BASE_URL=https://ollama.com" in argv
+    assert "ANTHROPIC_AUTH_TOKEN" in argv
+    assert "ANTHROPIC_API_KEY" not in argv
+    assert _docker_env(cfg, secrets, model="glm-5.2:cloud") == {
+        "GH_TOKEN": "read-token", "ANTHROPIC_AUTH_TOKEN": "k-ollama"
+    }
+    assert "k-ollama" not in " ".join(argv), "a token never goes in an argv"
+
+
+def test_an_override_on_oauth_mounts_no_credentials(tmp_path):
+    """Otherwise a third-party endpoint gets a mount of a human's own session."""
+    cfg = _cfg(tmp_path, backend="oauth")
+    secrets = _secrets(
+        claude_credentials=Path("/etc/robbie/creds.json"), review_api_token="k-ollama"
+    )
+    argv = _docker_argv(cfg, secrets, cfg.repos[0], _pr(), name="n", model="gemma4:cloud")
+    assert not any(".credentials.json" in a for a in argv)
+
+
 # ----- the comment body ----------------------------------------------------
 
 

@@ -104,7 +104,7 @@ class Fleet:
         self.order: list[int] = []
         self.fail_on: set[int] = set()
 
-    async def __call__(self, cfg, secrets, repo, meta, *, prompt):
+    async def __call__(self, cfg, secrets, repo, meta, *, prompt, model=None):
         self.live += 1
         self.peak = max(self.peak, self.live)
         self.order.append(meta.number)

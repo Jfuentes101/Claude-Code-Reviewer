@@ -74,6 +74,11 @@ def _parser() -> argparse.ArgumentParser:
     one.add_argument("--repo", required=True)
     # several in one process so they share the concurrency cap
     one.add_argument("--pr", required=True, type=int, nargs="+")
+    one.add_argument(
+        "--model", default=None,
+        help="review with this model instead of the account default, through "
+             "REVIEW_BASE_URL when set (for comparing models on one harness)",
+    )
 
     sub.add_parser("status", help="show the queue")
 
@@ -97,8 +102,11 @@ async def _run(args: argparse.Namespace) -> int:
         approved_ids=tuple(cfg.slack.approved_ids),
         dry_run=args.dry_run or args.no_publish,
     )
+    if getattr(args, "model", None) and not secrets.review_api_token:
+        raise SystemExit("--model needs REVIEW_BASE_URL and REVIEW_API_TOKEN in the env")
     orch = Orchestrator(
-        cfg, secrets, db, slack, dry_run=args.dry_run, no_publish=args.no_publish
+        cfg, secrets, db, slack, dry_run=args.dry_run, no_publish=args.no_publish,
+        model=getattr(args, "model", None),
     )
 
     try:
