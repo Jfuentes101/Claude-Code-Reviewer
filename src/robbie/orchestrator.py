@@ -217,17 +217,17 @@ class Orchestrator:
 
             where = f"{row['repo']}#{row['pr']}"
             if meta.state != "OPEN":
-                self.db.set_ci_state(row["key"], "gone")
+                self._settle_ci(row["key"], "gone")
                 continue
             if meta.head_sha != row["head_sha"]:
                 # they pushed after the approval, so this build is about older code
-                self.db.set_ci_state(row["key"], "stale")
+                self._settle_ci(row["key"], "stale")
                 continue
 
             outcome = ci_outcome(meta, ignore=repo.ignore_checks)
             if outcome == "waiting":
                 continue
-            self.db.set_ci_state(row["key"], outcome)
+            self._settle_ci(row["key"], outcome)
             by = row["model"] or "the account's model"
             if outcome == "green":
                 logger.info("%s: green after %s approved it — ready for a human", where, by)
@@ -240,6 +240,11 @@ class Orchestrator:
             logger.info("%s: red after %s approved it — %s", where, by, result.detail)
             out.append(Outcome(row["repo"], row["pr"], "ci-note", result.detail))
         return out
+
+    def _settle_ci(self, key: str, state: str) -> None:
+        """A dry pass decides but must not settle it, or the real tick never acts."""
+        if not self.dry_run:
+            self.db.set_ci_state(key, state)
 
     async def _answer_one(self, repo: RepoConfig, pr: int, pending: list[Thread]) -> Outcome:
         meta = await pr_meta(repo.slug, pr)

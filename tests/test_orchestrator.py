@@ -614,3 +614,17 @@ async def test_a_no_publish_ok_waits_for_nothing(orch, repo, monkeypatch):
     stub_run(monkeypatch, ok_run("ok"))
     await orch._review(repo, pr(), KEY, REQ)
     assert _ci_state(orch, KEY) is None
+
+
+async def test_a_dry_pass_does_not_consume_the_ci_state(orch, monkeypatch):
+    """Same rule as the one-shot DMs: deciding without writing must not settle it."""
+    key = _approve(orch)
+    orch.dry_run = True
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+        pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
+    ))
+    told = []
+    monkeypatch.setattr(publish_mod, "report_red_build",
+                        lambda *a, **k: _mark(told, PublishResult(False, "dry run")))
+    await orch.watch_ci()
+    assert _ci_state(orch, key) == "waiting", "the real tick still owes the comment"
