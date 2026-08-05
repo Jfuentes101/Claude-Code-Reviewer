@@ -3,7 +3,13 @@ dropped and never allowed to take the whole review down with it."""
 
 from __future__ import annotations
 
-from robbie.anchor import anchor, commentable, parse_findings, severity_count
+from robbie.anchor import (
+    anchor,
+    commentable,
+    parse_findings,
+    severity_count,
+    summary_findings,
+)
 
 PATCH = """\
 @@ -1,3 +1,6 @@
@@ -112,3 +118,30 @@ def test_severity_count_splits_blocking_from_advisory():
     ]
     assert severity_count(findings, blocking=True) == 3
     assert severity_count(findings, blocking=False) == 1
+
+
+# ----- what a summary indexes, when nothing went inline --------------------
+
+
+def test_a_summary_index_is_counted():
+    body = (
+        "One line on the PR.\n"
+        "- 🔴 **Must-fix** — `config/application.rb:17` — load_defaults flips a default\n"
+        "- 🟠 Should-fix — `app/services/products_service.rb:141` — deprecated to_s\n"
+        "- 🔵 Nitpick — `Gemfile:9` — pin loosened\n"
+    )
+    assert summary_findings(body) == 3
+
+
+def test_prose_naming_a_severity_is_not_a_finding():
+    """Observed on three models: an intro and a closing line both say "Must-fix"."""
+    body = (
+        "this is pass 7 and the two Must-fix threads still have no reply\n"
+        "- 🔴 Must-fix — `a.rb:17` — the real one\n"
+        "To call this ready I'd need the two Must-fix threads resolved\n"
+    )
+    assert summary_findings(body) == 1
+
+
+def test_no_summary_counts_nothing():
+    assert summary_findings("") == 0

@@ -19,19 +19,49 @@ import sqlite3
 ap = argparse.ArgumentParser()
 ap.add_argument("--db", default=os.path.expanduser("~/.local/state/robbie/robbie.db"))
 ap.add_argument("--pr", type=int, default=None)
+ap.add_argument("--backfill", action="store_true",
+                help="fill summary counts for older rows from their saved transcripts")
 args = ap.parse_args()
 
 conn = sqlite3.connect(args.db)
 conn.row_factory = sqlite3.Row
+
+if args.backfill:
+    import sys as _sys
+    _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
+    from robbie.anchor import parse_findings, severity_count, summary_findings
+    from robbie.contract import parse_blocks
+
+    done = 0
+    for row in conn.execute(
+        "SELECT key, transcript FROM reviews "
+        "WHERE summary_findings IS NULL AND transcript LIKE '%.md'"
+    ).fetchall():
+        try:
+            text = open(row["transcript"], encoding="utf-8").read()
+        except OSError:
+            continue  # transcripts are prunable; the row stays null rather than wrong
+        blocks = parse_blocks(text)
+        found = parse_findings(blocks.inline)
+        conn.execute(
+            "UPDATE reviews SET summary_findings = ?, findings = ?, blocking = ?, "
+            "should_fix = ? WHERE key = ?",
+            (summary_findings(blocks.github), len(found),
+             severity_count(found, blocking=True), severity_count(found, blocking=False),
+             row["key"]),
+        )
+        done += 1
+    conn.commit()
+    print(f"backfilled {done} row(s) from their transcripts\n")
 where = "AND pr = ?" if args.pr else ""
 params = [args.pr] if args.pr else []
 
 print(f"{'model':<24}{'runs':>5}{'ok':>4}{'cmt':>5}{'nw':>4}{'find':>6}"
-      f"{'block':>6}{'inline':>7}{'median s':>10}{'out tok':>10}")
-print("-" * 87)
+      f"{'block':>6}{'inline':>7}{'summary':>8}{'median s':>10}{'out tok':>10}")
+print("-" * 95)
 rows = conn.execute(f"""
     SELECT COALESCE(model, '(account default)') AS m, verdict, findings, blocking,
-           inline, duration_s, tokens_out
+           inline, summary_findings, duration_s, tokens_out
     FROM reviews WHERE state = 'published' {where}
 """, params).fetchall()
 
@@ -53,6 +83,7 @@ for model, runs in sorted(by_model.items(), key=lambda kv: -len(kv[1])):
         f"{sum(r['findings'] or 0 for r in runs):>6}"
         f"{sum(r['blocking'] or 0 for r in runs):>6}"
         f"{sum(r['inline'] or 0 for r in runs):>7}"
+        f"{sum(r['summary_findings'] or 0 for r in runs):>8}"
         f"{mid([r['duration_s'] for r in runs]):>10.0f}"
         f"{sum(r['tokens_out'] or 0 for r in runs):>10}"
     )
@@ -60,12 +91,13 @@ for model, runs in sorted(by_model.items(), key=lambda kv: -len(kv[1])):
 print("\nsame commit, side by side:")
 for r in conn.execute(f"""
     SELECT pr, substr(head_sha, 1, 8) sha, COALESCE(model, 'account') m, verdict,
-           findings, round(duration_s) d
+           findings, summary_findings sf, round(duration_s) d
     FROM reviews WHERE state = 'published' {where}
       AND head_sha IN (SELECT head_sha FROM reviews WHERE state = 'published'
                        GROUP BY head_sha HAVING COUNT(DISTINCT COALESCE(model, '')) > 1)
     ORDER BY pr, head_sha, m
 """, params):
     print(f"  #{r['pr']} {r['sha']}  {r['m']:<24} {str(r['verdict']):<11} "
-          f"findings={r['findings'] or 0:<3} {r['d']}s")
+          f"inline={r['findings'] or 0:<3} summary={r['sf'] if r['sf'] is not None else '?':<4} "
+          f"{r['d']}s")
 conn.close()

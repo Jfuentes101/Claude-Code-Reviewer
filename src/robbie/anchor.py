@@ -105,6 +105,28 @@ def anchor(findings: list[dict], valid: dict[str, set[int]]) -> Anchored:
     return Anchored(comments=comments, leftovers=text)
 
 
+SEVERITY_LINE = re.compile(r":\d+")
+
+
+def summary_findings(body: str) -> int:
+    """How many findings a summary indexes, by the severity words it cites with a line.
+
+    The inline count alone reads as zero for a re-review, which is told to keep
+    findings out of the inline block when they are already posted on the diff — so
+    without this, a model that found seven things scores nothing.
+
+    A severity named without a `file:line` is not counted, which loses the odd
+    finding about the PR as a whole. That is the same bar the policy sets: cite a
+    changed line or you are guessing. It also keeps the closing "clear the three
+    Should-fixes" line out of the count.
+    """
+    words = tuple(BADGE)
+    return sum(
+        1 for line in body.splitlines()
+        if any(w in line.lower() for w in words) and SEVERITY_LINE.search(line)
+    )
+
+
 def severity_count(findings: list[dict], *, blocking: bool) -> int:
     """Blocking = critical/must-fix; otherwise should-fix. Drives the Slack copy."""
     wanted = ("critical", "must-fix", "mustfix") if blocking else ("should-fix", "shouldfix")

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     blocking     INTEGER,                   -- critical + must-fix
     should_fix   INTEGER,
     inline       INTEGER,                   -- of those, anchored to a diff line
+    summary_findings INTEGER,               -- indexed in the summary instead
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
 );
@@ -94,7 +95,7 @@ class ReviewRow:
     hold_reason: str | None
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class Db:
@@ -115,6 +116,7 @@ class Db:
             1: [("model", "TEXT")],
             2: [("findings", "INTEGER"), ("blocking", "INTEGER"),
                 ("should_fix", "INTEGER"), ("inline", "INTEGER")],
+            3: [("summary_findings", "INTEGER")],
         }
         for step in range(version + 1, SCHEMA_VERSION + 1):
             columns = {row[1] for row in self.conn.execute("PRAGMA table_info(reviews)")}
@@ -176,15 +178,17 @@ class Db:
         blocking: int | None = None,
         should_fix: int | None = None,
         inline: int | None = None,
+        summary_findings: int | None = None,
     ) -> None:
         self.conn.execute(
             "UPDATE reviews SET state=?, verdict=?, hold_reason=?, cost_usd=?, "
             "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, model=?, "
-            "findings=?, blocking=?, should_fix=?, inline=?, finished_at=? "
+            "findings=?, blocking=?, should_fix=?, inline=?, summary_findings=?, "
+            "finished_at=? "
             "WHERE key=?",
             (state, verdict, hold_reason, cost_usd, tokens_in, tokens_out,
              duration_s, transcript, model, findings, blocking, should_fix, inline,
-             now_ms(), key),
+             summary_findings, now_ms(), key),
         )
 
     def record_hold(self, *, key: str, repo: str, pr: int, head_sha: str,

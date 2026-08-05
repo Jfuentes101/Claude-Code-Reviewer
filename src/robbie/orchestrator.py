@@ -18,7 +18,7 @@ from typing import Literal
 
 from robbie import budget, publish
 from robbie import slack as slackmod
-from robbie.anchor import parse_findings, severity_count
+from robbie.anchor import parse_findings, severity_count, summary_findings
 from robbie.config import Choice, Config, RepoConfig, Secrets
 from robbie.contract import (
     parse_thread_verdicts,
@@ -448,6 +448,7 @@ class Orchestrator:
             "findings": len(findings),
             "blocking": severity_count(findings, blocking=True),
             "should_fix": severity_count(findings, blocking=False),
+            "summary_findings": summary_findings(blocks.github),
         }
 
         if blocks.verdict is None:
