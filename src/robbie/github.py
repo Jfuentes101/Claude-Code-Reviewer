@@ -48,7 +48,7 @@ class PrMeta:
         return name in self.labels
 
 
-async def _gh(*args: str, stdin: str | None = None) -> str:
+async def gh(*args: str, stdin: str | None = None) -> str:
     proc = await asyncio.create_subprocess_exec(
         "gh", *args,
         stdin=asyncio.subprocess.PIPE if stdin is not None else None,
@@ -73,8 +73,8 @@ async def _gh(*args: str, stdin: str | None = None) -> str:
     return out.decode()
 
 
-async def _gh_json(*args: str, stdin: str | None = None) -> Any:
-    raw = await _gh(*args, stdin=stdin)
+async def gh_json(*args: str, stdin: str | None = None) -> Any:
+    raw = await gh(*args, stdin=stdin)
     try:
         return json.loads(raw or "null")
     except json.JSONDecodeError as ex:
@@ -82,7 +82,7 @@ async def _gh_json(*args: str, stdin: str | None = None) -> Any:
 
 
 async def whoami() -> str:
-    return (await _gh("api", "user", "--jq", ".login")).strip()
+    return (await gh("api", "user", "--jq", ".login")).strip()
 
 
 async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
@@ -91,7 +91,7 @@ async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
     A submitted changes-requested review clears the request, so those drop out
     of here until the author re-requests; `digest` nags the ones that never do.
     """
-    rows = await _gh_json(
+    rows = await gh_json(
         "search", "prs", "--repo", repo,
         f"--review-requested={reviewer}", "--label", label,
         "--state", "open", "--limit", "50", "--json", "number",
@@ -100,7 +100,7 @@ async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
 
 
 async def pr_meta(repo: str, pr: int) -> PrMeta:
-    data = await _gh_json(
+    data = await gh_json(
         "pr", "view", str(pr), "--repo", repo, "--json",
         "number,title,url,author,headRefOid,changedFiles,labels,statusCheckRollup,baseRefName,state",
     )
@@ -127,7 +127,7 @@ async def last_review_request(repo: str, pr: int, reviewer: str) -> str:
     the head commit has not moved. Returns NO_DIRECT_REQUEST when the timeline
     has no such event — a stable value, unlike an error.
     """
-    raw = await _gh(
+    raw = await gh(
         "api", f"repos/{repo}/issues/{pr}/timeline", "--paginate",
         "--jq", f'.[] | select(.event=="review_requested" '
                 f'and .requested_reviewer.login=="{reviewer}") | .created_at',
@@ -205,7 +205,7 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
                 "-F", f"num={pr}", "-F", f"first={THREAD_PAGE}", "-f", f"query={query}"]
         if after:
             args += ["-f", f"after={after}"]
-        data = await _gh_json(*args)
+        data = await gh_json(*args)
         conn = (
             (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
         ).get("reviewThreads") or {}
@@ -346,7 +346,7 @@ async def stale_changes_requested(
         f'repo:{repo} is:pr is:open label:"{label}" '
         f"reviewed-by:{reviewer} review:changes_requested"
     )
-    data = await _gh_json(
+    data = await gh_json(
         "api", "graphql", "-f", f"q={search}", "-f", f"me={reviewer}", "-f", f"query={query}"
     )
     nodes = (((data or {}).get("data") or {}).get("search") or {}).get("nodes") or []

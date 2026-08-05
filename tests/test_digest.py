@@ -61,7 +61,7 @@ async def test_the_search_uses_the_repo_own_queue_label(monkeypatch):
         seen.extend(args)
         return {}
 
-    monkeypatch.setattr(gh_mod, "_gh_json", fake)
+    monkeypatch.setattr(gh_mod, "gh_json", fake)
     await stale_changes_requested("acme/app", "rev", label="Needs Review")
     assert any('label:"Needs Review"' in a for a in seen)
     assert not any("Code Review" in a for a in seen)

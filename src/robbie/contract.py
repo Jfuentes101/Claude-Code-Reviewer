@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from robbie.github import NO_CHECKS
+from robbie.github import NO_CHECKS, Thread
 
 MARKERS = ("VERDICT", "GITHUB", "INLINE", "SLACK")
 VERDICTS = ("needs-work", "comment", "ok")
@@ -108,7 +108,7 @@ def _linters(nothing_ran: bool) -> str:
     )
 
 
-def thread_preamble(*, author: str, url: str, threads: list) -> str:
+def thread_preamble(*, author: str, url: str, threads: list[Thread]) -> str:
     """Ask for a decision on each thread somebody answered."""
     blocks = []
     for t in threads:
@@ -182,12 +182,12 @@ def _strip(body: str, cap: int = BODY_CAP) -> str:
     return text if len(text) <= cap else text[:cap].rsplit(" ", 1)[0] + "…"
 
 
-def _where(t) -> str:
+def _where(t: Thread) -> str:
     path = _strip(t.path, 200)
     return f"{path}:{t.line}" if t.line else path
 
 
-def threads_block(threads: list) -> str:
+def threads_block(threads: list[Thread]) -> str:
     """What the reviewer already said on this PR, and what came back.
 
     Read from GitHub each time rather than stored: it owns the threads, their

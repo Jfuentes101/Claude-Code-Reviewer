@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from robbie.anchor import SIGNATURE as anchor_signature
 from robbie.anchor import Anchored, anchor, commentable
 from robbie.config import RepoConfig
-from robbie.github import GhError, PrMeta, _gh, _gh_json
+from robbie.github import GhError, PrMeta, gh, gh_json
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class PublishResult:
 
 async def diff_lines(repo: str, pr: int) -> dict[str, set[int]]:
     """Map each changed file to the RIGHT-side lines a comment can attach to."""
-    raw = await _gh(
+    raw = await gh(
         "api", f"repos/{repo}/pulls/{pr}/files", "--paginate",
         "--jq", ".[] | {filename, patch}",
     )
@@ -106,19 +106,19 @@ async def publish_review(
             "commit_id": meta.head_sha,
             "comments": anchored.comments,
         })
-        url = (await _gh(
+        url = (await gh(
             "api", f"repos/{repo.slug}/pulls/{meta.number}/reviews",
             "--input", "-", "--jq", ".html_url", stdin=payload,
         )).strip()
     else:
-        url = (await _gh(
+        url = (await gh(
             "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
             "--input", "-", "--jq", ".html_url",
             stdin=json.dumps({"body": full}),
         )).strip()
         for comment in anchored.comments:
             try:
-                await _gh(
+                await gh(
                     "api", f"repos/{repo.slug}/pulls/{meta.number}/comments",
                     "--input", "-", "--jq", ".html_url",
                     stdin=json.dumps({**comment, "commit_id": meta.head_sha}),
@@ -144,7 +144,7 @@ async def resolve_thread(node_id: str, *, dry_run: bool = False) -> PublishResul
         return PublishResult(False, "no thread id")
     if dry_run:
         return PublishResult(False, f"dry run: would resolve {node_id}")
-    await _gh(
+    await gh(
         "api", "graphql", "-f",
         "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id})"
         "{thread{isResolved}}}",
@@ -162,7 +162,7 @@ async def reply_to_thread(
     if dry_run:
         logger.info("DRY reply on %s#%s thread %s:\n%s", repo.slug, pr, comment_id, full)
         return PublishResult(False, "dry run")
-    url = (await _gh(
+    url = (await gh(
         "api", f"repos/{repo.slug}/pulls/{pr}/comments/{comment_id}/replies",
         "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": full}),
     )).strip()
@@ -170,7 +170,7 @@ async def reply_to_thread(
 
 
 async def clear_needs_work(repo: RepoConfig, pr: int, *, dry_run: bool = False) -> PublishResult:
-    labels = await _gh_json(
+    labels = await gh_json(
         "pr", "view", str(pr), "--repo", repo.slug, "--json", "labels",
         "--jq", "[.labels[].name]",
     )
@@ -202,7 +202,7 @@ async def post_ci_note(
     if dry_run:
         logger.info("DRY CI note on %s#%s:\n%s", repo.slug, meta.number, body)
         return PublishResult(False, "dry run")
-    await _gh(
+    await gh(
         "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
         "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": body}),
     )
@@ -220,7 +220,7 @@ async def request_ci(
     if dry_run:
         logger.info("DRY %r on %s#%s", repo.ci_phrase, repo.slug, meta.number)
         return PublishResult(False, "dry run")
-    await _gh(
+    await gh(
         "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
         "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": repo.ci_phrase}),
     )
@@ -253,7 +253,7 @@ def _truncate(text: str) -> str:
 
 
 async def _already_posted(repo: str, endpoint: str, marker: str) -> bool:
-    bodies = await _gh(
+    bodies = await gh(
         "api", f"repos/{repo}/{endpoint}", "--paginate", "--jq", ".[].body"
     )
     return marker in bodies
@@ -261,4 +261,4 @@ async def _already_posted(repo: str, endpoint: str, marker: str) -> bool:
 
 async def _set_label(repo: RepoConfig, pr: int, *, add: bool) -> None:
     flag = "--add-label" if add else "--remove-label"
-    await _gh("pr", "edit", str(pr), "--repo", repo.slug, flag, repo.needs_work_label)
+    await gh("pr", "edit", str(pr), "--repo", repo.slug, flag, repo.needs_work_label)

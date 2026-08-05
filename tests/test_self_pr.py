@@ -34,8 +34,8 @@ def calls(monkeypatch) -> list[tuple]:
             return ""
         return "https://github.com/acme/app/pull/7#issuecomment-1"
 
-    monkeypatch.setattr(publish_mod, "_gh", fake_gh)
-    monkeypatch.setattr(publish_mod, "_gh_json", lambda *a, **k: _none())
+    monkeypatch.setattr(publish_mod, "gh", fake_gh)
+    monkeypatch.setattr(publish_mod, "gh_json", lambda *a, **k: _none())
     return seen
 
 

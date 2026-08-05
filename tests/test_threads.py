@@ -55,7 +55,7 @@ async def test_every_page_of_threads_is_read(monkeypatch):
         calls.append(args)
         return pages[len(calls) - 1]
 
-    monkeypatch.setattr(gh_mod, "_gh_json", fake)
+    monkeypatch.setattr(gh_mod, "gh_json", fake)
     assert [t.comment_id for t in await my_threads("acme/app", 7, "rev")] == [1, 2]
     assert any("after=CUR1" in a for a in calls[1]), "the second page has to say where from"
 
@@ -67,13 +67,13 @@ async def test_one_page_asks_once(monkeypatch):
         calls.append(args)
         return page([raw(1)])
 
-    monkeypatch.setattr(gh_mod, "_gh_json", fake)
+    monkeypatch.setattr(gh_mod, "gh_json", fake)
     await my_threads("acme/app", 7, "rev")
     assert len(calls) == 1
 
 
 async def test_someone_elses_thread_is_not_ours_to_answer(monkeypatch):
-    monkeypatch.setattr(gh_mod, "_gh_json", _async(page([raw(1, author="dev")])))
+    monkeypatch.setattr(gh_mod, "gh_json", _async(page([raw(1, author="dev")])))
     assert await my_threads("acme/app", 7, "rev") == []
 
 

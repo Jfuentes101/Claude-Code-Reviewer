@@ -12,7 +12,7 @@ import asyncio
 import pytest
 
 from robbie import github as gh_mod
-from robbie.github import GhError, _gh
+from robbie.github import GhError, gh
 
 
 @pytest.fixture
@@ -36,21 +36,21 @@ async def test_a_hung_call_gives_up_instead_of_blocking_the_tick(fake_gh, monkey
     monkeypatch.setattr(gh_mod, "TIMEOUT_S", 0.3)
     started = asyncio.get_running_loop().time()
     with pytest.raises(GhError, match="timed out"):
-        await _gh("api", "user")
+        await gh("api", "user")
     assert asyncio.get_running_loop().time() - started < 5
 
 
 async def test_output_comes_back_whole(fake_gh):
     fake_gh('printf "hello"')
-    assert await _gh("api", "user") == "hello"
+    assert await gh("api", "user") == "hello"
 
 
 async def test_a_nonzero_exit_carries_the_stderr(fake_gh):
     fake_gh('echo "bad credentials" >&2; exit 1')
     with pytest.raises(GhError, match="bad credentials"):
-        await _gh("api", "user")
+        await gh("api", "user")
 
 
 async def test_stdin_reaches_the_command(fake_gh):
     fake_gh("cat")
-    assert await _gh("api", "x", stdin='{"body":"hi"}') == '{"body":"hi"}'
+    assert await gh("api", "x", stdin='{"body":"hi"}') == '{"body":"hi"}'

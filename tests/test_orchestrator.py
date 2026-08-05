@@ -244,7 +244,7 @@ async def test_the_ci_trigger_comment_is_the_bare_phrase(repo, monkeypatch):
         sent["body"] = json.loads(stdin)["body"]
         return "https://x/1"
 
-    monkeypatch.setattr(publish_mod, "_gh", fake_gh)
+    monkeypatch.setattr(publish_mod, "gh", fake_gh)
     await publish_mod.request_ci(repo, pr())
     assert sent["body"] == "run-ci"
 
