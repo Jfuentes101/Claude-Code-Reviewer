@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import signal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -192,7 +192,23 @@ class Thread:
 THREAD_PAGE = 100  # GraphQL's per-page maximum for both connections
 
 
-async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
+@dataclass(frozen=True)
+class PrThreads:
+    """The reviewer's threads on a PR, and whether the PR is still alive.
+
+    The state rides along because this read is the whole cost of the reply sweep:
+    learning here that a PR merged is what stops it being read again on every tick
+    for the rest of the window, and asking on purpose would cost the call it saves.
+
+    Empty when it could not be read, never guessed — a caller retires a PR on
+    MERGED and on nothing else, so an unreadable state costs a read, not a thread.
+    """
+
+    state: str = ""
+    threads: list[Thread] = field(default_factory=list)
+
+
+async def my_threads(repo: str, pr: int, reviewer: str) -> PrThreads:
     """Every review thread opened by `reviewer`, with its replies.
 
     Paged to the end rather than capped at one page: gate 5 counts these, and a
@@ -203,6 +219,7 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
     query = """
       query($owner:String!,$name:String!,$num:Int!,$first:Int!,$after:String){
         repository(owner:$owner,name:$name){ pullRequest(number:$num){
+          state
           reviewThreads(first:$first, after:$after){
             pageInfo { hasNextPage endCursor }
             nodes {
@@ -213,6 +230,7 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
     """
 
     nodes: list[dict[str, Any]] = []
+    state = ""
     after: str | None = None
     while True:
         args = ["api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}",
@@ -220,9 +238,11 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
         if after:
             args += ["-f", f"after={after}"]
         data = await gh_json(*args)
-        conn = (
-            (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
-        ).get("reviewThreads") or {}
+        pull = (
+            ((data or {}).get("data") or {}).get("repository") or {}
+        ).get("pullRequest") or {}
+        state = str(pull.get("state") or "")
+        conn = pull.get("reviewThreads") or {}
         nodes += conn.get("nodes") or []
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
@@ -259,7 +279,7 @@ async def my_threads(repo: str, pr: int, reviewer: str) -> list[Thread]:
             comment_id=int(first.get("databaseId") or 0),
             mine_is_last=((comments[-1].get("author") or {}).get("login")) == reviewer,
         ))
-    return out
+    return PrThreads(state=state, threads=out)
 
 
 # CI runs when a review approves the commit, so this is the normal state on a

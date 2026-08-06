@@ -33,6 +33,12 @@ class RepoConfig(_Strict):
     bare: Path  # local mirror, mounted read-only into every reviewer
     label: str = "Code Review"
     needs_work_label: str = "❌ NEEDS WORK! ❌"
+    # Temporary: the PR waits on something that is not the author, so it comes
+    # back on its own the moment the label comes off and no row is written.
+    hold_labels: tuple[str, ...] = ()
+    # A human already reviewed and approved it. Excluding, whatever else the PR
+    # carries: `label` and one of these together means not reviewed.
+    done_labels: tuple[str, ...] = ()
     review_command: str = ".claude/commands/code-review.md"
     slack_channel: str | None = None
     image: str = "robbie-reviewer:latest"

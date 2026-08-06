@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     should_fix   INTEGER,
     inline       INTEGER,                   -- of those, anchored to a diff line
     summary_findings INTEGER,               -- indexed in the summary instead
-    ci_state     TEXT,                     -- after an ok: waiting|green|red|stale|gone
+    ci_state     TEXT,                     -- waiting|green|red|stale|gone|done
     ci_seen_at   INTEGER,
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
@@ -261,6 +261,21 @@ class Db:
             )
         )
 
+    def settle_done(self, repo: str, pr: int) -> int:
+        """A human has taken this PR; retire it from the panel and the sweep.
+
+        Keyed on (repo, pr) rather than on a review key, because building that key
+        needs the timeline read this whole gate exists to skip. Every row for the
+        PR, not just the approval: a needs-work pass is what the reply sweep reads,
+        and it is just as done as the rest of them.
+        """
+        cur = self.conn.execute(
+            "UPDATE reviews SET ci_state='done' WHERE repo=? AND pr=? "
+            "AND COALESCE(ci_state,'') != 'done'",
+            (repo, pr),
+        )
+        return cur.rowcount or 0
+
     def passes_for(self, repo: str, pr: int) -> list[sqlite3.Row]:
         """Earlier judged passes on this PR, oldest first."""
         return list(
@@ -276,12 +291,14 @@ class Db:
         """PRs reviewed since `since_ms` — where threads of ours can exist.
 
         Windowed because every one of these costs an API read on every tick, and
-        the list only ever grows: most of it is PRs that merged months ago.
+        the list only ever grows: most of it is PRs that merged months ago. A PR a
+        human has taken drops out early for the same reason — nobody is going to
+        argue a review thread on something already on its way to prod.
         """
         return [
             int(r["pr"]) for r in self.conn.execute(
                 "SELECT DISTINCT pr FROM reviews WHERE repo=? AND state='published' "
-                "AND created_at >= ? ORDER BY pr DESC",
+                "AND created_at >= ? AND COALESCE(ci_state,'') != 'done' ORDER BY pr DESC",
                 (repo, since_ms),
             )
         ]

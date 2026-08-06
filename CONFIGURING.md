@@ -51,15 +51,21 @@ repos:
     bare: /srv/robbie/repos/name.git      # HOST path
     label: "Code Review"                  # what puts a PR in the queue
     needs_work_label: "❌ NEEDS WORK! ❌"   # the brake; must exist in the repo
+    hold_labels: ["Blocked"]              # waiting on a dependency: no review
+    done_labels: ["Ready for Prod", "Ready to Merge"]  # a human took it; excluding
     review_command: .claude/commands/code-review.md
     slack_channel: C0…
     ci_phrase: run-ci                     # posted verbatim on an `ok`
     ignore_checks: ["CodeRabbit"]         # never counted as a red build
 ```
 
-Then `./scripts/mirror-sync owner/name` and `docker compose up -d`. Both labels have
-to exist in the repo already and `review_command` has to be merged on the base
-branch — robbie creates neither.
+Then `./scripts/mirror-sync owner/name` and `docker compose up -d`. `label` and
+`needs_work_label` have to exist in the repo already and `review_command` has to be
+merged on the base branch — robbie creates neither.
+
+`hold_labels` and `done_labels` are only ever read, never applied, so a name that
+matches nothing is **not** an error — it is a gate that silently never fires. Copy
+them out of the repo rather than typing them: `gh label list --repo owner/name`.
 
 Removing one: delete the entry and restart. Its rows stay in the database, and
 `ci_watch` stops chasing any approval it was still following.
@@ -119,7 +125,8 @@ sqlite3 <state_dir>/robbie.db 'SELECT pr, model, verdict, cost_usd FROM reviews
 
 | | |
 |---|---|
-| this PR, for now | put `needs_work_label` on it — the brake gate holds silently |
+| this PR, for now | put `needs_work_label` or a `hold_labels` one on it — holds silently, comes back when it comes off |
+| this PR, for good | put a `done_labels` one on it — excluding, and it leaves the dashboard and the reply sweep too |
 | this repo | remove its entry, or take the queue label off its PRs |
 | everything, gracefully | `docker compose down` — SIGTERM, and the tick in flight finishes |
 | everything, now | `docker compose kill` — a review in flight is lost, its row reaped at next boot |

@@ -36,11 +36,14 @@ def raw(cid: int, author: str = "rev") -> dict:
     }
 
 
-def page(nodes: list[dict], *, cursor: str | None = None) -> dict:
-    return {"data": {"repository": {"pullRequest": {"reviewThreads": {
-        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
-        "nodes": nodes,
-    }}}}}
+def page(nodes: list[dict], *, cursor: str | None = None, state: str = "OPEN") -> dict:
+    return {"data": {"repository": {"pullRequest": {
+        "state": state,
+        "reviewThreads": {
+            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+            "nodes": nodes,
+        },
+    }}}}
 
 
 # ----- reading them off GitHub -------------------------------------------
@@ -56,7 +59,8 @@ async def test_every_page_of_threads_is_read(monkeypatch):
         return pages[len(calls) - 1]
 
     monkeypatch.setattr(gh_mod, "gh_json", fake)
-    assert [t.comment_id for t in await my_threads("acme/app", 7, "rev")] == [1, 2]
+    read = await my_threads("acme/app", 7, "rev")
+    assert [t.comment_id for t in read.threads] == [1, 2]
     assert any("after=CUR1" in a for a in calls[1]), "the second page has to say where from"
 
 
@@ -74,7 +78,7 @@ async def test_one_page_asks_once(monkeypatch):
 
 async def test_someone_elses_thread_is_not_ours_to_answer(monkeypatch):
     monkeypatch.setattr(gh_mod, "gh_json", _async(page([raw(1, author="dev")])))
-    assert await my_threads("acme/app", 7, "rev") == []
+    assert (await my_threads("acme/app", 7, "rev")).threads == []
 
 
 def _async(value):

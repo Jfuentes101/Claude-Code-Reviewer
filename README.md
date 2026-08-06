@@ -87,7 +87,7 @@ All of these have to hold:
 
 1. it carries the queue label (`Code Review` by default)
 2. the configured reviewer's review is actually requested on it
-3. it does **not** carry the needs-work label
+3. it carries none of the needs-work, `hold_labels` or `done_labels` labels
 4. it changes something, and something new since the last pass
 5. no comment of robbie's is still open there without a reply, a fix or a resolve
 6. CI on the head commit is not red — still running is fine, judged as it stands
@@ -96,6 +96,24 @@ All of these have to hold:
 land without triggering anything. Taking the label off is how the author says
 "ready for another pass" — every review that sets it says so — and an `ok`
 verdict clears it. A blocked PR holds silently: no DM, every tick.
+
+`hold_labels` works the same way for a PR waiting on something that is not the
+author — a dependency PR, typically. It leaves no row either, so the moment the
+label comes off the PR is back in the queue.
+
+`done_labels` is different: it means a human has already reviewed and taken the
+PR, so it is **excluding** — a PR carrying one of these and the queue label is
+not reviewed, whatever else is true of it. It is also the only gate that is
+about money as much as policy. An `ok` verdict submits no review event, so the
+reviewer's request stays pending and the PR sits in the queue until somebody
+merges it, being re-gated every tick — and the gate that rules on it pages the
+whole issue timeline. This label is what ends that, and it retires the PR from
+the reply sweep and the dashboard in the same pass.
+
+One edge, on purpose: removing a `done_labels` label brings the PR back for
+review but does not put it back on the dashboard until it is reviewed again.
+Noticing would cost a query per tick, which is the thing this gate exists to
+avoid.
 
 Gates 4–6 differ in whether they leave a trace. 4 is recorded (there is no new
 code to judge, so it is not looked at again); 5 and 6 are not, so a reply, a
@@ -109,6 +127,12 @@ per PR feeds both gate 5 and the prompt's prior-conversation block, so closing
 afterwards would leave the gate ruling on threads the same tick is about to close,
 and a re-review re-raising findings it conceded seconds later. `robbie threads
 [--pr N]` runs that half alone.
+
+That sweep looks at every PR robbie published on in the last 30 days, and each
+one costs a paginated GraphQL read per tick, so it retires them as it goes: the
+read that fetches the threads returns the PR's state too, and a merged one is
+never read again. Merged only — a closed PR can be reopened, so those age out on
+the window instead. A `done_labels` label retires a PR from the sweep as well.
 
 Dedup key is `repo:pr:head_sha:last_review_requested_at`, so a PR is reviewed
 once and re-reviewed when new commits land. A re-request without new commits
@@ -183,7 +207,9 @@ Robbie reviews someone else's repo, and three things there are not its to create
 
 - **both labels exist** — the queue label (`Code Review`) and `needs_work_label`.
   `gh` resolves label names before it applies them, so a label that does not exist
-  is an error at publish time, not a label created for you.
+  is an error at publish time, not a label created for you. `hold_labels` and
+  `done_labels` are only ever read, so a name that matches nothing is not an
+  error — it is a gate that silently never fires. Copy them from the repo.
 - **the review command is merged on the base branch** — `review_command`
   (`.claude/commands/code-review.md` by default) is read from the *base* of each PR, so a
   PR cannot rewrite the rules it is judged by. Missing, the reviewer exits 3 and

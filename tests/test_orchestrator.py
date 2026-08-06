@@ -20,7 +20,7 @@ from robbie.config import Config, DockerConfig, RepoConfig, ReviewModel, Secrets
 from robbie.contract import Blocks
 from robbie.db import Db
 from robbie.gates import Decision, dedup_key
-from robbie.github import GhError, PrMeta, Thread
+from robbie.github import GhError, PrMeta, PrThreads, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -116,10 +116,10 @@ async def test_the_gate_cache_does_not_cross_repos(orch, cfg, monkeypatch):
     cfg.repos.append(other)
 
     async def threads(slug, number, reviewer):
-        return [Thread(
+        return PrThreads(state="OPEN", threads=[Thread(
             path=f"{slug}#{number}", line=1, resolved=False, outdated=False,
             mine="a finding", replies=(),
-        )]
+        )])
 
     monkeypatch.setattr(orch_mod, "my_threads", threads)
     monkeypatch.setattr(orch_mod, "pr_meta", _async(pr()))
@@ -128,6 +128,67 @@ async def test_the_gate_cache_does_not_cross_repos(orch, cfg, monkeypatch):
     await orch._gate(cfg.repos[0], 7)
     prior = await orch._prior_threads(other, pr())
     assert [t.path for t in prior] == ["acme/other#7"]
+
+
+# ----- a PR a human has taken ----------------------------------------------
+
+
+def _taken(cfg, monkeypatch, labels):
+    """A PR carrying `labels`, with the timeline read wired to fail if reached."""
+    cfg.repos[0] = cfg.repos[0].model_copy(
+        update={"hold_labels": ("Blocked",), "done_labels": ("Ready for Prod",)}
+    )
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(pr(labels=labels)))
+
+    async def boom(*a, **kw):
+        raise AssertionError("the timeline read is what this gate exists to skip")
+
+    monkeypatch.setattr(orch_mod, "last_review_request", boom)
+    monkeypatch.setattr(orch_mod, "my_threads", boom)
+    return cfg.repos[0]
+
+
+async def test_a_done_label_skips_before_the_expensive_read(orch, cfg, monkeypatch):
+    repo = _taken(cfg, monkeypatch, ("Code Review", "Ready for Prod"))
+    _, _, _, decision = await orch._gate(repo, 7)
+    assert decision.action == "skip"
+    assert "a human has it" in decision.reason
+
+
+async def test_a_hold_label_skips_before_the_expensive_read(orch, cfg, monkeypatch):
+    repo = _taken(cfg, monkeypatch, ("Code Review", "Blocked"))
+    _, _, _, decision = await orch._gate(repo, 7)
+    assert decision.action == "hold"
+    assert decision.record is False, "it comes back when the dependency merges"
+
+
+async def test_a_done_label_retires_the_pr_from_the_panel_and_the_sweep(
+    orch, cfg, monkeypatch
+):
+    repo = _taken(cfg, monkeypatch, ("Code Review", "Ready for Prod"))
+    orch.db.start_review(
+        key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
+    )
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    assert orch.db.reviewed_prs("acme/app") == [7]
+
+    await orch._gate(repo, 7)
+
+    assert orch.db.reviewed_prs("acme/app") == [], "the reply sweep stops paying for it"
+    assert orch.db.approved_and_green(0) == [], "and it leaves the dashboard"
+
+
+async def test_a_dry_run_marks_nothing(orch, cfg, monkeypatch):
+    repo = _taken(cfg, monkeypatch, ("Code Review", "Ready for Prod"))
+    orch.dry_run = True
+    orch.db.start_review(
+        key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
+    )
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+
+    await orch._gate(repo, 7)
+
+    assert orch.db.reviewed_prs("acme/app") == [7]
 
 
 # ----- which arm reviews, and what covers for it ---------------------------
@@ -430,7 +491,7 @@ async def test_two_models_on_one_commit_keep_their_own_rows(orch, cfg, monkeypat
     _arms(cfg)
     monkeypatch.setattr(orch_mod, "pr_meta", _async(pr()))
     monkeypatch.setattr(orch_mod, "last_review_request", _async(REQ))
-    monkeypatch.setattr(orch_mod, "my_threads", _async([]))
+    monkeypatch.setattr(orch_mod, "my_threads", _async(PrThreads()))
     monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(False, "-")))
     monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(False, "-")))
     stub_run(monkeypatch, ok_run("ok"))

@@ -8,7 +8,7 @@ observable in production.
 A PR is reviewed when all of these hold:
   1. it carries the queue label                    } the search query, so a PR
   2. the reviewer's review is actually requested   } missing either is invisible
-  3. it does NOT carry the needs-work label
+  3. it carries none of the needs-work, hold or done labels
   4. it changes something, and something new since the last pass
   5. no comment of ours is still open there without a reply, fix or resolve
   6. CI on the head commit is not red (still running is fine)
@@ -48,11 +48,23 @@ class Decision:
 def label_hold(meta: PrMeta, repo: RepoConfig) -> Decision | None:
     """Gate 3 alone, so a caller can rule on it before paying for the rest.
 
-    The normal state of a blocked PR: no DM, and it re-checks every tick.
+    The normal state of a blocked PR: no DM, and it re-checks every tick. Same
+    for `hold_labels`, which say the PR waits on something other than the author
+    — a dependency, usually. Neither records, so removing the label is enough.
     """
-    if meta.has_label(repo.needs_work_label):
-        return Decision("hold", f"{repo.needs_work_label} still on", record=False)
+    for name in (repo.needs_work_label, *repo.hold_labels):
+        if meta.has_label(name):
+            return Decision("hold", f"{name} still on", record=False)
     return None
+
+
+def done_label(meta: PrMeta, repo: RepoConfig) -> str | None:
+    """The label a human puts on once they have taken the PR themselves.
+
+    Excluding, and checked before anything that costs an API call: a PR carrying
+    both this and the queue label is not reviewed, whatever else is true of it.
+    """
+    return next((name for name in repo.done_labels if meta.has_label(name)), None)
 
 
 def already_judged(state: str | None) -> Decision | None:

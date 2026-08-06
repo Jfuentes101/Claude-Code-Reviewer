@@ -68,9 +68,15 @@ class Sweeper:
             if self.db.notice_seen(merged_key(repo.slug, pr)):
                 return None
             async with self.gate_sem:  # a paginated GraphQL read, like the gates
-                threads = await my_threads(repo.slug, pr, repo.reviewer_login)
+                read = await my_threads(repo.slug, pr, repo.reviewer_login)
+            # this read is the sweep's whole cost, so it is also where the PR is
+            # retired: nothing else learns a merge without paying for the answer
+            if read.state == "MERGED":
+                if not self.dry_run and self.db.notice_once(merged_key(repo.slug, pr)):
+                    logger.info("%s#%s merged; done sweeping it", repo.slug, pr)
+                return None
             pending = [
-                t for t in threads
+                t for t in read.threads
                 if t.answered and not self.db.notice_seen(thread_state(repo.slug, pr, t))
             ]
             if not pending:
@@ -169,7 +175,8 @@ def merged_key(slug: str, pr: int) -> str:
     would cost the call it is trying to save.
 
     Merged only, never closed: a closed PR can be reopened, and this key would
-    then keep it unswept for the rest of the window.
+    then keep it unswept for the rest of the window. So a closed PR still costs a
+    read per tick until it ages out — the rarer case, and the safe direction.
     """
     return f"merged:{slug}:{pr}"
 

@@ -30,7 +30,7 @@ from robbie.ci_watch import CiWatch
 from robbie.config import Choice, Config, RepoConfig, Secrets
 from robbie.contract import Blocks, preamble, threads_block
 from robbie.db import Db
-from robbie.gates import Decision, already_judged, dedup_key, evaluate, label_hold
+from robbie.gates import Decision, already_judged, dedup_key, done_label, evaluate, label_hold
 from robbie.github import (
     GhError,
     PrMeta,
@@ -155,8 +155,11 @@ class Orchestrator:
     async def _status_row(self, repo: RepoConfig, pr: int) -> str:
         async with self._gate_sem:  # two gh calls each; a full queue is a lot at once
             meta = await pr_meta(repo.slug, pr)
-            if meta.has_label(repo.needs_work_label):
-                mark = f"⛔ blocked ({repo.needs_work_label} still on)"
+            # through the gates, not a second reading of the same labels
+            if (held := label_hold(meta, repo)) is not None:
+                mark = f"⛔ {held.reason}"
+            elif (done := done_label(meta, repo)) is not None:
+                mark = f"✓ {done} — a human has it"
             else:
                 requested_at = await _requested_at_or_blank(repo.slug, pr, repo.reviewer_login)
                 prior = self.db.get_review(
@@ -210,6 +213,14 @@ class Orchestrator:
         if (held := label_hold(meta, repo)) is not None:
             return meta, "", "", held
 
+        # the expensive one: `last_review_request` pages the whole issue timeline,
+        # and an approved PR sits in the queue until somebody merges it. This is
+        # what stops it being re-gated every tick for as long as it takes.
+        if (done := done_label(meta, repo)) is not None:
+            if not self.dry_run and self.db.settle_done(repo.slug, pr):
+                logger.info("%s#%s: %s — a human has it; done reviewing", repo.slug, pr, done)
+            return meta, "", "", Decision("skip", f"{done} — a human has it")
+
         requested_at = await last_review_request(repo.slug, pr, repo.reviewer_login)
         key = dedup_key(repo.slug, pr, meta.head_sha, requested_at)
         prior = self.db.get_review(key)
@@ -217,7 +228,7 @@ class Orchestrator:
             return meta, key, requested_at, judged
 
         # one query serves both the gate and the prompt's prior-conversation block
-        threads = await my_threads(repo.slug, pr, repo.reviewer_login)
+        threads = (await my_threads(repo.slug, pr, repo.reviewer_login)).threads
         self._threads[repo.slug, pr] = threads
         return meta, key, requested_at, evaluate(
             meta,
@@ -498,7 +509,7 @@ class Orchestrator:
         if cached is not None:
             return cached
         try:
-            return await my_threads(repo.slug, meta.number, repo.reviewer_login)
+            return (await my_threads(repo.slug, meta.number, repo.reviewer_login)).threads
         except GhError:
             logger.warning("%s#%s: could not read prior threads", repo.slug, meta.number)
             return []

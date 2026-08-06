@@ -19,7 +19,7 @@ from robbie.budget import Verdict
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.contract import parse_thread_verdicts, thread_preamble
 from robbie.db import Db
-from robbie.github import GhError, PrMeta, Thread
+from robbie.github import GhError, PrMeta, PrThreads, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -166,6 +166,19 @@ def _async(value):
     return _call
 
 
+def _pr_threads(threads, state="OPEN"):
+    return PrThreads(state=state, threads=threads)
+
+
+def _read(threads, state="OPEN"):
+    """What `my_threads` hands back: the threads, and the PR's own state.
+
+    They arrive together because that one read is the sweep's whole cost — it is
+    where a merge gets noticed, since asking on purpose would cost the call it saves.
+    """
+    return _async(_pr_threads(threads, state))
+
+
 @pytest.fixture
 def acted(monkeypatch) -> dict:
     seen: dict = {"resolved": [], "replied": []}
@@ -190,7 +203,7 @@ def stub_run(monkeypatch, text: str) -> None:
 
 
 async def test_a_thread_we_spoke_last_on_is_left_alone(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([thread(555)]))
+    monkeypatch.setattr(threads_mod, "my_threads", _read([thread(555)]))
     ran = []
     monkeypatch.setattr(threads_mod, "run_review", lambda *a, **k: ran.append(1))
     assert await orch.answer_threads() == []
@@ -199,7 +212,7 @@ async def test_a_thread_we_spoke_last_on_is_left_alone(orch, monkeypatch, acted)
 
 async def test_after_answering_it_will_not_answer_again(orch, monkeypatch, acted):
     """The convergence property. Two parties who both always answer never stop."""
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "cannot happen"), ("rev", "an orphan reaches it")),
                mine_is_last=True),
     ]))
@@ -210,7 +223,7 @@ async def test_after_answering_it_will_not_answer_again(orch, monkeypatch, acted
 
 
 async def test_the_author_coming_back_again_reopens_our_move(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "no"), ("rev", "yes"), ("dev", "still no")),
                mine_is_last=False),
     ]))
@@ -223,7 +236,7 @@ async def test_the_author_coming_back_again_reopens_our_move(orch, monkeypatch, 
 async def test_dry_run_writes_nothing_and_starts_no_container(orch, monkeypatch, acted):
     """`--dry-run` writes nothing here either, and pays for no container to decide."""
     orch.dry_run = True
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "fixed in abc123"),))
     ]))
     ran = []
@@ -234,7 +247,7 @@ async def test_dry_run_writes_nothing_and_starts_no_container(orch, monkeypatch,
 
 
 async def test_named_prs_do_not_have_to_be_in_the_db(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "fixed"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -245,7 +258,7 @@ async def test_named_prs_do_not_have_to_be_in_the_db(orch, monkeypatch, acted):
 async def test_one_thread_github_refuses_does_not_discard_the_others(orch, monkeypatch):
     """The container is already paid for, so a write GitHub will not take costs one
     thread — not every decision the run made after it."""
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "fixed"),)),
         thread(666, replies=(("dev", "also fixed"),)),
     ]))
@@ -278,7 +291,7 @@ async def test_the_tick_answers_replies_before_it_reads_the_queue(orch, monkeypa
 
     async def threads(*a, **k):
         log.append("threads")
-        return [thread(555, replies=(("dev", "fixed in abc123"),))]
+        return _pr_threads([thread(555, replies=(("dev", "fixed in abc123"),))])
 
     async def resolve(node_id, *, dry_run=False):
         log.append("resolve")
@@ -313,7 +326,7 @@ async def test_the_spend_gate_stops_the_answering_too(orch, monkeypatch, acted):
 
 async def test_an_outdated_thread_is_still_ours_to_close(orch, monkeypatch, acted):
     """The code moving is usually the fix landing — the likeliest thread to close."""
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, outdated=True, replies=(("dev", "fixed in abc123"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -329,14 +342,14 @@ def test_an_outdated_thread_says_a_reply_would_be_invisible():
 
 
 async def test_a_resolved_thread_is_ignored(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, resolved=True, replies=(("dev", "fixed"),))
     ]))
     assert await orch.answer_threads() == []
 
 
 async def test_conceding_closes_the_thread_and_says_nothing(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "the payout is always set here"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -348,7 +361,7 @@ async def test_conceding_closes_the_thread_and_says_nothing(orch, monkeypatch, a
 
 
 async def test_pushing_back_posts_the_reply_and_tells_the_owner(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "cannot happen"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nreply\nAn orphaned payment reaches it.\n<<<END>>>")
@@ -360,7 +373,7 @@ async def test_pushing_back_posts_the_reply_and_tells_the_owner(orch, monkeypatc
 
 
 async def test_leave_touches_nothing(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "depends on the other PR"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nleave\n<<<END>>>")
@@ -375,7 +388,7 @@ async def test_a_left_thread_is_not_paid_for_twice(orch, monkeypatch, acted):
     Without a record of having judged it, every tick from here on spawns another
     container to reach the same conclusion.
     """
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "depends on the other PR"),))
     ]))
     spawns = []
@@ -391,13 +404,13 @@ async def test_a_left_thread_is_not_paid_for_twice(orch, monkeypatch, acted):
 
 
 async def test_a_new_reply_brings_a_left_thread_back(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "depends on the other PR"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nleave\n<<<END>>>")
     await orch.answer_threads()
 
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "depends on the other PR"), ("dev", "that one merged")))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -406,7 +419,7 @@ async def test_a_new_reply_brings_a_left_thread_back(orch, monkeypatch, acted):
 
 
 async def test_a_skipped_thread_is_not_retried_blindly_either(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([thread(555, replies=(("dev", "?"),))]))
+    monkeypatch.setattr(threads_mod, "my_threads", _read([thread(555, replies=(("dev", "?"),))]))
     stub_run(monkeypatch, "no blocks at all")
     assert "1 unanswered" in (await orch.answer_threads())[0].detail
     assert await orch.answer_threads() == []
@@ -414,7 +427,7 @@ async def test_a_skipped_thread_is_not_retried_blindly_either(orch, monkeypatch,
 
 async def test_the_threads_pass_records_what_it_spent(orch, monkeypatch, acted):
     """It spawns the same container a review does, so the budget has to see it."""
-    monkeypatch.setattr(threads_mod, "my_threads", _async([thread(555, replies=(("dev", "x"),))]))
+    monkeypatch.setattr(threads_mod, "my_threads", _read([thread(555, replies=(("dev", "x"),))]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
     await orch.answer_threads()
     assert orch.db.spend_since(0) == pytest.approx(0.05)
@@ -422,7 +435,7 @@ async def test_the_threads_pass_records_what_it_spent(orch, monkeypatch, acted):
 
 async def test_the_budget_is_re_checked_before_each_container(orch, monkeypatch, acted):
     """The sweep can run several containers, and the reading ages between them."""
-    monkeypatch.setattr(threads_mod, "my_threads", _async([thread(555, replies=(("dev", "x"),))]))
+    monkeypatch.setattr(threads_mod, "my_threads", _read([thread(555, replies=(("dev", "x"),))]))
     calls = []
 
     def gate(*a, **k):
@@ -439,7 +452,7 @@ async def test_the_budget_is_re_checked_before_each_container(orch, monkeypatch,
 
 
 async def test_a_thread_the_model_skipped_is_left_alone_not_guessed(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "?"),)), thread(666, replies=(("dev", "?"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -449,7 +462,7 @@ async def test_a_thread_the_model_skipped_is_left_alone_not_guessed(orch, monkey
 
 
 async def test_a_mixed_batch_is_handled_in_one_container(orch, monkeypatch, acted):
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(1, replies=(("dev", "a"),)),
         thread(2, replies=(("dev", "b"),)),
         thread(3, replies=(("dev", "c"),)),
@@ -477,7 +490,7 @@ async def test_a_closed_pr_is_skipped_before_spawning_anything(orch, monkeypatch
         number=7, title="t", url="u", author="dev", head_sha="abc",
         changed_files=1, labels=(), checks=(), state="MERGED",
     )))
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "done"),))
     ]))
     ran = []
@@ -498,7 +511,7 @@ async def test_a_merged_pr_stops_costing_a_read_on_every_tick(orch, monkeypatch,
 
     async def counting(*a, **kw):
         reads.append(1)
-        return [thread(555, replies=(("dev", "done"),))]
+        return _pr_threads([thread(555, replies=(("dev", "done"),))])
 
     monkeypatch.setattr(threads_mod, "my_threads", counting)
     monkeypatch.setattr(threads_mod, "run_review", lambda *a, **k: reads.append("ran"))
@@ -508,12 +521,68 @@ async def test_a_merged_pr_stops_costing_a_read_on_every_tick(orch, monkeypatch,
     assert reads == [1], "one read ever, and no container either time"
 
 
+async def test_a_merge_is_noticed_on_the_read_the_sweep_already_pays_for(
+    orch, monkeypatch, acted
+):
+    """Nothing else learns a PR merged without buying the answer, and the common
+    case — merged with nothing waiting — never reaches the code that reads a PR.
+    """
+    reads = []
+
+    async def counting(*a, **kw):
+        reads.append(1)
+        return _pr_threads([], state="MERGED")
+
+    async def never(*a, **kw):
+        raise AssertionError("asking on purpose costs the call this is meant to save")
+
+    monkeypatch.setattr(threads_mod, "my_threads", counting)
+    monkeypatch.setattr(threads_mod, "pr_meta", never)
+
+    assert await orch.answer_threads() == []
+    assert await orch.answer_threads() == []
+    assert reads == [1], "one read ever, with no threads to justify a second look"
+
+
+async def test_an_open_pr_with_nothing_pending_is_still_read_next_tick(
+    orch, monkeypatch, acted
+):
+    """The inverse, which is what keeps the retirement honest: a live PR can grow
+    a reply at any time, so cheapness must never come from forgetting about it."""
+    reads = []
+
+    async def counting(*a, **kw):
+        reads.append(1)
+        return _pr_threads([thread(555)])
+
+    monkeypatch.setattr(threads_mod, "my_threads", counting)
+    assert await orch.answer_threads() == []
+    assert await orch.answer_threads() == []
+    assert reads == [1, 1]
+
+
+async def test_an_unreadable_state_retires_nothing(orch, monkeypatch, acted):
+    """Same doctrine as the rest of github.py: a blank is not a merge."""
+    monkeypatch.setattr(threads_mod, "my_threads", _read([thread(555)], state=""))
+    await orch.answer_threads()
+    assert not orch.db.notice_seen(threads_mod.merged_key("acme/app", 7))
+
+
+async def test_a_dry_sweep_does_not_retire_on_the_thread_read_either(
+    orch, monkeypatch, acted
+):
+    monkeypatch.setattr(threads_mod, "my_threads", _read([], state="MERGED"))
+    orch.dry_run = True
+    await orch.answer_threads()
+    assert not orch.db.notice_seen(threads_mod.merged_key("acme/app", 7))
+
+
 async def test_a_dry_sweep_does_not_retire_the_pr_the_real_one_has_to(orch, monkeypatch, acted):
     monkeypatch.setattr(threads_mod, "pr_meta", _async(PrMeta(
         number=7, title="t", url="u", author="dev", head_sha="abc",
         changed_files=1, labels=(), checks=(), state="MERGED",
     )))
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "done"),))
     ]))
     orch.dry_run = True
@@ -536,7 +605,7 @@ async def test_only_prs_with_published_reviews_are_looked_at(orch, monkeypatch, 
 
     async def spy(repo, pr, reviewer):
         looked.append(pr)
-        return []
+        return _pr_threads([])
 
     monkeypatch.setattr(threads_mod, "my_threads", spy)
     await orch.answer_threads()
@@ -552,7 +621,7 @@ async def test_no_publish_acts_on_nothing(orch, monkeypatch):
         return PublishResult(False, "dry run")
 
     monkeypatch.setattr(publish_mod, "resolve_thread", fake_resolve)
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "x"),))
     ]))
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -568,7 +637,7 @@ async def test_one_unreachable_pr_does_not_take_the_sweep_down(orch, monkeypatch
     async def flaky(repo, pr, reviewer):
         if pr == 7:
             raise GhError("502 Bad Gateway")
-        return [thread(555, replies=(("dev", "fixed"),))]
+        return _pr_threads([thread(555, replies=(("dev", "fixed"),))])
 
     monkeypatch.setattr(threads_mod, "my_threads", flaky)
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
@@ -578,7 +647,7 @@ async def test_one_unreachable_pr_does_not_take_the_sweep_down(orch, monkeypatch
 
 async def test_a_pr_that_vanishes_mid_sweep_does_not_take_it_down(orch, monkeypatch, acted):
     """The sweep reads the PR again, and that read can fail like any other."""
-    monkeypatch.setattr(threads_mod, "my_threads", _async([
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
         thread(555, replies=(("dev", "fixed"),))
     ]))
 
@@ -599,7 +668,7 @@ async def test_the_prs_are_swept_at_the_same_time(orch, monkeypatch, acted):
 
     async def slow(repo, pr, reviewer):
         await together.wait()  # only passes if all three reads are in flight at once
-        return []
+        return _pr_threads([])
 
     monkeypatch.setattr(threads_mod, "my_threads", slow)
     await asyncio.wait_for(orch.answer_threads(), timeout=5)

@@ -36,6 +36,23 @@ def test_a_failed_run_leaves_the_key_open_for_a_retry(db):
     assert not db.sha_was_judged("acme/app", 7, "abc123"), "a crash is not a judgement"
 
 
+def test_settle_done_retires_every_row_for_the_pr(db):
+    """Not just the approval: the reply sweep reads needs-work passes too."""
+    for key, verdict in ((KEY, "ok"), (KEY + ":2", "needs-work")):
+        start(db, key=key)
+        db.finish_review(key, state="published", verdict=verdict)
+    assert db.settle_done("acme/app", 7) == 2
+    assert db.reviewed_prs("acme/app") == []
+    assert db.settle_done("acme/app", 7) == 0, "a no-op once it is already done"
+
+
+def test_settle_done_leaves_other_prs_alone(db):
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok")
+    assert db.settle_done("acme/app", 999) == 0
+    assert db.reviewed_prs("acme/app") == [7]
+
+
 def test_a_recorded_hold_counts_as_judged(db):
     db.record_hold(key=KEY, repo="acme/app", pr=7, head_sha="abc123",
                    requested_at="2026-01-01T00:00:00Z", reason="changes no files")

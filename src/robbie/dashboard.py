@@ -138,10 +138,18 @@ CI_TONE = {"green": ("ok", "ready for a human"), "red": ("bad", "build went red"
            "waiting": ("warn", "waiting on the build")}
 
 
+READY_DAYS = 30
+
+
 def _ready(cfg: Config, db: Db) -> str:
-    """Approvals and what the build robbie asked for made of them."""
+    """Approvals and what the build robbie asked for made of them.
+
+    The window is a backstop, not the way rows leave: a PR drops off when someone
+    labels it taken. Clocking it any tighter hid the ones nobody had got to yet,
+    which are the only ones this panel is for.
+    """
     rows = []
-    for r in db.approved_and_green(budget.midnight_ms() - 7 * 86_400_000):
+    for r in db.approved_and_green(budget.midnight_ms() - READY_DAYS * 86_400_000):
         tone, label = CI_TONE.get(r["ci_state"] or "", ("", r["ci_state"] or "—"))
         model = r["model"] or "account"
         third = ' <span class="dim">3rd-party</span>' if model in cfg.endpoint_models else ""

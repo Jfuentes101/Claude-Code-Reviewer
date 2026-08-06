@@ -24,7 +24,7 @@ from robbie.config import (
 )
 from robbie.contract import Blocks
 from robbie.db import Db
-from robbie.github import PrMeta
+from robbie.github import PrMeta, PrThreads
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -67,7 +67,7 @@ def orch(tmp_path, monkeypatch):
         db, FakeSlack(),  # type: ignore[arg-type]
     )
     monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "cleared")))
-    monkeypatch.setattr(orch_mod, "my_threads", _async([]))
+    monkeypatch.setattr(orch_mod, "my_threads", _async(PrThreads()))
     monkeypatch.setattr(o, "_token_login", _async("robbie-bot"))
     yield o
     db.close()
@@ -240,7 +240,7 @@ def pr_meta_for(number: int) -> PrMeta:
 def stub_gates(monkeypatch, gates: Gates) -> None:
     monkeypatch.setattr(orch_mod, "pr_meta", gates.meta)
     monkeypatch.setattr(orch_mod, "last_review_request", _async("2026-01-01T00:00:00Z"))
-    monkeypatch.setattr(orch_mod, "my_threads", _async([]))
+    monkeypatch.setattr(orch_mod, "my_threads", _async(PrThreads()))
 
 
 async def test_the_gate_phase_has_its_own_cap(orch, monkeypatch):

@@ -5,16 +5,19 @@ from __future__ import annotations
 import pytest
 
 from robbie.config import RepoConfig
-from robbie.gates import already_judged, dedup_key, evaluate, label_hold
+from robbie.gates import already_judged, dedup_key, done_label, evaluate, label_hold
 from robbie.github import PrMeta, failing_checks
 
 NW = "❌ NEEDS WORK! ❌"
+# the label names as the repo spells them; the match is exact
+DONE = ("Ready for Prod", "Ready to Merge")
 
 
 @pytest.fixture
 def repo(tmp_path) -> RepoConfig:
     return RepoConfig(
-        slug="acme/app", reviewer_login="rev", bare=tmp_path / "app.git", needs_work_label=NW
+        slug="acme/app", reviewer_login="rev", bare=tmp_path / "app.git", needs_work_label=NW,
+        hold_labels=("Blocked",), done_labels=DONE,
     )
 
 
@@ -108,6 +111,55 @@ def test_a_key_is_only_done_once_it_was_judged(state, action):
 def test_the_label_gate_stands_alone_for_the_caller_that_short_circuits(repo):
     assert label_hold(pr(labels=(NW,)), repo).action == "hold"
     assert label_hold(pr(), repo) is None
+
+
+# ----- hold_labels: waiting on something that is not the author ---------
+
+
+def test_a_hold_label_holds_and_leaves_no_trace(repo):
+    d = decide(repo, pr(labels=("Code Review", "Blocked")))
+    assert d.action == "hold"
+    assert d.record is False, "removing the label has to bring it straight back"
+    assert d.dm is None, "a dependency is not news for the operator every tick"
+
+
+def test_a_hold_label_outranks_everything_that_would_review(repo):
+    blocked = pr(labels=("Code Review", "Blocked"), changed_files=9)
+    assert decide(repo, blocked, threads=0).action == "hold"
+    assert label_hold(blocked, repo) is not None
+
+
+def test_no_hold_labels_configured_changes_nothing(tmp_path):
+    plain = RepoConfig(slug="acme/app", reviewer_login="rev", bare=tmp_path / "a.git")
+    assert label_hold(pr(labels=("Code Review", "Blocked")), plain) is None
+
+
+# ----- done_labels: a human already took it -----------------------------
+
+
+@pytest.mark.parametrize("name", DONE)
+def test_a_done_label_is_excluding_even_next_to_the_queue_label(repo, name):
+    assert done_label(pr(labels=("Code Review", name)), repo) == name
+
+
+def test_a_done_label_wins_over_every_reviewable_condition(repo):
+    """The one gate that holds whatever else is true of the PR."""
+    taken = pr(
+        labels=("Code Review", "Ready for Prod"),
+        changed_files=12,
+        checks=({"context": "ci/build", "state": "SUCCESS"},),
+    )
+    assert done_label(taken, repo) == "Ready for Prod"
+
+
+def test_an_unlabelled_pr_is_not_done(repo):
+    assert done_label(pr(), repo) is None
+    assert done_label(pr(labels=("Code Review", NW)), repo) is None
+
+
+def test_no_done_labels_configured_changes_nothing(tmp_path):
+    plain = RepoConfig(slug="acme/app", reviewer_login="rev", bare=tmp_path / "a.git")
+    assert done_label(pr(labels=("Ready for Prod",)), plain) is None
 
 
 # ----- failing_checks: both spellings, and the CodeRabbit exception -----

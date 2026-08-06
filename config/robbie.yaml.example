@@ -70,6 +70,12 @@ repos:
     bare: /srv/robbie/repos/webapp.git
     label: "Code Review"
     needs_work_label: "❌ NEEDS WORK! ❌"
+    # waiting on something that is not the author — a dependency PR, usually. No
+    # review while it is on, and it comes back by itself when it comes off.
+    hold_labels: ["Blocked"]
+    # a human already reviewed and approved it. Excluding: a PR carrying one of
+    # these AND `label` is not reviewed, and it leaves the dashboard too.
+    done_labels: ["Ready for Prod", "Ready to Merge"]
     review_command: .claude/commands/code-review.md
     slack_channel: C01234567
     image: robbie-reviewer:latest
