@@ -628,3 +628,18 @@ async def test_a_dry_pass_does_not_consume_the_ci_state(orch, monkeypatch):
                         lambda *a, **k: _mark(told, PublishResult(False, "dry run")))
     await orch.watch_ci()
     assert _ci_state(orch, key) == "waiting", "the real tick still owes the comment"
+
+
+async def test_github_going_down_does_not_lose_the_red_build_note(orch, monkeypatch):
+    """It also must not take the tick down: the queue is read after this."""
+    key = _approve(orch)
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+        pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
+    ))
+
+    async def boom(*a, **k):
+        raise GhError("502 Bad Gateway")
+
+    monkeypatch.setattr(publish_mod, "report_red_build", boom)
+    assert await orch.watch_ci() == []
+    assert _ci_state(orch, key) == "waiting", "unsettled, so the next tick posts it"
