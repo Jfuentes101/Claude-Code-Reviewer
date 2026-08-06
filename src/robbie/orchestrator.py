@@ -176,25 +176,36 @@ class Orchestrator:
         the ball stays with the author. That is also what keeps gate 5 honest —
         conceded threads get closed instead of blocking reviews forever.
         """
-        out: list[Outcome] = []
-        for repo in self.cfg.repos:
-            if slug and repo.slug != slug:
-                continue
-            # named PRs override the DB: threads can predate robbie's own passes
-            for pr in only or self.db.reviewed_prs(repo.slug, since_ms=_sweep_from()):
-                try:
-                    threads = await my_threads(repo.slug, pr, repo.reviewer_login)
-                except GhError as ex:
-                    logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
+        jobs: list[asyncio.Task[Outcome | None]] = []
+        async with asyncio.TaskGroup() as tg:
+            for repo in self.cfg.repos:
+                if slug and repo.slug != slug:
                     continue
-                pending = [
-                    t for t in threads
-                    if t.answered and not self.db.notice_seen(_thread_state(repo.slug, pr, t))
-                ]
-                if not pending:
-                    continue
-                out.append(await self._answer_one(repo, pr, pending))
-        return out
+                # named PRs override the DB: threads can predate robbie's own passes
+                for pr in only or self.db.reviewed_prs(repo.slug, since_ms=_sweep_from()):
+                    jobs.append(tg.create_task(self._sweep_one(repo, pr)))
+        return [out for job in jobs if (out := job.result()) is not None]
+
+    async def _sweep_one(self, repo: RepoConfig, pr: int) -> Outcome | None:
+        """One PR's replies. Same shape as the queue phase, and for the same two
+        reasons: a thread read per PR in series is the slowest thing in the tick,
+        and one unreachable PR must not take the whole sweep down with it."""
+        try:
+            async with self._gate_sem:  # a paginated GraphQL read, like the gates
+                threads = await my_threads(repo.slug, pr, repo.reviewer_login)
+            pending = [
+                t for t in threads
+                if t.answered and not self.db.notice_seen(_thread_state(repo.slug, pr, t))
+            ]
+            if not pending:
+                return None
+            return await self._answer_one(repo, pr, pending)
+        except GhError as ex:
+            logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
+            return None
+        except Exception as ex:  # noqa: BLE001 — inside a TaskGroup it cancels the siblings
+            logger.exception("%s#%s: unhandled error answering replies", repo.slug, pr)
+            return Outcome(repo.slug, pr, "failed", str(ex))
 
     async def watch_ci(self) -> list[Outcome]:
         """What the build said about a commit robbie approved.
@@ -227,16 +238,22 @@ class Orchestrator:
             outcome = ci_outcome(meta, ignore=repo.ignore_checks)
             if outcome == "waiting":
                 continue
-            self._settle_ci(row["key"], outcome)
             by = row["model"] or "the account's model"
             if outcome == "green":
+                self._settle_ci(row["key"], outcome)
                 logger.info("%s: green after %s approved it — ready for a human", where, by)
                 out.append(Outcome(row["repo"], row["pr"], "ready", f"green after {by}"))
                 continue
             red = tuple(failing_checks(meta, ignore=repo.ignore_checks))
-            result = await publish.report_red_build(
-                repo, meta, red, dry_run=self.dry_run or self.no_publish
-            )
+            try:
+                result = await publish.report_red_build(
+                    repo, meta, red, dry_run=self.dry_run or self.no_publish
+                )
+            except GhError as ex:
+                # left unsettled on purpose: the next tick owes the author this note
+                logger.warning("%s: could not post the red-build note: %s", where, ex)
+                continue
+            self._settle_ci(row["key"], outcome)
             logger.info("%s: red after %s approved it — %s", where, by, result.detail)
             out.append(Outcome(row["repo"], row["pr"], "ci-note", result.detail))
         return out

@@ -7,6 +7,7 @@ both always answer never stop.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from robbie.budget import Verdict
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.contract import parse_thread_verdicts, thread_preamble
 from robbie.db import Db
-from robbie.github import PrMeta, Thread
+from robbie.github import GhError, PrMeta, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -495,3 +496,48 @@ async def test_no_publish_acts_on_nothing(orch, monkeypatch):
     stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
     await orch.answer_threads()
     assert dry == [True]
+
+
+async def test_one_unreachable_pr_does_not_take_the_sweep_down(orch, monkeypatch, acted):
+    """The sweep runs before the queue read, so losing it loses the whole tick."""
+    orch.db.start_review(key="k9", repo="acme/app", pr=9, head_sha="def", requested_at="t")
+    orch.db.finish_review("k9", state="published", verdict="needs-work")
+
+    async def flaky(repo, pr, reviewer):
+        if pr == 7:
+            raise GhError("502 Bad Gateway")
+        return [thread(555, replies=(("dev", "fixed"),))]
+
+    monkeypatch.setattr(orch_mod, "my_threads", flaky)
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    out = await orch.answer_threads()
+    assert [o.pr for o in out] == [9], "the reachable PR was still swept"
+
+
+async def test_a_pr_that_vanishes_mid_sweep_does_not_take_it_down(orch, monkeypatch, acted):
+    """`_answer_one` reads the PR again, and that read can fail like any other."""
+    monkeypatch.setattr(orch_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "fixed"),))
+    ]))
+
+    async def gone(*a, **k):
+        raise GhError("Could not resolve to a PullRequest")
+
+    monkeypatch.setattr(orch_mod, "pr_meta", gone)
+    assert await orch.answer_threads() == []
+
+
+async def test_the_prs_are_swept_at_the_same_time(orch, monkeypatch, acted):
+    """One paginated read per PR in series is the slowest thing in a tick; the
+    queue phase caps the same shape of work with the same semaphore."""
+    for n in (8, 9):
+        orch.db.start_review(key=f"k{n}", repo="acme/app", pr=n, head_sha="d", requested_at="t")
+        orch.db.finish_review(f"k{n}", state="published", verdict="needs-work")
+    together = asyncio.Barrier(3)
+
+    async def slow(repo, pr, reviewer):
+        await together.wait()  # only passes if all three reads are in flight at once
+        return []
+
+    monkeypatch.setattr(orch_mod, "my_threads", slow)
+    await asyncio.wait_for(orch.answer_threads(), timeout=5)
