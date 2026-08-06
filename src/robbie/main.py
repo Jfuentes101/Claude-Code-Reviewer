@@ -131,7 +131,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     db = Db(cfg.db_path)
     slack = Slack(
-        token=secrets.slack_bot_token,
+        token=secrets.slack_bot_token.get_secret_value(),
         owner_id=cfg.slack.owner_id,
         users_file=cfg.slack.users_file,
         approved_ids=tuple(cfg.slack.approved_ids),
@@ -165,18 +165,20 @@ async def _run(args: argparse.Namespace) -> int:
             return 0
 
         if args.command == "once":
-            outcomes = await asyncio.gather(
+            forced = await asyncio.gather(
                 *(orch.review_one(args.repo, pr) for pr in args.pr),
                 return_exceptions=True,
             )
             failed = 0
-            for pr, outcome in zip(args.pr, outcomes, strict=True):
-                if isinstance(outcome, Exception):
-                    logger.error("%s#%s crashed: %s", args.repo, pr, outcome)
+            for pr, result in zip(args.pr, forced, strict=True):
+                # BaseException, not Exception: `return_exceptions` hands back a
+                # cancellation too, and that has no `.action` to read either
+                if isinstance(result, BaseException):
+                    logger.error("%s#%s crashed: %s", args.repo, pr, result)
                     failed += 1
                     continue
-                logger.info("%s", outcome)
-                failed += outcome.action == "failed"
+                logger.info("%s", result)
+                failed += result.action == "failed"
             return 1 if failed else 0
 
         orphaned = db.reap_running()

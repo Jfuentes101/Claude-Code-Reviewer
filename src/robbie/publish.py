@@ -99,6 +99,9 @@ async def publish_review(
         )
         return PublishResult(False, "dry run", inline=len(anchored.comments))
 
+    # a review carries its comments in one payload, so they all land or none do;
+    # posted one at a time they land one at a time, and `inline` has to say so
+    posted = len(anchored.comments)
     if as_review:
         payload = json.dumps({
             "body": full,
@@ -116,6 +119,7 @@ async def publish_review(
             "--input", "-", "--jq", ".html_url",
             stdin=json.dumps({"body": full}),
         )).strip()
+        posted = 0
         for comment in anchored.comments:
             try:
                 await gh(
@@ -127,13 +131,18 @@ async def publish_review(
                 logger.warning(
                     "inline comment failed %s:%s — %s", comment["path"], comment["line"], ex
                 )
+                continue
+            posted += 1
 
     await _set_label(repo, meta.number, add=True)
     verb = "requested changes" if as_review else "commented"
+    missed = len(anchored.comments) - posted
     return PublishResult(
         True,
-        f"{verb} + {len(anchored.comments)} inline + set {repo.needs_work_label!r}",
-        inline=len(anchored.comments),
+        f"{verb} + {posted} inline"
+        + (f" ({missed} rejected)" if missed else "")
+        + f" + set {repo.needs_work_label!r}",
+        inline=posted,
         url=url or None,
     )
 

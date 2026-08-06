@@ -14,9 +14,11 @@ from __future__ import annotations
 import html
 import logging
 import shutil
+from collections.abc import Collection
 from datetime import UTC, datetime
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from robbie import budget
@@ -83,8 +85,8 @@ def _card(value: object, label: str, tone: str = "") -> str:
 def _table(
     headers: list[str],
     rows: list[list[str]],
-    numeric: set[int] = frozenset(),
-    wide: set[int] = frozenset(),
+    numeric: Collection[int] = frozenset(),
+    wide: Collection[int] = frozenset(),
 ) -> str:
     if not rows:
         return '<p class="sub">nothing recorded yet</p>'
@@ -288,11 +290,13 @@ def _transcript_body(cfg: Config, name: str) -> str | None:
 class _Handler(BaseHTTPRequestHandler):
     server_version = "robbie"
 
-    def __init__(self, cfg: Config, secrets: Secrets | None, *args, **kwargs) -> None:
+    def __init__(
+        self, cfg: Config, secrets: Secrets | None, *args: Any, **kwargs: Any
+    ) -> None:
         self.cfg, self.secrets = cfg, secrets
         super().__init__(*args, **kwargs)
 
-    def log_message(self, fmt: str, *args) -> None:
+    def log_message(self, fmt: str, *args: Any) -> None:
         logger.debug("dashboard %s", fmt % args)
 
     def _send(self, body: str, status: int = 200, kind: str = "text/html") -> None:

@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+import sqlite3
 from dataclasses import dataclass
-from typing import Any
 
 from robbie import publish
 from robbie.config import Config, RepoConfig
@@ -49,7 +48,7 @@ class CiWatch:
                 jobs.append(tg.create_task(self._one(repo, row)))
         return [out for job in jobs if (out := job.result()) is not None]
 
-    async def _one(self, repo: RepoConfig, row: Mapping[str, Any]) -> Outcome | None:
+    async def _one(self, repo: RepoConfig, row: sqlite3.Row) -> Outcome | None:
         """One approval's build. Concurrent and capped like every other gh read:
         a day of approvals read in series is the slowest thing in the tick."""
         where = f"{row['repo']}#{row['pr']}"

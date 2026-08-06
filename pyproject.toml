@@ -12,7 +12,11 @@ dependencies = [
 [project.optional-dependencies]
 # the mcp sidecars ship as their own images; this is for running them locally
 mcp = ["mcp>=2.0", "uvicorn>=0.30"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4", "mcp>=2.0", "uvicorn>=0.30"]
+dev = [
+    "pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4",
+    "mypy>=1.10", "types-PyYAML",
+    "mcp>=2.0", "uvicorn>=0.30",
+]
 
 [project.scripts]
 robbie = "robbie.main:main"
@@ -34,3 +38,18 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+# Much of why this is safe to change is carried by the types rather than by a
+# test: which arm a review runs on, whether a gate ruled, whether a verdict parsed.
+[tool.mypy]
+files = ["src"]
+python_version = "3.11"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# the sidecar's SDK ships no stubs, and its decorators are the whole surface
+module = ["mcp.*", "starlette.*"]
+ignore_missing_imports = true

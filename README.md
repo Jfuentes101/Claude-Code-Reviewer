@@ -574,9 +574,13 @@ language runtimes out of the base image is what keeps it small.
 ## Tests
 
 ```bash
-pip install -e ".[dev]" && pytest
+pip install -e ".[dev]" && ruff check . && mypy && pytest
 ```
 
 The gates, the block parser, the anchoring and the state semantics are pure and
 covered. That is deliberate: the policy is the part that must not be
 "observable only in production".
+
+`mypy` runs in CI alongside the tests because a good deal of what makes this safe
+to change is carried by the types rather than by a test: which arm a review runs
+on, whether a gate ruled, whether a verdict parsed at all.

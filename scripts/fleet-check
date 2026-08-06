@@ -87,7 +87,8 @@ async def main() -> int:
     secrets = configmod.load_secrets(cfg)
 
     db = Db(cfg.state_dir / "fleet-check.db")
-    slack = Slack(token=secrets.slack_bot_token, owner_id=cfg.slack.owner_id,
+    slack = Slack(token=secrets.slack_bot_token.get_secret_value(),
+                  owner_id=cfg.slack.owner_id,
                   users_file=cfg.slack.users_file, dry_run=True)
     orch = Orchestrator(cfg, secrets, db, slack, no_publish=True)
 

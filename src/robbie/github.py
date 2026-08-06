@@ -85,7 +85,10 @@ async def whoami() -> str:
     return (await gh("api", "user", "--jq", ".login")).strip()
 
 
-QUEUE_LIMIT = 50
+# `gh search` takes one page and has no --paginate, so this is the whole read.
+# Well above any real review queue, because a PR past it is invisible to every
+# gate rather than merely late — the warning below is the only trace it leaves.
+QUEUE_LIMIT = 200
 
 
 async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 logger = logging.getLogger(__name__)
 
@@ -187,17 +187,19 @@ class Config(_Strict):
 
 
 class Secrets(_Strict):
-    gh_token: str  # publishes reviews, so it needs write
-    slack_bot_token: str
+    # SecretStr, not str: a pydantic repr prints its fields and a ValidationError
+    # echoes the input it rejected, so one stray log line is the whole keyring.
+    gh_token: SecretStr  # publishes reviews, so it needs write
+    slack_bot_token: SecretStr
     # handed to the reviewer containers; a read-only token belongs here
-    reviewer_gh_token: str
-    anthropic_api_key: str | None = None
+    reviewer_gh_token: SecretStr
+    anthropic_api_key: SecretStr | None = None
     claude_credentials: Path | None = None
     # Any endpoint speaking the Anthropic Messages API, for comparing models
     # against the same harness. Used only by `robbie once --model`, so the daemon
     # cannot pick one up: neither budget backend can measure spend there.
     review_base_url: str | None = None
-    review_api_token: str | None = None
+    review_api_token: SecretStr | None = None
 
 
 def load(path: str | Path | None = None) -> Config:
@@ -261,17 +263,19 @@ def load_secrets(cfg: Config) -> Secrets:
     """
     gh_token = _require("GH_TOKEN")
     s = Secrets(
-        gh_token=gh_token,
-        slack_bot_token=_require("SLACK_BOT_TOKEN"),
-        reviewer_gh_token=os.environ.get("GH_TOKEN_REVIEWER", "").strip() or gh_token,
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
+        gh_token=SecretStr(gh_token),
+        slack_bot_token=SecretStr(_require("SLACK_BOT_TOKEN")),
+        reviewer_gh_token=SecretStr(
+            os.environ.get("GH_TOKEN_REVIEWER", "").strip() or gh_token
+        ),
+        anthropic_api_key=_optional_secret("ANTHROPIC_API_KEY"),
         claude_credentials=(
             Path(os.environ["CLAUDE_CREDENTIALS"])
             if os.environ.get("CLAUDE_CREDENTIALS")
             else None
         ),
         review_base_url=os.environ.get("REVIEW_BASE_URL", "").strip() or None,
-        review_api_token=os.environ.get("REVIEW_API_TOKEN", "").strip() or None,
+        review_api_token=_optional_secret("REVIEW_API_TOKEN"),
     )
     if cfg.backend == "api" and not s.anthropic_api_key:
         raise SystemExit("backend=api needs ANTHROPIC_API_KEY")
@@ -280,7 +284,7 @@ def load_secrets(cfg: Config) -> Secrets:
             raise SystemExit("backend=oauth needs CLAUDE_CREDENTIALS=/path/to/.credentials.json")
         if not s.claude_credentials.is_file():
             raise SystemExit(f"CLAUDE_CREDENTIALS not readable: {s.claude_credentials}")
-    if s.reviewer_gh_token == s.gh_token:
+    if s.reviewer_gh_token.get_secret_value() == s.gh_token.get_secret_value():
         # The whole security bet is that the worst a reviewer can do with its token
         # is read and exfiltrate it; that only holds while the token is read-only.
         # A warning rather than a refusal — one token is a legitimate way to start.
@@ -297,3 +301,9 @@ def _require(name: str) -> str:
     if not value:
         raise SystemExit(f"{name} is not set")
     return value
+
+
+def _optional_secret(name: str) -> SecretStr | None:
+    """None, not an empty SecretStr: callers read absence as "not configured"."""
+    value = os.environ.get(name, "").strip()
+    return SecretStr(value) if value else None

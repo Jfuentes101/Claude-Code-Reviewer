@@ -1,8 +1,8 @@
 """Concurrency, without docker: does the semaphore cap in-flight containers,
 and does one bad review leave the others alone.
 
-The container side of the same question lives in test_docker_fleet.py, which
-needs a docker daemon and is opt-in.
+The container side of the same question lives in scripts/fleet-check, which
+needs a docker daemon and is run by hand.
 """
 
 from __future__ import annotations

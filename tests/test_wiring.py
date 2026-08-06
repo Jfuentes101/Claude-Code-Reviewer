@@ -384,7 +384,10 @@ def test_the_reviewer_token_falls_back_to_the_write_token(tmp_path, monkeypatch)
     monkeypatch.setenv("SLACK_BOT_TOKEN", "s")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
     monkeypatch.delenv("GH_TOKEN_REVIEWER", raising=False)
-    assert configmod.load_secrets(_cfg(tmp_path)).reviewer_gh_token == "only-one"
+    secrets = configmod.load_secrets(_cfg(tmp_path))
+    assert secrets.reviewer_gh_token.get_secret_value() == "only-one"
+    # the whole reason for SecretStr: a stray log line must not print the keyring
+    assert "only-one" not in repr(secrets)
 
 
 def test_the_fallback_says_out_loud_that_it_handed_over_the_write_token(

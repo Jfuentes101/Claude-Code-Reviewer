@@ -21,7 +21,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from robbie import budget, publish
 from robbie import slack as slackmod
@@ -420,7 +420,8 @@ class Orchestrator:
                 f"at all. Transcript: {run.transcript}",
             )
         findings = parse_findings(blocks.inline)
-        common = {
+        # heterogeneous on purpose — it is the column set every exit below writes
+        common: dict[str, Any] = {
             "cost_usd": run.cost_usd, "tokens_in": run.tokens_in,
             "tokens_out": run.tokens_out, "duration_s": run.duration_s,
             "transcript": str(run.transcript or ""), "model": choice.model,
@@ -439,8 +440,11 @@ class Orchestrator:
                 f"I reviewed *{meta.title}* ({meta.url}) but {bad.told}, so I posted "
                 f"nothing. Transcript: {run.transcript}",
             )
+        # _unusable returns for a missing verdict, so past it this is one of the three
+        verdict = blocks.verdict
+        assert verdict is not None
 
-        if blocks.verdict == "ok":
+        if verdict == "ok":
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             ci = await self._request_ci(repo, meta)
             self.db.finish_review(
@@ -454,28 +458,28 @@ class Orchestrator:
 
         # recorded as judged either way: retrying a permanent publish failure
         # would burn a full review every tick
-        self.db.finish_review(key, state="published", verdict=blocks.verdict, **common)
+        self.db.finish_review(key, state="published", verdict=verdict, **common)
         try:
             result = await publish.publish_review(
-                blocks.verdict, repo, meta, body=blocks.github, findings=findings,
+                verdict, repo, meta, body=blocks.github, findings=findings,
                 dry_run=self.no_publish, self_login=await self._token_login(),
             )
         except Exception as ex:  # noqa: BLE001 — the review is done; only delivery failed
             logger.exception("publish failed for %s#%s", repo.slug, meta.number)
             return await self._gave_up(
                 repo, meta, f"publish: {ex}",
-                f"I couldn't publish my {blocks.verdict} review of *{meta.title}* "
+                f"I couldn't publish my {verdict} review of *{meta.title}* "
                 f"({meta.url}): {ex}. It's ready to post by hand: {run.transcript}",
             )
 
         if result.posted:
             # how many of them reached a diff line, which is not the same number
             self.db.finish_review(
-                key, state="published", verdict=blocks.verdict,
+                key, state="published", verdict=verdict,
                 inline=result.inline, **common,
             )
-            await self._notify(repo, meta, blocks.verdict, findings)
-        return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
+            await self._notify(repo, meta, verdict, findings)
+        return Outcome(repo.slug, meta.number, "review", f"{verdict}: {result.detail}")
 
     async def _gave_up(
         self, repo: RepoConfig, meta: PrMeta, detail: str, told: str

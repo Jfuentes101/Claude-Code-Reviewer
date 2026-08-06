@@ -124,3 +124,28 @@ async def test_a_plain_comment_verdict_is_unaffected(repo, calls):
     )
     assert "commented" in result.detail
     assert not any("pulls/7/reviews" in e and "--input" in e for e in endpoints(calls))
+
+
+async def test_a_rejected_inline_comment_is_not_counted_as_posted(repo, monkeypatch):
+    """`inline` reaches the database and the panel, so it has to mean landed."""
+
+    async def fake_gh(*args, stdin=None):
+        joined = " ".join(args)
+        if "--paginate" in args and "files" in joined:
+            return json.dumps({"filename": "a.rb", "patch": PATCH})
+        if "--paginate" in args:
+            return ""
+        if "pulls/7/comments" in joined and json.loads(stdin or "{}").get("line") == 3:
+            raise publish_mod.GhError("line is outside the diff")
+        return "https://x/1"
+
+    monkeypatch.setattr(publish_mod, "gh", fake_gh)
+    monkeypatch.setattr(publish_mod, "gh_json", lambda *a, **k: _none())
+
+    result = await publish_mod.publish_review(
+        "comment", repo, pr(), body="summary",
+        findings=[FINDING, {**FINDING, "line": 3}], self_login="robbie-bot",
+    )
+    assert result.posted
+    assert result.inline == 1, "only what GitHub accepted may be counted"
+    assert "1 rejected" in result.detail

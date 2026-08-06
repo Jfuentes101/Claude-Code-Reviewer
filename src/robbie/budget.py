@@ -205,7 +205,10 @@ def _fetch_plan(secrets: Secrets) -> tuple[float, str]:
 def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:
     resp = httpx.get(
         f"{(secrets.review_base_url or '').rstrip('/')}/api/usage",
-        headers={"Authorization": f"Bearer {secrets.review_api_token or ''}"},
+        headers={
+            "Authorization": "Bearer "
+            + (secrets.review_api_token.get_secret_value() if secrets.review_api_token else "")
+        },
         timeout=15,
     )
     resp.raise_for_status()

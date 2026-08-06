@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import SecretStr
+
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.contract import Blocks, parse_blocks
 from robbie.github import PrMeta
@@ -166,7 +168,7 @@ def _stem(
     return tag
 
 
-def _why_it_failed(code: int, out: bytes, err: bytes) -> str:
+def _why_it_failed(code: int | None, out: bytes, err: bytes) -> str:
     """Whatever the run itself said, in the order the reason is likeliest to be in.
 
     The CLI reports its own failures in the envelope on stdout, and stderr here
@@ -247,12 +249,16 @@ def _docker_env(
     The reviewer runs a model with bypassPermissions, so it gets the read-only
     token when one is configured — publishing is not its job.
     """
-    env = {"GH_TOKEN": secrets.reviewer_gh_token}
+    env = {"GH_TOKEN": secrets.reviewer_gh_token.get_secret_value()}
     if via_endpoint:
-        env["ANTHROPIC_AUTH_TOKEN"] = secrets.review_api_token or ""
+        env["ANTHROPIC_AUTH_TOKEN"] = _plain(secrets.review_api_token)
     elif cfg.backend == "api":
-        env["ANTHROPIC_API_KEY"] = secrets.anthropic_api_key or ""
+        env["ANTHROPIC_API_KEY"] = _plain(secrets.anthropic_api_key)
     return env
+
+
+def _plain(secret: SecretStr | None) -> str:
+    return secret.get_secret_value() if secret else ""
 
 
 async def _kill(name: str) -> None:
@@ -273,6 +279,6 @@ def _as_float(value: object) -> float | None:
 
 def _as_int(value: object) -> int | None:
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return None
