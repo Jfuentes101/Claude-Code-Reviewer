@@ -401,6 +401,12 @@ language runtimes out of the base image is what keeps it small.
 - `publish.py` is the only module that writes to GitHub: one review or one
   comment, plus the needs-work label. No approve, no merge, no close, no
   arbitrary API.
+- **The accepted risk is exfiltration, not writes.** The reviewer runs arbitrary
+  code from the PR with `bypassPermissions`, and nothing restricts its outbound
+  network. A read-only token means the worst it can do with `GH_TOKEN_REVIEWER`
+  is read and send it somewhere — that is the bet, and it only holds while that
+  token is read-only. The container joins `docker.network` only when
+  `review_mcp` is set, so with no sidecars there is nothing internal to reach.
 - The orchestrator holds the docker socket, which is root on the host. That is
   the accepted trade for a single-tenant VPS. If the host is shared, run the
   orchestrator under systemd on the host instead and keep only the workers in

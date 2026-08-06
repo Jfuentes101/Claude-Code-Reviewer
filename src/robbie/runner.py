@@ -180,7 +180,9 @@ def _docker_argv(
     ]
     if cfg.docker.no_new_privileges:
         argv += ["--security-opt", "no-new-privileges"]
-    if cfg.docker.network:
+    if cfg.docker.network and cfg.review_mcp:
+        # the network exists to reach the MCP sidecars; with none configured it is
+        # only reachable surface for code the reviewer is about to run
         argv += ["--network", cfg.docker.network]
     if cfg.policy_dir:
         argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
