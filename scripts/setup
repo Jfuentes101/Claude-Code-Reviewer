@@ -36,15 +36,22 @@ command -v git >/dev/null 2>&1 && ok "git" || bad "git is not installed"
 echo
 echo "files you write yourself:"
 
+copied=0
 for pair in ".env:.env.example" "config/robbie.yaml:config/robbie.yaml.example"; do
   want="${pair%%:*}" example="${pair##*:}"
   if [[ -f "$want" ]]; then
     ok "$want"
-  else
+  elif $CHECK_ONLY; then
     bad "$want is missing"
     note "cp $example $want   # then edit it"
+  else
+    cp "$example" "$want"
+    [[ "$want" == ".env" ]] && chmod 600 "$want"
+    bad "$want was missing — copied from $example"
+    copied=1
   fi
 done
+[[ $copied -eq 1 ]] && note "fill those in before running this again"
 
 # not fatal: without it an author gets no DM and the owner is told once, per author
 users_file="$(grep -oP '^\s*users_file:\s*\K\S+' config/robbie.yaml 2>/dev/null || true)"
@@ -95,12 +102,28 @@ if $CHECK_ONLY; then
   exit 0
 fi
 
+if ! crontab -l 2>/dev/null | grep -q mirror-sync; then
+  echo
+  echo "cron: refreshing the mirrors every 6h"
+  { crontab -l 2>/dev/null || true
+    echo "17 */6 * * * cd $PWD && ROBBIE_MIRRORS=${ROBBIE_MIRRORS:-$(dirname "${bares[0]:-/srv/robbie/repos/x}")} ./scripts/mirror-sync >/dev/null 2>&1"
+  } | crontab -
+  note "crontab -e to change or drop it"
+fi
+
+echo
 echo "building…"
 docker compose build
 echo "starting…"
 docker compose up -d
 
 echo
-echo "up. Prove it before it reviews anything:"
-echo "  docker compose exec robbie robbie --dry-run poll --once"
-echo "  docker compose logs -f robbie"
+echo "dry run — reads the queue, runs every gate, writes nothing:"
+if docker compose exec -T robbie robbie --dry-run poll --once; then
+  echo
+  echo "up. docker compose logs -f robbie"
+else
+  echo
+  echo "the dry run failed — robbie is up but it would not review. Fix that first." >&2
+  exit 1
+fi
