@@ -62,7 +62,7 @@ to exist in the repo already and `review_command` has to be merged on the base
 branch — robbie creates neither.
 
 Removing one: delete the entry and restart. Its rows stay in the database, and
-`watch_ci` stops chasing any approval it was still following.
+`ci_watch` stops chasing any approval it was still following.
 
 ## Change which model reviews
 

@@ -137,6 +137,26 @@ def test_the_reviewed_list_is_windowed(db):
     assert db.reviewed_prs("acme/app", since_ms=now_ms() + 1000) == []
 
 
+def test_finishing_twice_keeps_what_the_first_call_wrote(db):
+    """The publish path writes the row, posts, then writes the anchored count.
+
+    A full-column UPDATE made that second call wipe the cost, the model and the
+    counts unless every caller repeated them — silently, on a real review.
+    """
+    db.start_review(key="k1", repo="acme/app", pr=7, head_sha="abc", requested_at="t")
+    db.finish_review(
+        "k1", state="published", verdict="needs-work",
+        cost_usd=4.2, model="sonnet", findings=6, tokens_out=900,
+    )
+    db.finish_review("k1", state="published", verdict="needs-work", inline=4)
+
+    row = db.conn.execute("SELECT * FROM reviews WHERE key='k1'").fetchone()
+    assert (row["cost_usd"], row["model"], row["findings"], row["tokens_out"]) == (
+        4.2, "sonnet", 6, 900
+    )
+    assert row["inline"] == 4
+
+
 def test_seeding_is_per_repo(db):
     assert not db.is_seeded("acme/app")
     db.mark_seeded("acme/app")

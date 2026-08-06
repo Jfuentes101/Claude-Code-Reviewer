@@ -7,6 +7,7 @@ file is safe to commit and to mount into a container.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,8 @@ from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger(__name__)
 
 
 class _Strict(BaseModel):
@@ -274,6 +277,15 @@ def load_secrets(cfg: Config) -> Secrets:
             raise SystemExit("backend=oauth needs CLAUDE_CREDENTIALS=/path/to/.credentials.json")
         if not s.claude_credentials.is_file():
             raise SystemExit(f"CLAUDE_CREDENTIALS not readable: {s.claude_credentials}")
+    if s.reviewer_gh_token == s.gh_token:
+        # The whole security bet is that the worst a reviewer can do with its token
+        # is read and exfiltrate it; that only holds while the token is read-only.
+        # A warning rather than a refusal — one token is a legitimate way to start.
+        logger.warning(
+            "GH_TOKEN_REVIEWER is not set, so the reviewer containers are getting the "
+            "token that publishes reviews. They run a PR's own code with "
+            "bypassPermissions and unrestricted network: put a READ-ONLY token there."
+        )
     return s
 
 

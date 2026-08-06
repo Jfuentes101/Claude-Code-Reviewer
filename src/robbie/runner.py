@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,6 +120,37 @@ async def run_review(
         duration_s=elapsed,
         transcript=stem.with_suffix(".md"),
     )
+
+
+TRANSCRIPT_DAYS = 30
+
+
+def prune_transcripts(cfg: Config) -> int:
+    """Drop transcripts older than TRANSCRIPT_DAYS, and say how many went.
+
+    Nothing reads one that old. The numbers a review is judged on live in SQLite;
+    these are the raw run, kept for the days where somebody might still go and
+    read why a verdict came out the way it did. Past a month a PR has been rebased
+    out from under it anyway, so the honest answer is a fresh pass, not this file.
+
+    Every failure is swallowed per file: a disk that will not let go of one
+    transcript is not a reason to skip the tick that was about to start.
+    """
+    cutoff = time.time() - TRANSCRIPT_DAYS * 86_400
+    try:
+        entries = list(cfg.transcript_dir.iterdir())
+    except OSError as ex:
+        logger.warning("could not read %s to prune it: %s", cfg.transcript_dir, ex)
+        return 0
+    gone = 0
+    for path in entries:
+        with contextlib.suppress(OSError):
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+                gone += 1
+    if gone:
+        logger.info("pruned %d transcript(s) older than %d days", gone, TRANSCRIPT_DAYS)
+    return gone
 
 
 def _stem(

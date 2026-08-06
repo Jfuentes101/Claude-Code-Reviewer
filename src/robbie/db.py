@@ -110,7 +110,11 @@ class Db:
             self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
             self.conn.row_factory = sqlite3.Row
             return
-        self.conn = sqlite3.connect(path, isolation_level=None)
+        # check_same_thread=False because the spend gate is read through
+        # asyncio.to_thread — its HTTP meters must not block the event loop. Safe
+        # here and only here: sqlite3.threadsafety is 3 (serialized) and this stays
+        # a single writer process.
+        self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self._migrate()
@@ -192,15 +196,31 @@ class Db:
         summary_findings: int | None = None,
         ci_state: str | None = None,
     ) -> None:
+        """Writes only the columns it was given.
+
+        A full-column UPDATE would null everything the caller left out, so the
+        publish path's second call — the one that adds `inline` once the comments
+        landed — would wipe the cost, the model and the counts it wrote moments
+        before unless every caller remembered to repeat them.
+        """
+        given = {
+            name: value
+            for name, value in (
+                ("verdict", verdict), ("hold_reason", hold_reason),
+                ("cost_usd", cost_usd), ("tokens_in", tokens_in),
+                ("tokens_out", tokens_out), ("duration_s", duration_s),
+                ("transcript", transcript), ("model", model), ("findings", findings),
+                ("blocking", blocking), ("should_fix", should_fix), ("inline", inline),
+                ("summary_findings", summary_findings), ("ci_state", ci_state),
+            )
+            if value is not None
+        }
+        given["state"] = state
+        given["finished_at"] = now_ms()
+        # column names are literals from the tuple above, never caller input
+        sets = ", ".join(f"{name}=?" for name in given)
         self.conn.execute(
-            "UPDATE reviews SET state=?, verdict=?, hold_reason=?, cost_usd=?, "
-            "tokens_in=?, tokens_out=?, duration_s=?, transcript=?, model=?, "
-            "findings=?, blocking=?, should_fix=?, inline=?, summary_findings=?, "
-            "ci_state=?, finished_at=? "
-            "WHERE key=?",
-            (state, verdict, hold_reason, cost_usd, tokens_in, tokens_out,
-             duration_s, transcript, model, findings, blocking, should_fix, inline,
-             summary_findings, ci_state, now_ms(), key),
+            f"UPDATE reviews SET {sets} WHERE key=?", (*given.values(), key)
         )
 
     def record_hold(self, *, key: str, repo: str, pr: int, head_sha: str,
@@ -265,6 +285,52 @@ class Db:
                 (repo, since_ms),
             )
         ]
+
+    # ----- what the panel reads ------------------------------------------
+    #
+    # Here rather than in dashboard.py so every query against this schema lives
+    # next to it: a column added above is one place to check, not two.
+
+    def counts(self) -> tuple[int, int, int]:
+        """(reviewing right now, published, rows in total)."""
+        running = self.conn.execute(
+            "SELECT COUNT(*) FROM reviews WHERE state='running'"
+        ).fetchone()[0]
+        total, published = self.conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(state='published'), 0) FROM reviews"
+        ).fetchone()
+        return int(running), int(published), int(total)
+
+    def by_model(self) -> dict[str, sqlite3.Row]:
+        """Published runs per model — the arm comparison, keyed by model tag."""
+        return {
+            r["model"]: r
+            for r in self.conn.execute(
+                "SELECT model, COUNT(*) runs, SUM(COALESCE(summary_findings, 0)) f, "
+                "CAST(AVG(duration_s) AS INT) secs FROM reviews "
+                "WHERE state='published' AND model IS NOT NULL GROUP BY model"
+            )
+        }
+
+    def unfinished(self, limit: int) -> list[sqlite3.Row]:
+        """Reviews that are running, held or failed, newest first."""
+        return list(
+            self.conn.execute(
+                "SELECT repo, pr, state, hold_reason, created_at FROM reviews "
+                "WHERE state IN ('running','held','failed') ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        )
+
+    def recent_published(self, limit: int) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT repo, pr, head_sha, verdict, model, findings, summary_findings, "
+                "inline, duration_s, tokens_out, created_at, finished_at FROM reviews "
+                "WHERE state='published' ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        )
 
     def reap_running(self) -> int:
         """Mark orphaned 'running' rows failed at boot.

@@ -173,7 +173,9 @@ sudo usermod -aG docker "$USER"    # log out and back in
 
 `docker.cpus` and `docker.memory` are ceilings, not reservations. **2 vCPU, 4 GB,
 25 GB disk** runs the stock three at once — ~1.4 GB of images, a mirror the size of
-each repo, transcripts at ~30 KB a review.
+each repo, transcripts at ~30 KB a review. Transcripts are dropped after 30 days at
+the top of a tick: past that the PR has been rebased out from under them, so the
+answer to "why did it say that" is a fresh pass rather than an old file.
 
 ### What the *repo* needs
 
@@ -550,6 +552,8 @@ language runtimes out of the base image is what keeps it small.
 
 - The reviewer gets `GH_TOKEN_REVIEWER` when set — put a **read-only** token
   there. It runs a model with `bypassPermissions`; publishing is not its job.
+  Unset, it falls back to `GH_TOKEN`, and robbie warns at boot that it just
+  handed the publishing token to the code it is about to run.
 - The reviewer sees exactly one host path, the mirror, read-only. Everything
   else it touches dies with the container (`--rm`, `--cap-drop ALL`,
   `no-new-privileges`, cpu/memory/pids caps).

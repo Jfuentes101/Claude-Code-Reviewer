@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from robbie import ci_watch as ci_mod
 from robbie import orchestrator as orch_mod
 from robbie import publish as publish_mod
 from robbie.budget import Verdict
@@ -157,7 +158,7 @@ async def test_a_spent_account_falls_back_to_the_endpoint(orch, cfg, monkeypatch
     _arms(cfg)
     _meters(monkeypatch, account=False, endpoint=True)
     key = next(k for k in (f"k{n}" for n in range(50)) if not cfg.choose_model(k).via_endpoint)
-    choice, verdict = orch._admit(key)
+    choice, verdict = await orch._admit(key)
     assert verdict.allowed
     assert (choice.model, choice.via_endpoint) == ("glm-5.2:cloud", True)
 
@@ -166,7 +167,7 @@ async def test_a_spent_endpoint_falls_back_to_the_account(orch, cfg, monkeypatch
     _arms(cfg)
     _meters(monkeypatch, account=True, endpoint=False)
     key = next(k for k in (f"k{n}" for n in range(50)) if cfg.choose_model(k).via_endpoint)
-    choice, verdict = orch._admit(key)
+    choice, verdict = await orch._admit(key)
     assert verdict.allowed
     assert (choice.model, choice.via_endpoint) == ("sonnet", False)
 
@@ -174,7 +175,7 @@ async def test_a_spent_endpoint_falls_back_to_the_account(orch, cfg, monkeypatch
 async def test_both_spent_refuses_with_the_reason_of_the_arm_it_wanted(orch, cfg, monkeypatch):
     _arms(cfg)
     _meters(monkeypatch, account=False, endpoint=False)
-    choice, verdict = orch._admit("k1")
+    choice, verdict = await orch._admit("k1")
     assert not verdict.allowed
     assert verdict.detail == ("endpoint" if choice.via_endpoint else "account")
 
@@ -182,13 +183,13 @@ async def test_both_spent_refuses_with_the_reason_of_the_arm_it_wanted(orch, cfg
 async def test_a_room_to_spare_arm_is_never_asked(orch, cfg, monkeypatch):
     _arms(cfg)
     asked = _meters(monkeypatch, account=True, endpoint=True)
-    orch._admit("k1")
+    await orch._admit("k1")
     assert len(asked) == 1, "the second meter is only read when the first says no"
 
 
 async def test_nothing_configured_has_nothing_to_fall_back_to(orch, monkeypatch):
     _meters(monkeypatch, account=False, endpoint=True)
-    choice, verdict = orch._admit("k1")
+    choice, verdict = await orch._admit("k1")
     assert not verdict.allowed
     assert choice.model is None, "the account's own model is the only arm there is"
 
@@ -198,7 +199,7 @@ async def test_a_model_named_on_the_cli_is_never_substituted(orch, cfg, monkeypa
     _arms(cfg)
     _meters(monkeypatch, account=True, endpoint=False)
     orch.model = "glm-5.2:cloud"
-    choice, verdict = orch._admit("k1")
+    choice, verdict = await orch._admit("k1")
     assert not verdict.allowed
     assert choice.model == "glm-5.2:cloud"
 
@@ -265,6 +266,19 @@ async def test_a_run_without_a_verdict_posts_nothing_and_stops_retrying(orch, re
     assert called == [], "no verdict means nothing gets posted"
     assert orch.db.get_review(KEY).state == "held"
     assert orch.db.sha_was_judged("acme/app", 7, "abc1234567"), "a 30-min run is not retried blind"
+
+
+async def test_a_verdict_with_no_summary_body_posts_nothing_either(orch, repo, monkeypatch):
+    stub_run(monkeypatch, ReviewRun(
+        ok=True, blocks=Blocks(verdict="needs-work", github="  ", inline="[]"), duration_s=1.0
+    ))
+    called = []
+    monkeypatch.setattr(publish_mod, "publish_review", lambda *a, **k: called.append(1))
+    outcome = await orch._review(repo, pr(), KEY, REQ)
+    assert outcome.action == "failed" and outcome.detail == "no summary body"
+    assert called == [], "a review with nothing to head it is not posted"
+    assert orch.db.get_review(KEY).state == "held"
+    assert "needs-work" in orch.slack.owner[0], "the DM says which verdict was lost"
 
 
 # ----- verdicts ------------------------------------------------------------
@@ -543,10 +557,10 @@ def _ci_state(orch, key: str) -> str | None:
 
 async def test_a_green_build_after_an_approval_is_ready_for_a_human(orch, monkeypatch):
     key = _approve(orch)
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
         pr(checks=({"context": "ci/build", "state": "SUCCESS"},))
     ))
-    out = await orch.watch_ci()
+    out = await orch.ci.watch()
     assert [o.action for o in out] == ["ready"]
     assert "glm-5.2:cloud" in out[0].detail
     assert _ci_state(orch, key) == "green"
@@ -554,7 +568,7 @@ async def test_a_green_build_after_an_approval_is_ready_for_a_human(orch, monkey
 
 async def test_a_red_build_after_an_approval_is_reported_on_the_pr(orch, monkeypatch):
     key = _approve(orch)
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
         pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
     ))
     told = []
@@ -562,7 +576,7 @@ async def test_a_red_build_after_an_approval_is_reported_on_the_pr(orch, monkeyp
         publish_mod, "report_red_build",
         lambda *a, **k: _mark(told, PublishResult(True, "reported the red build (rspec)")),
     )
-    out = await orch.watch_ci()
+    out = await orch.ci.watch()
     assert told, "the author is the only one who can act on it"
     assert [o.action for o in out] == ["ci-note"]
     assert _ci_state(orch, key) == "red"
@@ -570,31 +584,31 @@ async def test_a_red_build_after_an_approval_is_reported_on_the_pr(orch, monkeyp
 
 async def test_a_build_still_running_stays_on_the_list(orch, monkeypatch):
     key = _approve(orch)
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
         pr(checks=({"name": "rspec", "status": "IN_PROGRESS"},))
     ))
-    assert await orch.watch_ci() == []
+    assert await orch.ci.watch() == []
     assert _ci_state(orch, key) == "waiting", "so the next tick looks again"
 
 
 async def test_a_push_after_the_approval_makes_the_build_irrelevant(orch, monkeypatch):
     """The red belongs to code nobody approved, so it is not news about the approval."""
     key = _approve(orch, sha="oldsha")
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
         pr(head_sha="newsha", checks=({"name": "rspec", "conclusion": "FAILURE"},))
     ))
     told = []
     monkeypatch.setattr(publish_mod, "report_red_build",
                         lambda *a, **k: _mark(told, PublishResult(True, "x")))
-    assert await orch.watch_ci() == []
+    assert await orch.ci.watch() == []
     assert _ci_state(orch, key) == "stale"
     assert told == [], "nothing to say about a commit that moved"
 
 
 async def test_a_closed_pr_leaves_the_list(orch, monkeypatch):
     key = _approve(orch)
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(pr(state="MERGED")))
-    assert await orch.watch_ci() == []
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(pr(state="MERGED")))
+    assert await orch.ci.watch() == []
     assert _ci_state(orch, key) == "gone"
 
 
@@ -620,20 +634,20 @@ async def test_a_dry_pass_does_not_consume_the_ci_state(orch, monkeypatch):
     """Same rule as the one-shot DMs: deciding without writing must not settle it."""
     key = _approve(orch)
     orch.dry_run = True
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
         pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
     ))
     told = []
     monkeypatch.setattr(publish_mod, "report_red_build",
                         lambda *a, **k: _mark(told, PublishResult(False, "dry run")))
-    await orch.watch_ci()
+    await orch.ci.watch()
     assert _ci_state(orch, key) == "waiting", "the real tick still owes the comment"
 
 
 async def test_github_going_down_does_not_lose_the_red_build_note(orch, monkeypatch):
     """It also must not take the tick down: the queue is read after this."""
     key = _approve(orch)
-    monkeypatch.setattr(orch_mod, "pr_meta", _async(
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
         pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
     ))
 
@@ -641,5 +655,5 @@ async def test_github_going_down_does_not_lose_the_red_build_note(orch, monkeypa
         raise GhError("502 Bad Gateway")
 
     monkeypatch.setattr(publish_mod, "report_red_build", boom)
-    assert await orch.watch_ci() == []
+    assert await orch.ci.watch() == []
     assert _ci_state(orch, key) == "waiting", "unsettled, so the next tick posts it"

@@ -158,10 +158,7 @@ def _ready(cfg: Config, db: Db) -> str:
 
 
 def _system(cfg: Config, db: Db) -> str:
-    running = db.conn.execute("SELECT COUNT(*) FROM reviews WHERE state='running'").fetchone()[0]
-    total, published = db.conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(state='published'), 0) FROM reviews"
-    ).fetchone()
+    running, published, total = db.counts()
     spent = db.spend_since(budget.midnight_ms(), cfg.endpoint_models)
     usage = shutil.disk_usage(cfg.state_dir)
     return "<h2>system</h2><div class='grid'>" + "".join([
@@ -201,14 +198,7 @@ def _arms(cfg: Config, db: Db) -> str:
             "model; no arms configured</p>"
         )
     total_weight = sum(m.weight for m in cfg.review_models)
-    seen = {
-        r["model"]: r
-        for r in db.conn.execute(
-            "SELECT model, COUNT(*) runs, SUM(COALESCE(summary_findings, 0)) f, "
-            "CAST(AVG(duration_s) AS INT) secs FROM reviews "
-            "WHERE state='published' AND model IS NOT NULL GROUP BY model"
-        )
-    }
+    seen = db.by_model()
     rows = []
     for arm in cfg.review_models:
         share = 100 * arm.weight / total_weight
@@ -234,11 +224,7 @@ def _queue(db: Db) -> str:
             _esc(r["hold_reason"]),
             _esc(_ago(r["created_at"])),
         ]
-        for r in db.conn.execute(
-            "SELECT repo, pr, state, hold_reason, created_at FROM reviews "
-            "WHERE state IN ('running','held','failed') ORDER BY created_at DESC LIMIT ?",
-            (RECENT,),
-        )
+        for r in db.unfinished(RECENT)
     ]
     return "<h2>waiting, held or failed</h2>" + _table(
         ["pr", "state", "reason", "when"], rows, numeric={3}, wide={2}
@@ -259,12 +245,7 @@ def _reviews(db: Db) -> str:
             _esc(r["tokens_out"]),
             _esc(_ago(r["finished_at"] or r["created_at"])),
         ]
-        for r in db.conn.execute(
-            "SELECT repo, pr, head_sha, verdict, model, findings, summary_findings, inline, "
-            "duration_s, tokens_out, created_at, finished_at FROM reviews "
-            "WHERE state='published' ORDER BY created_at DESC LIMIT ?",
-            (RECENT,),
-        )
+        for r in db.recent_published(RECENT)
     ]
     return (
         "<h2>reviews</h2><p class='sub'>cost is omitted on purpose: the CLI prices a "

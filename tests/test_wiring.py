@@ -4,6 +4,8 @@ GitHub in it but would still break production if it were wrong."""
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,14 @@ from robbie.anchor import Anchored
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
 from robbie.github import PrMeta
 from robbie.publish import MAX_BYTES, _assemble, _truncate
-from robbie.runner import _docker_argv, _docker_env, _stem, _why_it_failed
+from robbie.runner import (
+    TRANSCRIPT_DAYS,
+    _docker_argv,
+    _docker_env,
+    _stem,
+    _why_it_failed,
+    prune_transcripts,
+)
 
 NW = "❌ NEEDS WORK! ❌"
 
@@ -376,6 +385,56 @@ def test_the_reviewer_token_falls_back_to_the_write_token(tmp_path, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
     monkeypatch.delenv("GH_TOKEN_REVIEWER", raising=False)
     assert configmod.load_secrets(_cfg(tmp_path)).reviewer_gh_token == "only-one"
+
+
+def test_the_fallback_says_out_loud_that_it_handed_over_the_write_token(
+    tmp_path, monkeypatch, caplog
+):
+    """The security posture is 'the worst it can do is exfiltrate a read-only
+    token'. Falling back silently is how that stops being true without anyone
+    noticing."""
+    monkeypatch.setenv("GH_TOKEN", "only-one")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "s")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    monkeypatch.delenv("GH_TOKEN_REVIEWER", raising=False)
+    with caplog.at_level("WARNING"):
+        configmod.load_secrets(_cfg(tmp_path))
+    assert "READ-ONLY" in caplog.text
+    assert "only-one" not in caplog.text, "the warning must not print the token"
+
+
+def test_a_separate_reviewer_token_warns_about_nothing(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("GH_TOKEN", "write")
+    monkeypatch.setenv("GH_TOKEN_REVIEWER", "read")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "s")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk")
+    with caplog.at_level("WARNING"):
+        configmod.load_secrets(_cfg(tmp_path))
+    assert caplog.text == ""
+
+
+# ----- transcripts ---------------------------------------------------------
+
+
+def test_a_transcript_past_the_window_is_dropped_and_a_fresh_one_is_not(tmp_path):
+    """Kept for the days somebody might still read why a verdict came out that
+    way. Past a month the PR has been rebased out from under it."""
+    cfg = _cfg(tmp_path)
+    cfg.transcript_dir.mkdir(parents=True, exist_ok=True)
+    old = cfg.transcript_dir / "app-7-abc12345.md"
+    new = cfg.transcript_dir / "app-8-def67890.md"
+    old.write_text("stale")
+    new.write_text("fresh")
+    aged = time.time() - (TRANSCRIPT_DAYS + 1) * 86_400
+    os.utime(old, (aged, aged))
+
+    assert prune_transcripts(cfg) == 1
+    assert not old.exists() and new.exists()
+
+
+def test_pruning_an_unwritable_directory_is_not_a_reason_to_skip_the_tick(tmp_path):
+    cfg = _cfg(tmp_path)  # transcript_dir was never created
+    assert prune_transcripts(cfg) == 0
 
 
 # ----- why a run failed ----------------------------------------------------

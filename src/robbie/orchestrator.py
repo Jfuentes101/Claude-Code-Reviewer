@@ -4,6 +4,12 @@ Everything stateful about a review lives here; the modules it calls are either
 pure (gates, anchor, contract) or a single narrow surface (publish, slack,
 runner). That split is what makes the policy testable without a GitHub account.
 
+The other two phases of a tick are their own modules, because neither is about
+reviewing a diff: `threads` answers replies to earlier findings and `ci_watch`
+reads the build an approval paid for. What the sweep borrows from here is one
+thing, `_slot` — capacity for a container, already gated — since it spends the
+same money out of the same cap.
+
 Concurrency is per PR, capped by `max_concurrent_reviews`. A slow review cannot
 delay the others and cannot collide with the next tick, because the tick only
 schedules work the semaphore has room for.
@@ -12,28 +18,23 @@ schedules work the semaphore has room for.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from dataclasses import dataclass
-from typing import Literal
+from collections.abc import AsyncIterator
+from typing import NamedTuple
 
 from robbie import budget, publish
 from robbie import slack as slackmod
 from robbie.anchor import parse_findings, severity_count, summary_findings
+from robbie.ci_watch import CiWatch
 from robbie.config import Choice, Config, RepoConfig, Secrets
-from robbie.contract import (
-    parse_thread_verdicts,
-    preamble,
-    thread_preamble,
-    threads_block,
-)
-from robbie.db import Db, now_ms
+from robbie.contract import Blocks, preamble, threads_block
+from robbie.db import Db
 from robbie.gates import Decision, already_judged, dedup_key, evaluate, label_hold
 from robbie.github import (
     GhError,
     PrMeta,
     Thread,
-    ci_outcome,
-    failing_checks,
     last_review_request,
     my_threads,
     pr_meta,
@@ -41,29 +42,12 @@ from robbie.github import (
     summarize_checks,
     whoami,
 )
-from robbie.runner import run_review
+from robbie.outcome import Outcome, Slot
+from robbie.runner import ReviewRun, prune_transcripts, run_review
 from robbie.slack import Slack
+from robbie.threads import Sweeper
 
 logger = logging.getLogger(__name__)
-
-# a reply this long after the review is a conversation a human should pick up, and
-# every PR inside the window costs a thread read on every tick
-SWEEP_DAYS = 30
-# an approval whose build never reports stops being news; it also stops being a read
-CI_WATCH_HOURS = 24
-
-
-@dataclass(frozen=True)
-class Outcome:
-    repo: str
-    pr: int
-    action: Literal[
-        "review", "skip", "hold", "ci-note", "threads", "failed", "budget", "ready"
-    ]
-    detail: str = ""
-
-    def __str__(self) -> str:
-        return f"{self.repo}#{self.pr} {self.action}" + (f" — {self.detail}" if self.detail else "")
 
 
 class Orchestrator:
@@ -92,6 +76,28 @@ class Orchestrator:
         self._inflight = 0  # containers spending right now, which no gate can see
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
         self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
+        # Reading a meter suspends (it runs in a thread), so deciding and taking
+        # the reserve have to happen under one lock: without it every waiting
+        # review reads the same pre-reserve number and admits itself, which is
+        # the stampede `reserve_usd`/`reserve_pct` exist to prevent.
+        self._admit_lock = asyncio.Lock()
+
+    # Built per call rather than held: both are frozen views over this object's
+    # own state, and `dry_run` / `no_publish` can be flipped after construction.
+
+    @property
+    def sweeper(self) -> Sweeper:
+        return Sweeper(
+            self.cfg, self.secrets, self.db, self.slack, self._slot, self._gate_sem,
+            dry_run=self.dry_run, no_publish=self.no_publish,
+        )
+
+    @property
+    def ci(self) -> CiWatch:
+        return CiWatch(
+            self.cfg, self.db, self._gate_sem,
+            dry_run=self.dry_run, no_publish=self.no_publish,
+        )
 
     # ----- entry points --------------------------------------------------
 
@@ -104,10 +110,12 @@ class Orchestrator:
         a re-review re-raises findings it conceded seconds later.
         """
         self._threads.clear()
+        if not self.dry_run:  # housekeeping, so it belongs to a real tick only
+            prune_transcripts(self.cfg)
         answered: list[Outcome] = []
-        if budget.check(self.cfg, self.secrets, self.db, self._inflight).allowed:
+        if (await self._meter()).allowed:
             answered = await self.answer_threads()  # a container, so the same spend gate
-        answered += await self.watch_ci()  # gh reads only, so no gate of its own
+        answered += await self.ci.watch()  # gh reads only, so no gate of its own
         jobs: list[asyncio.Task[Outcome]] = []
         async with asyncio.TaskGroup() as tg:
             for repo in self.cfg.repos:
@@ -169,162 +177,8 @@ class Orchestrator:
     async def answer_threads(
         self, slug: str | None = None, only: tuple[int, ...] = ()
     ) -> list[Outcome]:
-        """Act on replies to the reviewer's own open threads.
-
-        Only threads where somebody else spoke last are considered: after robbie
-        answers one it holds the last word, so the next run leaves it alone and
-        the ball stays with the author. That is also what keeps gate 5 honest —
-        conceded threads get closed instead of blocking reviews forever.
-        """
-        jobs: list[asyncio.Task[Outcome | None]] = []
-        async with asyncio.TaskGroup() as tg:
-            for repo in self.cfg.repos:
-                if slug and repo.slug != slug:
-                    continue
-                # named PRs override the DB: threads can predate robbie's own passes
-                for pr in only or self.db.reviewed_prs(repo.slug, since_ms=_sweep_from()):
-                    jobs.append(tg.create_task(self._sweep_one(repo, pr)))
-        return [out for job in jobs if (out := job.result()) is not None]
-
-    async def _sweep_one(self, repo: RepoConfig, pr: int) -> Outcome | None:
-        """One PR's replies. Same shape as the queue phase, and for the same two
-        reasons: a thread read per PR in series is the slowest thing in the tick,
-        and one unreachable PR must not take the whole sweep down with it."""
-        try:
-            async with self._gate_sem:  # a paginated GraphQL read, like the gates
-                threads = await my_threads(repo.slug, pr, repo.reviewer_login)
-            pending = [
-                t for t in threads
-                if t.answered and not self.db.notice_seen(_thread_state(repo.slug, pr, t))
-            ]
-            if not pending:
-                return None
-            return await self._answer_one(repo, pr, pending)
-        except GhError as ex:
-            logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
-            return None
-        except Exception as ex:  # noqa: BLE001 — inside a TaskGroup it cancels the siblings
-            logger.exception("%s#%s: unhandled error answering replies", repo.slug, pr)
-            return Outcome(repo.slug, pr, "failed", str(ex))
-
-    async def watch_ci(self) -> list[Outcome]:
-        """What the build said about a commit robbie approved.
-
-        An `ok` asks CI to run and, until this, never looked at the answer. Green is
-        what makes a PR ready for a human to pick up; red is news the author needs
-        and nobody else has, since robbie is what asked for that build.
-        """
-        out: list[Outcome] = []
-        for row in self.db.watching_ci(now_ms() - CI_WATCH_HOURS * 3_600_000):
-            try:
-                repo = self.cfg.repo(row["repo"])
-            except KeyError:
-                continue  # the repo left the config; its approvals are not ours to chase
-            try:
-                meta = await pr_meta(row["repo"], row["pr"])
-            except GhError as ex:
-                logger.warning("%s#%s: could not read CI: %s", row["repo"], row["pr"], ex)
-                continue
-
-            where = f"{row['repo']}#{row['pr']}"
-            if meta.state != "OPEN":
-                self._settle_ci(row["key"], "gone")
-                continue
-            if meta.head_sha != row["head_sha"]:
-                # they pushed after the approval, so this build is about older code
-                self._settle_ci(row["key"], "stale")
-                continue
-
-            outcome = ci_outcome(meta, ignore=repo.ignore_checks)
-            if outcome == "waiting":
-                continue
-            by = row["model"] or "the account's model"
-            if outcome == "green":
-                self._settle_ci(row["key"], outcome)
-                logger.info("%s: green after %s approved it — ready for a human", where, by)
-                out.append(Outcome(row["repo"], row["pr"], "ready", f"green after {by}"))
-                continue
-            red = tuple(failing_checks(meta, ignore=repo.ignore_checks))
-            try:
-                result = await publish.report_red_build(
-                    repo, meta, red, dry_run=self.dry_run or self.no_publish
-                )
-            except GhError as ex:
-                # left unsettled on purpose: the next tick owes the author this note
-                logger.warning("%s: could not post the red-build note: %s", where, ex)
-                continue
-            self._settle_ci(row["key"], outcome)
-            logger.info("%s: red after %s approved it — %s", where, by, result.detail)
-            out.append(Outcome(row["repo"], row["pr"], "ci-note", result.detail))
-        return out
-
-    def _settle_ci(self, key: str, state: str) -> None:
-        """A dry pass decides but must not settle it, or the real tick never acts."""
-        if not self.dry_run:
-            self.db.set_ci_state(key, state)
-
-    async def _answer_one(self, repo: RepoConfig, pr: int, pending: list[Thread]) -> Outcome:
-        meta = await pr_meta(repo.slug, pr)
-        if meta.state != "OPEN":
-            return Outcome(repo.slug, pr, "skip", f"pr is {meta.state.lower()}")
-
-        if self.dry_run:
-            logger.info(
-                "DRY would work through %d reply(s) on %s#%s", len(pending), repo.slug, pr
-            )
-            return Outcome(repo.slug, pr, "threads", "dry run")
-
-        prompt = thread_preamble(author=meta.author, url=meta.url, threads=pending)
-        async with self._sem:
-            gate = budget.check(self.cfg, self.secrets, self.db, self._inflight)
-            if not gate.allowed:
-                logger.info("budget closed while %s#%s waited: %s", repo.slug, pr, gate.detail)
-                return Outcome(repo.slug, pr, "budget", gate.detail)
-            self._inflight += 1
-            try:
-                run = await run_review(
-                    self.cfg, self.secrets, repo, meta, prompt=prompt, mode="threads"
-                )
-            finally:
-                self._inflight -= 1
-        self.db.record_spend(
-            repo=repo.slug, pr=pr, kind="threads",
-            cost_usd=run.cost_usd, duration_s=run.duration_s,
-        )
-        if not run.ok:
-            await self.slack.dm_owner(
-                f"I couldn't work through the replies on *{meta.title}* ({meta.url}): "
-                f"{run.error}"
-            )
-            return Outcome(repo.slug, pr, "failed", run.error or "unknown")
-
-        verdicts = {v.comment_id: v for v in parse_thread_verdicts(run.text)}
-        by_comment = {t.comment_id: t for t in pending}
-        done = {"resolve": 0, "reply": 0, "leave": 0, "unanswered": 0}
-        for cid, thread in by_comment.items():
-            verdict = verdicts.get(cid)
-            if verdict is None:
-                done["unanswered"] += 1
-                self.db.notice_once(_thread_state(repo.slug, pr, thread))
-                continue
-            if verdict.action == "resolve":
-                await publish.resolve_thread(thread.node_id, dry_run=self.no_publish)
-            elif verdict.action == "reply":
-                await publish.reply_to_thread(
-                    repo, pr, cid, verdict.body, dry_run=self.no_publish
-                )
-            else:
-                self.db.notice_once(_thread_state(repo.slug, pr, thread))
-            done[verdict.action] += 1
-
-        detail = ", ".join(f"{n} {k}" for k, n in done.items() if n)
-        if done["reply"]:
-            await self.slack.dm_owner(
-                f"I answered {done['reply']} of my review threads on *{meta.title}* "
-                f"({meta.url}) and closed {done['resolve']}. The ball is back with "
-                f"{meta.author}."
-            )
-        return Outcome(repo.slug, pr, "threads", detail or "nothing to do")
+        """The reply sweep. Lives in `threads`; `robbie threads` starts here."""
+        return await self.sweeper.sweep(slug, only)
 
     # ----- per-PR pipeline ----------------------------------------------
 
@@ -399,7 +253,7 @@ class Orchestrator:
             )
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
-        _, gate = self._admit(key)
+        _, gate = await self._admit(key)
         if not gate.allowed:
             if gate.notice_key:
                 await self._dm_owner_once(
@@ -421,7 +275,46 @@ class Orchestrator:
             return self.cfg.named_model(self.model)
         return self.cfg.choose_model(key)
 
-    def _admit(self, key: str) -> tuple[Choice, budget.Verdict]:
+    @contextlib.asynccontextmanager
+    async def _slot(self, key: str | None = None) -> AsyncIterator[Slot]:
+        """Capacity to run one container: a semaphore slot and a spend reserve.
+
+        The only thing the thread sweep needs from the review path, which is why
+        it is a context manager and not four attributes shared between them.
+
+        Deciding and reserving happen under one lock because reading a meter
+        suspends. `key` picks the arm and therefore the meter; without one the
+        run is not a review and goes on the account's own.
+        """
+        async with self._sem:
+            async with self._admit_lock:
+                choice, gate = (
+                    await self._admit(key) if key is not None
+                    else (Choice(), await self._meter())
+                )
+                if gate.allowed:
+                    self._inflight += 1
+            if not gate.allowed:
+                yield Slot(False, gate.detail)
+                return
+            try:
+                yield Slot(True, gate.detail, choice)
+            finally:
+                self._inflight -= 1
+
+    async def _meter(self, *, via_endpoint: bool = False) -> budget.Verdict:
+        """The spend gate, read off the event loop.
+
+        Both plan meters are blocking HTTP with a 15s timeout. Asked inline, a hung
+        one stalls the whole tick — every other PR's gating and every running
+        review's bookkeeping — for as long as it hangs.
+        """
+        return await asyncio.to_thread(
+            budget.check, self.cfg, self.secrets, self.db, self._inflight,
+            via_endpoint=via_endpoint,
+        )
+
+    async def _admit(self, key: str) -> tuple[Choice, budget.Verdict]:
         """The arm that will review this key, and whether its meter allows it.
 
         The arms cover for each other: a PR held while the other provider sits idle
@@ -431,17 +324,13 @@ class Orchestrator:
         one was a request, not a routing preference.
         """
         first = self._choice(key)
-        verdict = budget.check(
-            self.cfg, self.secrets, self.db, self._inflight, via_endpoint=first.via_endpoint
-        )
+        verdict = await self._meter(via_endpoint=first.via_endpoint)
         if verdict.allowed or self.model:
             return first, verdict
         other = self.cfg.fallback_for(first)
         if other is None:
             return first, verdict
-        spare = budget.check(
-            self.cfg, self.secrets, self.db, self._inflight, via_endpoint=other.via_endpoint
-        )
+        spare = await self._meter(via_endpoint=other.via_endpoint)
         if not spare.allowed:
             return first, verdict
         logger.info(
@@ -480,25 +369,21 @@ class Orchestrator:
             history=self._pass_history(repo, meta),
         )
 
-        async with self._sem:
-            # the gate ruled minutes ago, behind however many reviews queued here
-            choice, gate = self._admit(key)
-            if not gate.allowed:
+        # the gate ruled minutes ago, behind however many reviews queued here
+        async with self._slot(key) as slot:
+            if not slot.ok:
                 logger.info("budget closed while %s#%s waited: %s",
-                            repo.slug, meta.number, gate.detail)
-                return Outcome(repo.slug, meta.number, "budget", gate.detail)
+                            repo.slug, meta.number, slot.detail)
+                return Outcome(repo.slug, meta.number, "budget", slot.detail)
+            choice = slot.choice
             self.db.start_review(
                 key=key, repo=repo.slug, pr=meta.number,
                 head_sha=meta.head_sha, requested_at=requested_at,
             )
-            self._inflight += 1
-            try:
-                run = await run_review(
-                    self.cfg, self.secrets, repo, meta, prompt=prompt,
-                    model=choice.model, via_endpoint=choice.via_endpoint,
-                )
-            finally:
-                self._inflight -= 1
+            run = await run_review(
+                self.cfg, self.secrets, repo, meta, prompt=prompt,
+                model=choice.model, via_endpoint=choice.via_endpoint,
+            )
 
         if not run.ok:
             # not recorded as judged, so the next tick retries
@@ -507,14 +392,31 @@ class Orchestrator:
                 cost_usd=run.cost_usd, transcript=str(run.transcript or ""),
                 model=choice.model,
             )
-            await self.slack.dm_owner(
+            return await self._gave_up(
+                repo, meta, run.error or "unknown",
                 f"I tried to review *{meta.title}* ({meta.url}) but the run failed: "
-                f"{run.error}. I'll retry next cycle."
+                f"{run.error}. I'll retry next cycle.",
             )
-            return Outcome(repo.slug, meta.number, "failed", run.error or "unknown")
 
+        return await self._deliver(repo, meta, key, run, choice)
+
+    async def _deliver(
+        self, repo: RepoConfig, meta: PrMeta, key: str, run: ReviewRun, choice: Choice
+    ) -> Outcome:
+        """What a finished run comes to: record what it cost, then post what it said.
+
+        Split from `_review` because the two halves fail differently. Up there a
+        failure is the container's and the key stays unjudged, so the next tick
+        pays for another try. Down here the review exists and was paid for — every
+        way out leaves a transcript and tells the operator where to find it.
+        """
         blocks = run.blocks
-        assert blocks is not None
+        if blocks is None:  # mode="review" always parses; a caller could still lie
+            return await self._gave_up(
+                repo, meta, "no blocks",
+                f"I ran a review of *{meta.title}* ({meta.url}) that parsed no blocks "
+                f"at all. Transcript: {run.transcript}",
+            )
         findings = parse_findings(blocks.inline)
         common = {
             "cost_usd": run.cost_usd, "tokens_in": run.tokens_in,
@@ -526,13 +428,15 @@ class Orchestrator:
             "summary_findings": summary_findings(blocks.github),
         }
 
-        if blocks.verdict is None:
-            self.db.finish_review(key, state="held", hold_reason="run gave no verdict", **common)
-            await self.slack.dm_owner(
-                f"I reviewed *{meta.title}* ({meta.url}) but couldn't parse a verdict, so I "
-                f"posted nothing. Transcript: {run.transcript}"
+        if (bad := _unusable(blocks)) is not None:
+            self.db.finish_review(
+                key, state="held", verdict=blocks.verdict, hold_reason=bad.reason, **common
             )
-            return Outcome(repo.slug, meta.number, "failed", "no verdict")
+            return await self._gave_up(
+                repo, meta, bad.detail,
+                f"I reviewed *{meta.title}* ({meta.url}) but {bad.told}, so I posted "
+                f"nothing. Transcript: {run.transcript}",
+            )
 
         if blocks.verdict == "ok":
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
@@ -546,17 +450,6 @@ class Orchestrator:
             await self._announce_approval(meta, ci)
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
-        if not blocks.publishable:
-            self.db.finish_review(
-                key, state="held", verdict=blocks.verdict,
-                hold_reason="verdict without a summary body", **common,
-            )
-            await self.slack.dm_owner(
-                f"My {blocks.verdict} review of *{meta.title}* ({meta.url}) had no summary "
-                f"body, so I posted nothing. Transcript: {run.transcript}"
-            )
-            return Outcome(repo.slug, meta.number, "failed", "no summary body")
-
         # recorded as judged either way: retrying a permanent publish failure
         # would burn a full review every tick
         self.db.finish_review(key, state="published", verdict=blocks.verdict, **common)
@@ -567,11 +460,11 @@ class Orchestrator:
             )
         except Exception as ex:  # noqa: BLE001 — the review is done; only delivery failed
             logger.exception("publish failed for %s#%s", repo.slug, meta.number)
-            await self.slack.dm_owner(
+            return await self._gave_up(
+                repo, meta, f"publish: {ex}",
                 f"I couldn't publish my {blocks.verdict} review of *{meta.title}* "
-                f"({meta.url}): {ex}. It's ready to post by hand: {run.transcript}"
+                f"({meta.url}): {ex}. It's ready to post by hand: {run.transcript}",
             )
-            return Outcome(repo.slug, meta.number, "failed", f"publish: {ex}")
 
         if result.posted:
             # how many of them reached a diff line, which is not the same number
@@ -581,6 +474,17 @@ class Orchestrator:
             )
             await self._notify(repo, meta, blocks.verdict, findings)
         return Outcome(repo.slug, meta.number, "review", f"{blocks.verdict}: {result.detail}")
+
+    async def _gave_up(
+        self, repo: RepoConfig, meta: PrMeta, detail: str, told: str
+    ) -> Outcome:
+        """A paid-for review that reached nobody. Tell the operator, say so upward.
+
+        Not `_dm_owner_once`: each of these is about one run, not about a standing
+        condition, and a second failure on the same PR is news again.
+        """
+        await self.slack.dm_owner(told)
+        return Outcome(repo.slug, meta.number, "failed", detail)
 
     async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list[Thread]:
         """Reuse what the gate fetched; fetch it for a forced run that skipped it."""
@@ -701,18 +605,27 @@ class Orchestrator:
         )
 
 
-def _sweep_from() -> int:
-    """How far back the reply sweep looks. `robbie threads --pr N` ignores it."""
-    return now_ms() - SWEEP_DAYS * 86_400_000
+class _Unusable(NamedTuple):
+    reason: str  # the hold_reason on the row
+    told: str  # the middle of the operator's DM
+    detail: str  # what the Outcome carries
 
 
-def _thread_state(slug: str, pr: int, thread: Thread) -> str:
-    """Identifies a thread *and* the reply that is waiting on it.
+def _unusable(blocks: Blocks) -> _Unusable | None:
+    """Why a finished run cannot be published, if it cannot.
 
-    Judging one and leaving it alone must not be judged again, but a new reply
-    has to bring it straight back, so the reply count is part of the key.
+    Both cases are the model not honouring the output contract, and both are held
+    rather than failed: the row keeps no verdict, so the PR comes back on its own.
     """
-    return f"thread:{slug}:{pr}:{thread.comment_id}:{len(thread.replies)}"
+    if blocks.verdict is None:
+        return _Unusable("run gave no verdict", "couldn't parse a verdict", "no verdict")
+    if blocks.verdict != "ok" and not blocks.publishable:
+        return _Unusable(
+            "verdict without a summary body",
+            f"got a {blocks.verdict} verdict with no summary body",
+            "no summary body",
+        )
+    return None
 
 
 async def _requested_at_or_blank(slug: str, pr: int, reviewer: str) -> str:

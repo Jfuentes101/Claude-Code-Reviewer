@@ -22,6 +22,7 @@ import logging
 import os
 import signal
 import sys
+import time
 
 from robbie import config as configmod
 from robbie import dashboard
@@ -184,11 +185,22 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator) -> int:
         len(cfg.repos), cfg.backend, cfg.max_concurrent_reviews, cfg.poll_interval_s,
     )
     while not stop.is_set():
+        started = time.monotonic()
         try:
             for outcome in await orch.poll_once():
                 logger.info("%s", outcome)
         except Exception:  # noqa: BLE001 — a bad tick must not end the daemon
             logger.exception("tick failed; continuing")
+        # Ticks cannot overlap — the wait below starts after this one returns — so
+        # outgrowing the interval costs drift rather than a pile-up, and nothing
+        # else would ever say so. It is the signal that the queue has outgrown
+        # polling and wants webhooks.
+        elapsed = time.monotonic() - started
+        if elapsed > cfg.poll_interval_s:
+            logger.warning(
+                "tick took %.0fs, longer than the %ds interval; reviews are running "
+                "behind the queue", elapsed, cfg.poll_interval_s,
+            )
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=cfg.poll_interval_s)
     logger.info("shutdown signal received; stopping after this tick")

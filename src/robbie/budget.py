@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 import httpx
@@ -32,7 +32,21 @@ USAGE_TTL_S = 60  # a tick asks once per reviewable PR, and the endpoint rate-li
 USAGE_STALE_S = 900  # how old a reading may be before a failed read gives up on it
 
 
-@dataclass
+@dataclass(frozen=True)
+class _Reading:
+    at: float = 0.0  # monotonic; 0 means never read
+    pct: float = 0.0
+    note: str = ""
+    quiet_until: float = 0.0
+    why: str = "not read yet"
+
+    @property
+    def usable(self) -> bool:
+        """Asked of the reading, not of the window: a caller that took one and then
+        re-derived this could pair a stale verdict with a fresh number."""
+        return bool(self.at) and time.monotonic() - self.at < USAGE_STALE_S
+
+
 class _Window:
     """The last thing known about one meter, kept across calls.
 
@@ -42,28 +56,28 @@ class _Window:
     held the same way (retrying a rate limit per PR is how it stays one), and a
     failed read keeps using the last number while it is worth anything. Only a
     cold start has nothing to go on.
+
+    The reading is rebound in one assignment rather than mutated field by field:
+    the dashboard asks from several request threads at once, and a torn read would
+    pair a fresh percentage with the previous reset time. Two threads can still
+    fetch at the same moment, which costs one extra GET and nothing else.
     """
 
-    at: float = 0.0  # monotonic; 0 means never read
-    pct: float = 0.0
-    note: str = ""
-    quiet_until: float = 0.0
-    why: str = "not read yet"
+    def __init__(self) -> None:
+        self.now = _Reading()
 
     def refresh(self, fetch: Callable[[], tuple[float, str]]) -> None:
+        was = self.now
         now = time.monotonic()
-        if now - self.at < USAGE_TTL_S or now < self.quiet_until:
+        if now - was.at < USAGE_TTL_S or now < was.quiet_until:
             return
         try:
-            self.pct, self.note = fetch()
-            self.at, self.why = now, ""
+            pct, note = fetch()
         except Exception as ex:  # noqa: BLE001 — any failure is "unknown", handled below
-            self.quiet_until, self.why = now + USAGE_TTL_S, str(ex)
+            self.now = replace(was, quiet_until=now + USAGE_TTL_S, why=str(ex))
             logger.warning("usage unreadable: %s", ex)
-
-    @property
-    def usable(self) -> bool:
-        return bool(self.at) and time.monotonic() - self.at < USAGE_STALE_S
+            return
+        self.now = _Reading(at=now, pct=pct, note=note)
 
 
 _plan = _Window()  # the account's five-hour window, backend=oauth
@@ -118,25 +132,27 @@ def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     """ponytail: undocumented endpoint, so it can change under us. A read failure
     must be reported as unknown, never as "plenty left".
 
-    ponytail: a blocking read on the event loop, once a minute at most against
-    ticks of ten minutes. Make it async if a tick ever waits on it.
+    The read blocks, which is why every async caller runs `check` in a thread: a
+    hung meter would otherwise stall the tick that is asking, and with it every
+    other review's bookkeeping, for the whole HTTP timeout.
     """
     _plan.refresh(lambda: _fetch_plan(secrets))
-    if not _plan.usable:
+    reading = _plan.now
+    if not reading.usable:
         return Verdict(
             True,
-            f"usage unreadable ({_plan.why}); running unguarded",
+            f"usage unreadable ({reading.why}); running unguarded",
             notice_key="budget:unreadable",
         )
-    pct, held = _plan.pct, (inflight + 1) * cfg.budget.reserve_pct
+    pct, held = reading.pct, (inflight + 1) * cfg.budget.reserve_pct
     if pct + held <= cfg.budget.stop_pct:
         return Verdict(True, f"5h window at {pct:.0f}% (+{held:.0f}% held back)")
     return Verdict(
         False,
         f"5h window at {pct:.0f}% +{held:.0f}% held for {inflight} running + 1 "
-        f"(cutoff {cfg.budget.stop_pct}%); resumes around {_plan.note}",
+        f"(cutoff {cfg.budget.stop_pct}%); resumes around {reading.note}",
         # resets_at jitters by ~1s between calls, so key on the rounded minute
-        notice_key=f"budget:{_minute_key(_plan.note)}",
+        notice_key=f"budget:{_minute_key(reading.note)}",
     )
 
 
@@ -149,19 +165,20 @@ def _check_endpoint(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     is the one that will stop reviews, so the gate reads the worse of them.
     """
     _endpoint.refresh(lambda: _fetch_endpoint(secrets))
-    if not _endpoint.usable:
+    reading = _endpoint.now
+    if not reading.usable:
         return Verdict(
             True,
-            f"endpoint usage unreadable ({_endpoint.why}); running unguarded",
+            f"endpoint usage unreadable ({reading.why}); running unguarded",
             notice_key="budget:endpoint-unreadable",
         )
-    pct, held = _endpoint.pct, (inflight + 1) * cfg.budget.endpoint_reserve_pct
+    pct, held = reading.pct, (inflight + 1) * cfg.budget.endpoint_reserve_pct
     if pct + held <= cfg.budget.endpoint_stop_pct:
-        return Verdict(True, f"endpoint at {pct:.1f}% ({_endpoint.note}, +{held:.0f}% held)")
+        return Verdict(True, f"endpoint at {pct:.1f}% ({reading.note}, +{held:.0f}% held)")
     return Verdict(
         False,
         f"endpoint limit reached: {pct:.1f}% +{held:.0f}% held for {inflight} running + 1 "
-        f"(cutoff {cfg.budget.endpoint_stop_pct}%; {_endpoint.note})",
+        f"(cutoff {cfg.budget.endpoint_stop_pct}%; {reading.note})",
         notice_key=f"budget:endpoint:{datetime.now(UTC):%Y-%m-%dT%H}",
     )
 
