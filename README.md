@@ -145,17 +145,45 @@ an approved commit cannot buy a second build.
 
 ## Setup
 
+### What has to exist before `compose up`
+
+Nothing here is created for you. `up` is the last step, not the first.
+
+| | |
+|---|---|
+| **docker + the compose plugin** | and access to `/var/run/docker.sock`: reviewers are *sibling* containers spawned over it, so there is no docker-in-docker to install |
+| **`git`, and disk for a mirror** | one bare clone per repo, the size of that repo — ~1 GB for a monolith. `./scripts/mirror-sync` makes it; compose never can, because the mirror is mounted read-only |
+| **a GitHub account for the reviewer** | its *pending review requests are the queue*. `GH_TOKEN` (scope `repo`) must belong to it, because reviews are posted as that account. Put a second, **read-only** token in `GH_TOKEN_REVIEWER` — that is the one the model gets |
+| **a Slack bot token** | `chat:write`, invited to `slack_channel`. Author DMs need a `slack-users.tsv` you fill in by hand; the shipped example maps nobody |
+| **a model to review with** | `ANTHROPIC_API_KEY` for `backend: api`, or a `.credentials.json` from a machine where `claude login` ran for `backend: oauth` |
+
+Everything else — the database, the state volume, the compose network, the
+images — is made by `up` itself.
+
 ```bash
 git clone <this repo> && cd robbie
 cp .env.example .env                       # tokens; chmod 600
 cp config/robbie.yaml.example config/robbie.yaml
 cp config/slack-users.tsv.example config/slack-users.tsv
 
-./scripts/mirror-sync owner/repo           # create the bare mirror
-docker compose build
+./scripts/mirror-sync owner/repo           # ~1 GB clone, and it must come first
+docker compose build                       # ROBBIE_UID/GID are read HERE, not at up
 docker compose up -d
 docker compose logs -f
 ```
+
+### If you skip one
+
+`robbie` validates its paths at boot and exits rather than start half-configured,
+and `restart: unless-stopped` then loops it. So a skipped step is a repeating line
+in `docker compose logs`, not a daemon that quietly reviews nothing:
+
+| skipped | what you see |
+|---|---|
+| the mirror | docker creates the bind path as an **empty root-owned directory**, then `mirror … is not a directory here; ./scripts/mirror-sync creates it` |
+| a host path (`ROBBIE_MIRRORS`, `ROBBIE_POLICY`, `CLAUDE_CREDENTIALS`) that only exists inside the container | same shape: the host gets an empty directory where a file or a repo should be. These three are handed to the *host* daemon, so they must be host paths mounted at the same path on both sides |
+| a token | `GH_TOKEN is not set`, `backend=api needs ANTHROPIC_API_KEY`, or `CLAUDE_CREDENTIALS not readable` |
+| `ROBBIE_UID`/`ROBBIE_GID` on `backend: oauth` | nothing at boot — every *review* fails on an unreadable token instead. They are baked into the reviewer image at build time, so changing them means `compose build` again |
 
 Then prove it before it reviews anything:
 
