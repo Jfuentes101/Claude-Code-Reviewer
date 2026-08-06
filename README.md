@@ -189,9 +189,11 @@ comes back unmapped (once per author, as a warning to the owner).
 ### Four things that will bite you
 
 **Host paths.** The orchestrator spawns *sibling* containers, so every bind mount
-it builds is resolved by the host docker daemon. `repos[].bare` and `policy_dir`
-must be **host** paths, and the compose file mounts them at those same paths
-inside the orchestrator so both sides agree. Change one, change the other.
+it builds is resolved by the host docker daemon. `repos[].bare`, `policy_dir` and
+`CLAUDE_CREDENTIALS` must be **host** paths, and the compose file mounts them at
+those same paths inside the orchestrator so both sides agree. Change one, change
+the other. A path that only exists inside the orchestrator gets silently created
+on the host as an empty directory when a reviewer spawns.
 
 **The reviewer's uid, on `backend=oauth`.** The credentials file is mounted mode
 600 and the CLI refreshes it in place, so the container's user has to be the host
