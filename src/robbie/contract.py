@@ -13,7 +13,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from robbie.github import NO_CHECKS, Thread
+# the same string, not a copy of it: `_strip` keeps robbie's own signature out of a
+# prompt by matching it, and a second definition is a filter that silently stops
+from robbie.anchor import SIGNATURE as SIG_LINE
+from robbie.github import CheckSummary, Thread
 
 MARKERS = ("VERDICT", "GITHUB", "INLINE")
 VERDICTS = ("needs-work", "comment", "ok")
@@ -47,7 +50,6 @@ def _block(text: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-SIG_LINE = "<sub>🤖 automated pre-review by robbie</sub>"
 THREAD_ACTIONS = ("resolve", "reply", "leave")
 
 
@@ -205,11 +207,15 @@ def threads_block(threads: list[Thread]) -> str:
 
 
 def preamble(
-    *, author: str, ci: str = "", threads: str = "", history: str = ""
+    *, author: str, ci: CheckSummary | None = None, threads: str = "", history: str = ""
 ) -> str:
-    """The instructions wrapped around the repo's own review command."""
-    failing = "FAILING:" in ci
-    nothing_ran = ci.startswith(NO_CHECKS)
+    """The instructions wrapped around the repo's own review command.
+
+    The summary itself, not the line it renders to: asking it what is failing cannot
+    drift out of step with how it words that, which sniffing the rendered text could.
+    """
+    failing = bool(ci and ci.failing)
+    nothing_ran = bool(ci and ci.empty)
     if failing:
         why_failing = (
             "Something above is failing. It was either excluded from the gate that "
@@ -231,7 +237,7 @@ def preamble(
         )
     ci_block = f"""
 CI state on the head commit, as the wrapper read it moments ago:
-  {ci}
+  {ci.as_prompt() if ci else ""}
 
 That is the whole CI truth you get, and you need nothing else: you have no
 CI-provider credentials. {why_failing} Do not shell out to discover CI state, and

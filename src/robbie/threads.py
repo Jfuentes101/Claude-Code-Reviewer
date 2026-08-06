@@ -119,21 +119,30 @@ class Sweeper:
         # keyed off what was offered, so a verdict for a thread nobody showed the
         # model — one a reply could have named in prose — touches nothing
         by_comment = {t.comment_id: t for t in pending}
-        done = {"resolve": 0, "reply": 0, "leave": 0, "unanswered": 0}
+        done = {"resolve": 0, "reply": 0, "leave": 0, "unanswered": 0, "failed": 0}
         for cid, thread in by_comment.items():
             verdict = verdicts.get(cid)
             if verdict is None:
                 done["unanswered"] += 1
                 self.db.notice_once(thread_state(repo.slug, pr, thread))
                 continue
-            if verdict.action == "resolve":
-                await publish.resolve_thread(thread.node_id, dry_run=self.no_publish)
-            elif verdict.action == "reply":
-                await publish.reply_to_thread(
-                    repo, pr, cid, verdict.body, dry_run=self.no_publish
+            try:
+                if verdict.action == "resolve":
+                    await publish.resolve_thread(thread.node_id, dry_run=self.no_publish)
+                elif verdict.action == "reply":
+                    await publish.reply_to_thread(
+                        repo, pr, cid, verdict.body, dry_run=self.no_publish
+                    )
+                else:
+                    self.db.notice_once(thread_state(repo.slug, pr, thread))
+            except GhError as ex:
+                # this run is already paid for: one thread GitHub will not take must
+                # not throw away the decisions made about all the others
+                logger.warning(
+                    "%s#%s thread %s: could not %s: %s", repo.slug, pr, cid, verdict.action, ex
                 )
-            else:
-                self.db.notice_once(thread_state(repo.slug, pr, thread))
+                done["failed"] += 1
+                continue
             done[verdict.action] += 1
 
         detail = ", ".join(f"{n} {k}" for k, n in done.items() if n)

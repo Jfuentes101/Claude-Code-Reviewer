@@ -99,6 +99,25 @@ def _parser() -> argparse.ArgumentParser:
     return ap
 
 
+def why_no_model(
+    cfg: configmod.Config, secrets: configmod.Secrets, model: str | None
+) -> str | None:
+    """Why `--model` cannot run, if it cannot.
+
+    Only an arm the config routes to REVIEW_BASE_URL needs that endpoint's own auth.
+    A tag nobody configured runs on the account's own backend, where the account's
+    own credentials are the right ones and an unknown name fails cleanly.
+    """
+    if not model or not cfg.named_model(model).via_endpoint:
+        return None
+    if secrets.review_base_url and secrets.review_api_token:
+        return None
+    return (
+        f"--model {model} is a `via: endpoint` arm in this config, so it needs "
+        "REVIEW_BASE_URL and REVIEW_API_TOKEN in the env"
+    )
+
+
 async def _run(args: argparse.Namespace) -> int:
     cfg = configmod.load(args.config)
     secrets = configmod.load_secrets(cfg)
@@ -118,11 +137,12 @@ async def _run(args: argparse.Namespace) -> int:
         approved_ids=tuple(cfg.slack.approved_ids),
         dry_run=args.dry_run or args.no_publish,
     )
-    if getattr(args, "model", None) and not secrets.review_api_token:
-        raise SystemExit("--model needs REVIEW_BASE_URL and REVIEW_API_TOKEN in the env")
+    model = getattr(args, "model", None)
+    if (why := why_no_model(cfg, secrets, model)) is not None:
+        raise SystemExit(why)
     orch = Orchestrator(
         cfg, secrets, db, slack, dry_run=args.dry_run, no_publish=args.no_publish,
-        model=getattr(args, "model", None),
+        model=model,
     )
 
     try:

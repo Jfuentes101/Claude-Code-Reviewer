@@ -85,6 +85,9 @@ async def whoami() -> str:
     return (await gh("api", "user", "--jq", ".login")).strip()
 
 
+QUEUE_LIMIT = 50
+
+
 async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
     """PRs carrying the label AND pending this reviewer — gates 1 and 2.
 
@@ -94,9 +97,17 @@ async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
     rows = await gh_json(
         "search", "prs", "--repo", repo,
         f"--review-requested={reviewer}", "--label", label,
-        "--state", "open", "--limit", "50", "--json", "number",
+        "--state", "open", "--limit", str(QUEUE_LIMIT), "--json", "number",
     )
-    return [int(r["number"]) for r in rows or []]
+    prs = [int(r["number"]) for r in rows or []]
+    if len(prs) == QUEUE_LIMIT:
+        # a full page is indistinguishable from a truncated one, and the PRs past it
+        # are invisible to every gate rather than merely late
+        logger.warning(
+            "%s: the queue read filled its %d-PR page; anything past it is unseen",
+            repo, QUEUE_LIMIT,
+        )
+    return prs
 
 
 async def pr_meta(repo: str, pr: int) -> PrMeta:
@@ -269,8 +280,13 @@ class CheckSummary:
     running: tuple[str, ...] = ()
     other: tuple[str, ...] = ()
 
+    @property
+    def empty(self) -> bool:
+        """Nothing is reporting at all — the normal state of an unbuilt commit."""
+        return not (self.passing or self.failing or self.running or self.other)
+
     def as_prompt(self) -> str:
-        if not (self.passing or self.failing or self.running or self.other):
+        if self.empty:
             return NO_CHECKS
         parts = []
         if self.passing:

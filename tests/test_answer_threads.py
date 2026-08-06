@@ -242,6 +242,32 @@ async def test_named_prs_do_not_have_to_be_in_the_db(orch, monkeypatch, acted):
     assert [o.pr for o in out] == [999], "PR 999 was never reviewed by us"
 
 
+async def test_one_thread_github_refuses_does_not_discard_the_others(orch, monkeypatch):
+    """The container is already paid for, so a write GitHub will not take costs one
+    thread — not every decision the run made after it."""
+    monkeypatch.setattr(threads_mod, "my_threads", _async([
+        thread(555, replies=(("dev", "fixed"),)),
+        thread(666, replies=(("dev", "also fixed"),)),
+    ]))
+    resolved = []
+
+    async def resolve(node_id, *, dry_run=False):
+        if node_id == "PRRT_555":
+            raise GhError("422 Unprocessable Entity")
+        resolved.append(node_id)
+        return PublishResult(True, "resolved")
+
+    monkeypatch.setattr(publish_mod, "resolve_thread", resolve)
+    stub_run(
+        monkeypatch,
+        "<<<THREAD 555>>>\nresolve\n<<<END>>>\n<<<THREAD 666>>>\nresolve\n<<<END>>>",
+    )
+    out = await orch.answer_threads()
+    assert resolved == ["PRRT_666"]
+    assert "1 resolve" in out[0].detail
+    assert "1 failed" in out[0].detail, "and the operator can see it went unresolved"
+
+
 async def test_the_tick_answers_replies_before_it_reads_the_queue(orch, monkeypatch, acted):
     """Answering is half the tick, and it is the half that goes first.
 

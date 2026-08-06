@@ -26,7 +26,10 @@ class _Strict(BaseModel):
 
 class RepoConfig(_Strict):
     slug: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")  # owner/name
-    reviewer_login: str  # whose pending review request defines the queue
+    # whose pending review request defines the queue. Shaped like a real GitHub
+    # login because it is interpolated into a `--jq` filter and a search query,
+    # where a stray quote fails as an unreadable parse error three calls later.
+    reviewer_login: str = Field(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$")
     bare: Path  # local mirror, mounted read-only into every reviewer
     label: str = "Code Review"
     needs_work_label: str = "❌ NEEDS WORK! ❌"

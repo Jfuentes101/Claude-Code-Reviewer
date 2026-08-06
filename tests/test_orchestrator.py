@@ -489,6 +489,21 @@ async def test_the_budget_gate_stops_reviews_and_warns_once(orch, repo, monkeypa
     assert sum("Holding off" in m for m in orch.slack.owner) == 1
 
 
+async def test_a_meter_nobody_can_read_is_reported_whichever_meter_it_was(
+    orch, repo, monkeypatch
+):
+    """An unguarded run is unguarded whoever was supposed to be measuring it, and
+    the key is dated so the second outage is not the silent one."""
+    monkeypatch.setattr(orch, "_review", _async(None))
+    for key in ("budget:unreadable:2026-08-06", "budget:endpoint-unreadable:2026-08-06"):
+        monkeypatch.setattr(
+            orch_mod.budget, "check",
+            lambda *a, k=key, **kw: Verdict(True, "endpoint down", notice_key=k),
+        )
+        await orch._act(repo, pr(), KEY, REQ, Decision("review"))
+    assert sum("can't read the spend budget" in m for m in orch.slack.owner) == 2
+
+
 # ----- dry run -----------------------------------------------------------
 
 
@@ -642,6 +657,19 @@ async def test_a_dry_pass_does_not_consume_the_ci_state(orch, monkeypatch):
                         lambda *a, **k: _mark(told, PublishResult(False, "dry run")))
     await orch.ci.watch()
     assert _ci_state(orch, key) == "waiting", "the real tick still owes the comment"
+
+
+async def test_a_no_publish_pass_does_not_consume_the_ci_state_either(orch, monkeypatch):
+    """It ran the review for real but posted nothing, so the note is still owed."""
+    key = _approve(orch)
+    orch.no_publish = True
+    monkeypatch.setattr(ci_mod, "pr_meta", _async(
+        pr(checks=({"name": "rspec", "conclusion": "FAILURE"},))
+    ))
+    monkeypatch.setattr(publish_mod, "report_red_build",
+                        lambda *a, **k: _async(PublishResult(False, "dry run"))())
+    await orch.ci.watch()
+    assert _ci_state(orch, key) == "waiting"
 
 
 async def test_github_going_down_does_not_lose_the_red_build_note(orch, monkeypatch):

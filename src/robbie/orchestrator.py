@@ -262,7 +262,9 @@ class Orchestrator:
                 )
             logger.info("budget gate closed: %s", gate.detail)
             return Outcome(repo.slug, meta.number, "budget", gate.detail)
-        if gate.notice_key == "budget:unreadable":
+        # either meter, not just the account's: an unguarded run is unguarded whoever
+        # was supposed to be measuring it
+        if gate.notice_key and budget.UNREADABLE in gate.notice_key:
             await self._dm_owner_once(
                 gate.notice_key, f"I can't read the spend budget: {gate.detail}"
             )
@@ -364,7 +366,7 @@ class Orchestrator:
         # while an API call for the prior conversation is in flight
         prompt = preamble(
             author=meta.author,
-            ci=summarize_checks(meta).as_prompt(),
+            ci=summarize_checks(meta),
             threads=threads_block(await self._prior_threads(repo, meta)),
             history=self._pass_history(repo, meta),
         )

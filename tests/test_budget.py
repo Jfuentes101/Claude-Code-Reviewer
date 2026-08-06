@@ -9,6 +9,7 @@ together. Each review in flight, plus the one asking, holds back a reserve.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -128,10 +129,16 @@ def test_five_agents_cannot_all_start_on_the_same_safe_reading(tmp_path, db, mon
 
 
 def test_an_unreadable_window_still_runs_but_says_so(tmp_path, db, monkeypatch):
-    """A cold start with nothing to go on is the only case that goes unguarded."""
+    """A cold start with nothing to go on is the only case that goes unguarded.
+
+    Dated like every other pause key: a constant one is announced once in the life
+    of the database, which makes every outage after the first one silent — and a
+    silent one runs without a spend guard at all.
+    """
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
     v = budget.check(cfg(tmp_path), secrets(tmp_path), db)
-    assert v.allowed and v.notice_key == "budget:unreadable"
+    assert v.allowed
+    assert v.notice_key == f"budget:unreadable:{datetime.now(UTC):%Y-%m-%d}"
 
 
 def test_the_window_is_read_once_for_a_whole_tick(tmp_path, db, monkeypatch):
@@ -169,7 +176,9 @@ def test_a_rate_limited_endpoint_is_not_asked_again_for_every_pr(tmp_path, db, m
     monkeypatch.setattr(budget.httpx, "get", boom)
     conf = cfg(tmp_path)
     for _ in range(6):
-        assert budget.check(conf, secrets(tmp_path), db).notice_key == "budget:unreadable"
+        assert budget.check(conf, secrets(tmp_path), db).notice_key.startswith(
+            "budget:unreadable"
+        )
     assert len(reads) == 1
 
 
@@ -182,7 +191,7 @@ def test_a_failed_read_holds_to_the_last_number_rather_than_unguarding(tmp_path,
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
     v = budget.check(conf, secrets(tmp_path), db)
     assert not v.allowed, "85% is still the best thing known about the window"
-    assert v.notice_key != "budget:unreadable"
+    assert not v.notice_key.startswith("budget:unreadable")
 
 
 def test_a_reading_too_old_to_trust_gives_up_on_it(tmp_path, db, monkeypatch):
@@ -192,7 +201,9 @@ def test_a_reading_too_old_to_trust_gives_up_on_it(tmp_path, db, monkeypatch):
     monkeypatch.setattr(budget, "USAGE_TTL_S", 0)
     monkeypatch.setattr(budget, "USAGE_STALE_S", 0)
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
-    assert budget.check(cfg(tmp_path), secrets(tmp_path), db).notice_key == "budget:unreadable"
+    assert budget.check(
+        cfg(tmp_path), secrets(tmp_path), db
+    ).notice_key.startswith("budget:unreadable")
 
 
 # ----- the review endpoint's own limits ----------------------------------
@@ -238,7 +249,7 @@ def test_each_endpoint_review_in_flight_holds_back_its_share(tmp_path, db, monke
 def test_an_unreadable_endpoint_says_so_rather_than_guessing(tmp_path, db, monkeypatch):
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
     v = budget.check(endpoint_cfg(tmp_path), secrets(tmp_path), db, via_endpoint=True)
-    assert v.allowed and v.notice_key == "budget:endpoint-unreadable"
+    assert v.allowed and v.notice_key.startswith("budget:endpoint-unreadable")
 
 
 # ----- api: dollars ------------------------------------------------------

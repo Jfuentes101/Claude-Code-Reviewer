@@ -54,3 +54,21 @@ async def test_a_nonzero_exit_carries_the_stderr(fake_gh):
 async def test_stdin_reaches_the_command(fake_gh):
     fake_gh("cat")
     assert await gh("api", "x", stdin='{"body":"hi"}') == '{"body":"hi"}'
+
+
+async def test_a_queue_that_fills_its_page_says_so(fake_gh, caplog):
+    """A full page and a truncated one look identical from here, and the PRs past
+    it are invisible to every gate rather than merely late."""
+    full = ",".join(f'{{"number":{n}}}' for n in range(gh_mod.QUEUE_LIMIT))
+    fake_gh(f"echo '[{full}]'")
+    with caplog.at_level("WARNING"):
+        prs = await gh_mod.queue("acme/app", label="Code Review", reviewer="rev")
+    assert len(prs) == gh_mod.QUEUE_LIMIT
+    assert "anything past it is unseen" in caplog.text
+
+
+async def test_a_queue_with_room_left_stays_quiet(fake_gh, caplog):
+    fake_gh("""echo '[{"number":1}]'""")
+    with caplog.at_level("WARNING"):
+        assert await gh_mod.queue("acme/app", label="Code Review", reviewer="rev") == [1]
+    assert caplog.text == ""

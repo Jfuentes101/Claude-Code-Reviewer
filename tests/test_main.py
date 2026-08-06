@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from robbie.config import Config, RepoConfig, SlackConfig
-from robbie.main import _loop
+from robbie.config import Config, RepoConfig, ReviewModel, Secrets, SlackConfig
+from robbie.main import _loop, why_no_model
 
 
 def _cfg(tmp_path, **kw) -> Config:
@@ -66,3 +66,42 @@ async def test_a_failed_tick_does_not_end_the_daemon(tmp_path, monkeypatch):
     orch.raises = RuntimeError("github fell over")
     assert await _one_tick(_cfg(tmp_path), orch, monkeypatch) == 0
     assert orch.ticks == 1, "it swallowed the tick, not the loop"
+
+
+# ----- what `once --model` needs in the env ---------------------------------
+
+
+def _secrets(**kw) -> Secrets:
+    base = dict(gh_token="w", slack_bot_token="s", reviewer_gh_token="r", anthropic_api_key="k")
+    return Secrets(**{**base, **kw})
+
+
+ARM = ReviewModel(model="glm-5.2:cloud", via="endpoint")
+
+
+def test_no_model_named_needs_nothing(tmp_path):
+    assert why_no_model(_cfg(tmp_path), _secrets(), None) is None
+
+
+def test_a_model_on_the_accounts_own_backend_needs_no_endpoint_token(tmp_path):
+    """`--model sonnet` is a request about the account's model, not about a third
+    party, so demanding a third party's token to run it refuses it for nothing."""
+    cfg = _cfg(tmp_path, review_models=[ARM])
+    assert why_no_model(cfg, _secrets(), "sonnet") is None
+
+
+def test_an_endpoint_arm_without_its_auth_is_refused_at_boot(tmp_path):
+    cfg = _cfg(tmp_path, review_models=[ARM])
+    why = why_no_model(cfg, _secrets(), "glm-5.2:cloud")
+    assert why is not None and "REVIEW_API_TOKEN" in why
+
+
+def test_an_endpoint_arm_with_both_halves_runs(tmp_path):
+    cfg = _cfg(tmp_path, review_models=[ARM])
+    secrets = _secrets(review_base_url="https://x", review_api_token="t")
+    assert why_no_model(cfg, secrets, "glm-5.2:cloud") is None
+
+
+def test_a_base_url_without_a_token_is_still_not_enough(tmp_path):
+    cfg = _cfg(tmp_path, review_models=[ARM])
+    assert why_no_model(cfg, _secrets(review_base_url="https://x"), "glm-5.2:cloud") is not None

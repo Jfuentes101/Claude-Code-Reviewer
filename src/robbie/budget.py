@@ -28,6 +28,8 @@ from robbie.db import Db
 logger = logging.getLogger(__name__)
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+# in the notice key of any verdict that was allowed without a meter behind it
+UNREADABLE = "unreadable"
 USAGE_TTL_S = 60  # a tick asks once per reviewable PR, and the endpoint rate-limits
 USAGE_STALE_S = 900  # how old a reading may be before a failed read gives up on it
 
@@ -142,7 +144,9 @@ def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
         return Verdict(
             True,
             f"usage unreadable ({reading.why}); running unguarded",
-            notice_key="budget:unreadable",
+            # dated, like every other pause key: a constant one is announced once in
+            # the life of the database, and the second outage is the silent one
+            notice_key=f"budget:unreadable:{datetime.now(UTC):%Y-%m-%d}",
         )
     pct, held = reading.pct, (inflight + 1) * cfg.budget.reserve_pct
     if pct + held <= cfg.budget.stop_pct:
@@ -170,7 +174,7 @@ def _check_endpoint(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
         return Verdict(
             True,
             f"endpoint usage unreadable ({reading.why}); running unguarded",
-            notice_key="budget:endpoint-unreadable",
+            notice_key=f"budget:endpoint-unreadable:{datetime.now(UTC):%Y-%m-%d}",
         )
     pct, held = reading.pct, (inflight + 1) * cfg.budget.endpoint_reserve_pct
     if pct + held <= cfg.budget.endpoint_stop_pct:

@@ -7,7 +7,7 @@ review happen, and a linter missing from the image is never reported as a gap.
 from __future__ import annotations
 
 from robbie.contract import preamble
-from robbie.github import PrMeta, ci_outcome, summarize_checks
+from robbie.github import CheckSummary, PrMeta, ci_outcome, summarize_checks
 
 
 def pr(*checks) -> PrMeta:
@@ -87,47 +87,57 @@ def test_the_prompt_line_counts_passing_checks_instead_of_burying_them():
     assert "passing (2): a, b" in line
 
 
+GREEN = CheckSummary(passing=("rspec",))
+
+
 def _flat(**kw) -> str:
     """Prompt text with wrapping collapsed, so these assert content not layout."""
     return " ".join(preamble(author="dev", **kw).split())
 
 
 def test_the_ci_state_reaches_the_prompt():
-    assert "passing (1): rspec" in _flat(ci="passing (1): rspec")
+    assert "passing (1): rspec" in _flat(ci=GREEN)
 
 
 def test_the_model_is_told_not_to_go_looking_for_ci_itself():
-    text = _flat(ci="passing (1): rspec")
+    text = _flat(ci=GREEN)
     assert "Do not shell out to discover CI state" in text
     assert "you have no CI-provider credentials" in text
 
 
 def test_a_green_run_says_the_gate_would_have_stopped_a_red_one():
-    text = _flat(ci="passing (1): rspec")
+    text = _flat(ci=GREEN)
     assert "would have stopped this review before it started" in text
 
 
 def test_a_forced_run_over_red_ci_is_not_told_the_failure_must_be_harmless():
     # `robbie once` bypasses the gates, so the green-path claim would be a lie
-    text = _flat(ci="passing (1): a · FAILING: ci/setup")
+    text = _flat(ci=CheckSummary(passing=("a",), failing=("ci/setup",)))
     assert "would have stopped this review before it started" not in text
     assert "do not assume the failure is harmless" in text
     assert "forced past" in text
 
 
 def test_a_missing_linter_is_declared_expected_rather_than_a_gap():
-    text = _flat(ci="passing (1): rspec")
+    text = _flat(ci=GREEN)
     assert "that is expected and correct" in text
     assert 'Never report a tool as "unavailable"' in text
 
 
 def test_an_unbuilt_commit_is_not_told_its_linters_passed():
     """CI runs on approval now, so silence means nothing ran — not that it is green."""
-    text = _flat(ci=summarize_checks(pr()).as_prompt())
+    text = _flat(ci=summarize_checks(pr()))
     assert "CI already ran them on this commit" not in text
     assert "nobody has linted this commit" in text
     assert "approving this commit is what starts one" in text
     assert "would have stopped this review before it started" not in text
+
+
+def test_which_branch_the_prompt_takes_is_read_off_the_summary_not_its_wording():
+    """The two used to be one substring apart: `"FAILING:" in ci`, formatted in
+    another module. A summary that only *mentions* a failure is not a red build."""
+    text = _flat(ci=CheckSummary(other=("FAILING: not really=?",)))
+    assert "do not assume the failure is harmless" not in text
 
 
 def test_without_ci_data_the_block_is_omitted_entirely():
@@ -137,7 +147,7 @@ def test_without_ci_data_the_block_is_omitted_entirely():
 
 
 def test_the_summary_is_forbidden_from_guessing_the_ci_line():
-    text = preamble(author="dev", ci="x")
+    text = preamble(author="dev", ci=GREEN)
     assert "never from a guess" in text
 
 
