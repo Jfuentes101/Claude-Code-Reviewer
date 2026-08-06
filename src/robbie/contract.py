@@ -74,7 +74,7 @@ def parse_thread_verdicts(text: str) -> list[ThreadVerdict]:
     for m in re.finditer(
         r"^<<<THREAD (\d+)>>>\s*$(.*?)^<<<END>>>\s*$", text, re.S | re.M
     ):
-        lines = [line for line in m.group(2).strip().splitlines()]
+        lines = m.group(2).strip().splitlines()
         if not lines:
             continue
         action = lines[0].strip().lower()

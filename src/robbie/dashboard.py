@@ -139,7 +139,7 @@ CI_TONE = {"green": ("ok", "ready for a human"), "red": ("bad", "build went red"
 def _ready(cfg: Config, db: Db) -> str:
     """Approvals and what the build robbie asked for made of them."""
     rows = []
-    for r in db.approved_and_green(_midnight_ms() - 7 * 86_400_000):
+    for r in db.approved_and_green(budget.midnight_ms() - 7 * 86_400_000):
         tone, label = CI_TONE.get(r["ci_state"] or "", ("", r["ci_state"] or "—"))
         model = r["model"] or "account"
         third = ' <span class="dim">3rd-party</span>' if model in cfg.endpoint_models else ""
@@ -162,7 +162,7 @@ def _system(cfg: Config, db: Db) -> str:
     total, published = db.conn.execute(
         "SELECT COUNT(*), COALESCE(SUM(state='published'), 0) FROM reviews"
     ).fetchone()
-    spent = db.spend_since(_midnight_ms(), cfg.endpoint_models)
+    spent = db.spend_since(budget.midnight_ms(), cfg.endpoint_models)
     usage = shutil.disk_usage(cfg.state_dir)
     return "<h2>system</h2><div class='grid'>" + "".join([
         _card(running, "reviewing right now", "warn" if running else ""),
@@ -293,11 +293,6 @@ def _transcripts(cfg: Config) -> str:
         for f in files
     ]
     return "<h2>transcripts</h2>" + _table(["file", "size", "written"], rows, {1, 2})
-
-
-def _midnight_ms() -> int:
-    now = datetime.now(UTC)
-    return int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
 
 def _transcript_body(cfg: Config, name: str) -> str | None:

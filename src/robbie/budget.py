@@ -101,7 +101,7 @@ def check(
 
 
 def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
-    spent = db.spend_since(_midnight_ms(), cfg.endpoint_models)
+    spent = db.spend_since(midnight_ms(), cfg.endpoint_models)
     limit = cfg.budget.daily_usd
     held = (inflight + 1) * cfg.budget.reserve_usd
     if spent + held <= limit:
@@ -201,7 +201,7 @@ def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:
     return worst * 100, note
 
 
-def _midnight_ms() -> int:
+def midnight_ms() -> int:
     now = datetime.now(UTC)
     return int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
