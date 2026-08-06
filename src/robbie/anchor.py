@@ -60,7 +60,10 @@ def parse_findings(raw: str) -> list[dict]:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         return []
-    return parsed if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    # per element too: one string in the array would reach render() as a finding
+    return [f for f in parsed if isinstance(f, dict)]
 
 
 def render(f: dict, snapped_from: int | None) -> str:

@@ -111,6 +111,14 @@ def test_parse_findings_treats_garbage_as_nothing_to_say():
         assert parse_findings(raw) == []
 
 
+def test_one_bad_element_does_not_take_the_review_down():
+    """A string in the array reaches anchor() as a finding and raises there, and the
+    review never gets to finish — the row stays 'running' until the next boot."""
+    assert parse_findings('["a note", {"path": "a.rb", "line": 1}, 7]') == [
+        {"path": "a.rb", "line": 1}
+    ]
+
+
 def test_severity_count_splits_blocking_from_advisory():
     findings = [
         {"severity": "Critical"}, {"severity": "Must-fix"}, {"severity": "must fix"},
