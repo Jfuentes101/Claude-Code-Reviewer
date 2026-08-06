@@ -100,10 +100,16 @@ services:
   # deterministic Python making one HTTP POST, and MCP would only add a
   # handshake and a service to babysit. Slack lives in slack.py.
   #
-  # Enable one by pointing `review_mcp` in robbie.yaml at it:
+  # Off unless asked for, like the dashboard — it needs SENTRY_TOKEN and would
+  # otherwise restart-loop on an install that never wanted it:
+  #
+  #   docker compose --profile sentry up -d
+  #
+  # Then point `review_mcp` in robbie.yaml at it:
   #   review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
 
   mcp-sentry:
+    profiles: [sentry]
     build:
       context: .
       dockerfile: Dockerfile.mcp-sentry

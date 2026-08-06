@@ -69,8 +69,9 @@ Without the fallback it answers "nothing" for most real PRs. The response carrie
 name, and `truncated` when a PR changed more files than the cap.
 
 Needs `SENTRY_TOKEN` (read-only: `event:read`, `project:read`) and
-`SENTRY_ORG_SLUG`; `SENTRY_PROJECTS` optionally narrows it. To drop it, delete
-the service from `docker-compose.yml` and clear `review_mcp`.
+`SENTRY_ORG_SLUG`; `SENTRY_PROJECTS` optionally narrows it. Opt in with
+`docker compose --profile sentry up -d` and point `review_mcp` at it; leaving
+both alone is how you don't run it.
 
 `MCP_ALLOWED_HOSTS` is load-bearing, not decoration: the SDK's DNS rebinding
 protection validates the `Host` header, and a reviewer connecting to
