@@ -263,6 +263,14 @@ the profile transition on `exec` as gaining privileges, so with
 `docker.no_new_privileges: false` there. The default `true` is right on a plain
 Debian VPS. Dropping capabilities is not part of that trade and always happens.
 
+**Docker from a snap.** Its dockerd is itself confined, as `snap.docker.dockerd`,
+and `docker-default` refuses signals from that peer — so `docker stop` and `docker
+kill` are denied for *every* container on the host. What that costs robbie is
+quiet: `docker.timeout_s` cannot end a hung review, so the run is recorded as
+timed out and its slot freed while the container keeps spending. `docker-ce` from
+the distro or Docker's own repo has no such problem; if you must keep the snap,
+`--security-opt apparmor=unconfined` is the only way to get the signal through.
+
 ## Commands
 
 ```bash
