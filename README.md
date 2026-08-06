@@ -145,6 +145,51 @@ an approved commit cannot buy a second build.
 
 ## Setup
 
+### On a fresh Ubuntu server
+
+Nothing but docker and git is needed on the host. **Not the docker snap** — see the
+last of the four bites below; it silently breaks `timeout_s`.
+
+```bash
+sudo apt-get update && sudo apt-get install -y git ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$UBUNTU_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+sudo apt-get update && sudo apt-get install -y \
+  docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"    # log out and back in
+```
+
+**Sizing.** Measured through a full review, sampled every 3s:
+
+| | peak CPU | peak RSS |
+|---|---|---|
+| reviewer | 7% of one core | 236 MiB |
+| orchestrator | 8% of one core | 68 MiB |
+| dashboard | ~0 | 30 MiB |
+
+`docker.cpus` and `docker.memory` are ceilings, not reservations. **2 vCPU, 4 GB,
+25 GB disk** runs the stock three at once — ~1.4 GB of images, a mirror the size of
+each repo, transcripts at ~30 KB a review.
+
+### What the *repo* needs
+
+Robbie reviews someone else's repo, and three things there are not its to create:
+
+- **both labels exist** — the queue label (`Code Review`) and `needs_work_label`.
+  `gh` resolves label names before it applies them, so a label that does not exist
+  is an error at publish time, not a label created for you.
+- **the review command is merged on the base branch** — `review_command`
+  (`.claude/commands/code-review.md` by default) is read from the *base* of each PR, so a
+  PR cannot rewrite the rules it is judged by. Missing, the reviewer exits 3 and
+  every review fails.
+- **something requests the reviewer** — the queue is PRs carrying the label *and*
+  with a pending review request for `reviewer_login`. A CODEOWNERS entry, a team
+  convention, or a human clicking. Without it the queue is correctly empty forever.
+
 ### What has to exist before `compose up`
 
 Nothing here is created for you. `up` is the last step, not the first.
