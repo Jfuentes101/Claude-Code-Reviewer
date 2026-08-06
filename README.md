@@ -263,6 +263,9 @@ just as well.
 
 ### What each file wants from you
 
+Changing something later — the reviewer account, who gets DMed, a repo, a model, a
+budget — is [CONFIGURING.md](CONFIGURING.md).
+
 **`.env`** — every secret, plus the paths and ids compose interpolates. Start by
 choosing `backend`, because it decides which of them matter: `api` needs
 `ANTHROPIC_API_KEY`, `oauth` needs `CLAUDE_CREDENTIALS` pointing at a copy of
