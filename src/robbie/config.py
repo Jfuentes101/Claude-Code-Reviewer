@@ -22,7 +22,7 @@ class _Strict(BaseModel):
 
 
 class RepoConfig(_Strict):
-    slug: str  # owner/name
+    slug: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")  # owner/name
     reviewer_login: str  # whose pending review request defines the queue
     bare: Path  # local mirror, mounted read-only into every reviewer
     label: str = "Code Review"
@@ -69,7 +69,8 @@ class ReviewModel(_Strict):
 
     model: str
     via: Literal["backend", "endpoint"] = "backend"
-    weight: int = Field(default=1, ge=1)
+    # capped because choose_model expands the weights into one slot each
+    weight: int = Field(default=1, ge=1, le=100)
 
 
 @dataclass(frozen=True)
@@ -197,13 +198,34 @@ def load(path: str | Path | None = None) -> Config:
     p = Path(path or os.environ.get("ROBBIE_CONFIG", "config/robbie.yaml"))
     if not p.is_file():
         raise SystemExit(f"config not found: {p} (set ROBBIE_CONFIG or pass --config)")
-    cfg = Config.model_validate(yaml.safe_load(p.read_text(encoding="utf-8")))
+    cfg = Config.model_validate(_read_yaml(p))
     try:
         cfg.transcript_dir.mkdir(parents=True, exist_ok=True)
     except OSError as ex:
         raise SystemExit(f"state_dir {cfg.state_dir} is not writable: {ex}") from ex
     _check_paths(cfg)
     return cfg
+
+
+class _NoDupes(yaml.SafeLoader):
+    """Same reason as `extra="forbid"`: a key written twice is a typo, not an edit.
+
+    PyYAML keeps the last one silently, and pydantic never sees the first — a whole
+    `review_models:` block sat dead in the local config for a day that way.
+    """
+
+    def construct_mapping(self, node, deep=False):  # type: ignore[no-untyped-def]
+        seen = set()
+        for key, _ in node.value:
+            name = self.construct_object(key, deep=deep)
+            if name in seen:
+                raise SystemExit(f"config: {name!r} is set twice (line {key.start_mark.line + 1})")
+            seen.add(name)
+        return super().construct_mapping(node, deep)
+
+
+def _read_yaml(p: Path) -> object:
+    return yaml.load(p.read_text(encoding="utf-8"), Loader=_NoDupes)  # noqa: S506 — SafeLoader
 
 
 def _check_paths(cfg: Config) -> None:

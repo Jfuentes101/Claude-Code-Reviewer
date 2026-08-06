@@ -112,7 +112,7 @@ def test_mcp_config_is_only_passed_when_set(tmp_path):
 
 
 def test_the_reviewer_joins_the_compose_network_so_it_can_reach_the_sidecars(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, review_mcp='{"mcpServers":{}}')
     argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
     assert "--network robbie" in " ".join(argv)
 
@@ -120,6 +120,13 @@ def test_the_reviewer_joins_the_compose_network_so_it_can_reach_the_sidecars(tmp
 def test_the_network_can_be_turned_off(tmp_path):
     cfg = _cfg(tmp_path, docker=DockerConfig(network=None))
     argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "--network" not in argv
+
+
+def test_no_mcp_means_no_network_for_the_code_it_is_about_to_run(tmp_path):
+    """The network exists to reach the sidecars. With none, it is only reachable
+    surface for a PR whose code the reviewer runs under bypassPermissions."""
+    argv = _docker_argv(_cfg(tmp_path), _secrets(), _cfg(tmp_path).repos[0], _pr(), name="n")
     assert "--network" not in argv
 
 
@@ -280,6 +287,20 @@ def test_a_mirror_that_is_not_there_refuses_to_boot(tmp_path):
     """--dry-run starts no container, so nothing else would ever touch this path."""
     path = _write_config(tmp_path, bare=str(tmp_path / "nope.git"))
     with pytest.raises(SystemExit, match="mirror-sync"):
+        configmod.load(path)
+
+
+def test_a_slug_without_an_owner_refuses_to_boot(tmp_path):
+    """Otherwise `.name` raises IndexError mid-tick, which is what boot checks avoid."""
+    with pytest.raises(Exception, match="string_pattern_mismatch|pattern"):
+        RepoConfig(slug="app", reviewer_login="rev", bare=tmp_path)
+
+
+def test_a_key_set_twice_in_the_yaml_refuses_to_boot(tmp_path):
+    """PyYAML keeps the last one silently; a dead block is not a config."""
+    path = _write_config(tmp_path)
+    path.write_text(path.read_text() + "poll_interval_s: 60\npoll_interval_s: 120\n")
+    with pytest.raises(SystemExit, match="set twice"):
         configmod.load(path)
 
 
