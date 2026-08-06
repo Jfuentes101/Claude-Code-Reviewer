@@ -101,6 +101,14 @@ def _parser() -> argparse.ArgumentParser:
 async def _run(args: argparse.Namespace) -> int:
     cfg = configmod.load(args.config)
     secrets = configmod.load_secrets(cfg)
+
+    # before the Db: the panel reads through its own read-only connections, and
+    # opening a writable one here would migrate the schema and hold it open for
+    # the life of a process that serves forever
+    if args.command == "dashboard":
+        dashboard.serve(cfg, secrets, host=args.host, port=args.port)
+        return 0
+
     db = Db(cfg.db_path)
     slack = Slack(
         token=secrets.slack_bot_token,
@@ -117,10 +125,6 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     try:
-        if args.command == "dashboard":
-            dashboard.serve(cfg, secrets, host=args.host, port=args.port)
-            return 0
-
         if args.command == "digest":
             listed = await post_digest(cfg, slack, days=args.days)
             logger.info("digest done: %d PR(s) listed", listed)

@@ -156,3 +156,30 @@ def test_an_account_approval_is_not_marked(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok", model="sonnet", ci_state="green")
     assert "3rd-party" not in render(cfg, None, db)
+
+
+async def test_the_panel_process_never_opens_a_writable_connection(tmp_path, monkeypatch):
+    """serve() blocks forever, so a Db built before it holds a write connection for
+    the life of the process — and migrates the schema onto a fresh volume."""
+    import yaml
+
+    from robbie import main as main_mod
+
+    (tmp_path / "app.git").mkdir()
+    conf = tmp_path / "robbie.yaml"
+    conf.write_text(yaml.safe_dump({
+        "slack": {"owner_id": "U0"},
+        "state_dir": str(tmp_path / "state"),
+        "repos": [{
+            "slug": "acme/app", "reviewer_login": "rev", "bare": str(tmp_path / "app.git"),
+        }],
+    }))
+    for name in ("GH_TOKEN", "SLACK_BOT_TOKEN", "ANTHROPIC_API_KEY"):
+        monkeypatch.setenv(name, "x")
+    served: list[int] = []
+    monkeypatch.setattr(main_mod.dashboard, "serve", lambda *a, **k: served.append(1))
+
+    args = main_mod._parser().parse_args(["--config", str(conf), "dashboard"])
+    assert await main_mod._run(args) == 0
+    assert served == [1]
+    assert not (tmp_path / "state" / "robbie.db").exists(), "the panel created the DB"
