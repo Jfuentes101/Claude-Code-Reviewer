@@ -207,22 +207,24 @@ images — is made by `up` itself.
 
 ```bash
 git clone <this repo> && cd robbie
-cp .env.example .env                       # tokens; chmod 600
-cp config/robbie.yaml.example config/robbie.yaml
-cp config/slack-users.tsv.example config/slack-users.tsv
-# edit all three
-
-./scripts/setup
+./scripts/setup      # copies .env and robbie.yaml from the examples, then stops
+# fill both in
+./scripts/setup      # and again
 ```
 
 `setup` checks everything above, clones any mirror the config names and does not
-have, builds both images and starts the daemon. `scripts/setup --check` stops
-after the checks and changes nothing. By hand it is the same four commands:
+have, puts `mirror-sync` on a 6-hourly cron if nothing refreshes them yet, builds
+both images, starts the daemon and finishes with a dry run — which writes nothing
+and fails loudly, because *up* and *would review* are different claims.
+`scripts/setup --check` stops after the checks and changes nothing.
+
+By hand it is the same five commands:
 
 ```bash
 ./scripts/mirror-sync owner/repo           # ~1 GB clone, and it must come first
 docker compose build                       # ROBBIE_UID/GID are read HERE, not at up
 docker compose up -d
+docker compose exec robbie robbie --dry-run poll --once
 docker compose logs -f
 ```
 
@@ -250,18 +252,14 @@ in `docker compose logs`, not a daemon that quietly reviews nothing:
 | a token | `GH_TOKEN is not set`, `backend=api needs ANTHROPIC_API_KEY`, or `CLAUDE_CREDENTIALS not readable` |
 | `ROBBIE_UID`/`ROBBIE_GID` on `backend: oauth` | nothing at boot — every *review* fails on an unreadable token instead. They are baked into the reviewer image at build time, so changing them means `compose build` again |
 
-Then prove it before it reviews anything:
+The dry run `setup` ends on is what proves it: it reads the queue and runs every
+gate while writing nothing, so a bad token, an unreadable mirror or a path that
+means something different inside the container surfaces there instead of halfway
+through a paid review.
 
-```bash
-docker compose exec robbie robbie --dry-run poll --once
-```
-
-That reads the queue, runs every gate, and writes nothing — so a bad token, an
-unreadable mirror or a path that means something different inside the container
-surfaces there instead of halfway through a paid review.
-
-Put `./scripts/mirror-sync` on a timer (systemd, cron). A stale mirror costs a
-slower clone, not a wrong review — `gh` fetches the PR head itself.
+A stale mirror costs a slower clone, not a wrong review — `gh` fetches the PR head
+itself — so the cron `setup` installs is a convenience, and a systemd timer does
+just as well.
 
 ### What each file wants from you
 
