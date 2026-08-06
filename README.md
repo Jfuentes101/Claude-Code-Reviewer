@@ -155,7 +155,7 @@ Nothing here is created for you. `up` is the last step, not the first.
 | **`git`, and disk for a mirror** | one bare clone per repo, the size of that repo — ~1 GB for a monolith. `./scripts/mirror-sync` makes it; compose never can, because the mirror is mounted read-only |
 | **a GitHub account for the reviewer** | its *pending review requests are the queue*. `GH_TOKEN` (scope `repo`) must belong to it, because reviews are posted as that account. Put a second, **read-only** token in `GH_TOKEN_REVIEWER` — that is the one the model gets |
 | **a Slack bot token** | `chat:write`, invited to `slack_channel`. Author DMs need a `slack-users.tsv` you fill in by hand; the shipped example maps nobody |
-| **a model to review with** | `ANTHROPIC_API_KEY` for `backend: api`, or a `.credentials.json` from a machine where `claude login` ran for `backend: oauth` |
+| **a model to review with** | `ANTHROPIC_API_KEY` for `backend: api`, or a `.credentials.json` from a machine where `claude login` ran for `backend: oauth`. Any endpoint speaking the Anthropic Messages API can take some or all of the reviews instead — see [Which model reviews](#which-model-reviews) |
 
 Everything else — the database, the state volume, the compose network, the
 images — is made by `up` itself.
@@ -165,12 +165,32 @@ git clone <this repo> && cd robbie
 cp .env.example .env                       # tokens; chmod 600
 cp config/robbie.yaml.example config/robbie.yaml
 cp config/slack-users.tsv.example config/slack-users.tsv
+# edit all three
 
+./scripts/setup
+```
+
+`setup` checks everything above, clones any mirror the config names and does not
+have, builds both images and starts the daemon. `scripts/setup --check` stops
+after the checks and changes nothing. By hand it is the same four commands:
+
+```bash
 ./scripts/mirror-sync owner/repo           # ~1 GB clone, and it must come first
 docker compose build                       # ROBBIE_UID/GID are read HERE, not at up
 docker compose up -d
 docker compose logs -f
 ```
+
+Later, on a new commit:
+
+```bash
+./scripts/update      # pull, rebuild both images, recreate what changed
+```
+
+Rebuilding the **reviewer** image is the part that gets forgotten by hand:
+`reviewer/entrypoint.sh` lives in it, and a change there is invisible until
+something rebuilds it. A restart is not abrupt — compose sends SIGTERM and robbie
+finishes the tick in flight, so an update can take as long as its longest review.
 
 ### If you skip one
 
@@ -376,6 +396,56 @@ isn't a broken build.
 put the toolchain in a child image, point that repo's `image:` at it, and say so
 in that repo's own review command file. The review criteria live in the repo
 being reviewed, which is where a per-repo lint policy belongs.
+
+## Which model reviews
+
+Two separate questions: **who is billed**, and **which model runs it**.
+
+`backend` answers the first — `api` (an `ANTHROPIC_API_KEY`) or `oauth` (a
+`claude login` session). That account's default model reviews everything unless
+you say otherwise.
+
+`review_models` answers the second. It splits reviews between arms by weight:
+
+```yaml
+review_models:
+  - {model: glm-5.2:cloud, via: endpoint}
+  - {model: qwen3.5:397b-cloud, via: endpoint}
+  - {model: sonnet, weight: 2}          # via: backend, the default
+```
+
+`via: endpoint` sends the run to `REVIEW_BASE_URL` with `REVIEW_API_TOKEN`
+instead — **any endpoint that speaks the Anthropic Messages API** (`/v1/messages`).
+`https://ollama.com` serves one, so a token from its settings page is the entire
+setup: no local `ollama serve`, no sidecar, no OAuth, nothing mounted. Same
+container, same policy, same prompt, same block contract — the model is the only
+thing that changes, which is what makes comparing them mean anything.
+
+That endpoint is undocumented by ollama (the published API is `/api/chat`), so it
+can move without notice. If it does, a shared `ollama serve` sidecar is the
+fallback and the URL is config, not code.
+
+- **Routing is a hash of the dedup key**, not a counter: no state to keep, and the
+  same commit always lands on the same arm, so a re-review compares like with like
+  instead of moving the variable being measured.
+- **An arm whose meter is spent is covered by the other side** — the heaviest arm
+  across the endpoint divide, and only if *its* meter allows. Coverage over an
+  exact ratio, deliberately. `once --model` is never substituted: that is a
+  request, not a preference.
+- **The meter follows where the run is billed**, not `backend`. A review sent to a
+  third party spends nothing on the account, and holding it against the account's
+  window would refuse it for a reason that does not apply to it.
+
+`scripts/model-compare` prints the table from rows robbie already writes — verdict,
+findings, blocking, inline, summary findings, tokens, seconds, per model per commit.
+Three things in it do **not** compare across providers, and the script will not
+pretend otherwise:
+
+| column | why |
+|---|---|
+| `cost_usd` | fiction for endpoint runs: the CLI prices tokens from its own table for a model it does not price. The real number is the provider's own meter |
+| `tokens_in` | Anthropic's excludes cache reads and a third party has no cache, so the same review reads as 39 tokens on one side and 761k on the other |
+| `findings` | counts the INLINE block only, and a re-review is asked *not* to repeat inline what is already posted. Read it next to `summary_findings`, never alone |
 
 ## Cost
 

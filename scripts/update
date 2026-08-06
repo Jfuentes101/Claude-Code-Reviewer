@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Pull the repo and restart on the new code.
+#
+#   scripts/update
+#
+# Builds both images every time, on purpose: the reviewer image carries
+# reviewer/entrypoint.sh, and a change there is invisible until something
+# rebuilds it — which for a long time nothing did.
+#
+# `up -d` recreates only what changed. A review in flight is not killed: compose
+# sends SIGTERM and robbie finishes the tick, which is what stop_grace_period is
+# for, so an update can take as long as the longest running review.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "the working tree has changes; commit or stash them first:" >&2
+  git status --short --untracked-files=no >&2
+  exit 1
+fi
+
+before="$(git rev-parse --short HEAD)"
+if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+  echo "pulling…"
+  git pull --ff-only
+else
+  echo "no upstream for $(git rev-parse --abbrev-ref HEAD); rebuilding what is here"
+fi
+after="$(git rev-parse --short HEAD)"
+
+if [[ "$before" == "$after" ]]; then
+  echo "already at $after — rebuilding anyway in case the images are older"
+else
+  echo "$before → $after"
+  git --no-pager log --oneline "$before..$after"
+  # a new key in the shipped example is a key your config does not have yet
+  if ! git diff --quiet "$before..$after" -- config/robbie.yaml.example .env.example; then
+    echo
+    echo "! robbie.yaml.example or .env.example changed — diff them against yours:"
+    echo "    git diff $before..$after -- config/robbie.yaml.example .env.example"
+  fi
+fi
+
+echo
+echo "building…"
+docker compose build
+echo "restarting…"
+docker compose up -d
+
+echo
+docker compose ps
+echo
+echo "  docker compose logs -f robbie"

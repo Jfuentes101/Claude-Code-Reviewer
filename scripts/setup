@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Check what robbie needs, then start it.
+#
+#   scripts/setup                 check, build, up -d
+#   scripts/setup --check         check only, change nothing
+#
+# Only the things that fail badly or fail late are checked here: docker, the
+# socket, the files you have to write yourself, and the mirrors — a missing
+# mirror is not an error at `up`, it is an empty root-owned directory and a
+# restart loop. Everything else robbie validates at boot with a better message
+# than this script could write.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+CHECK_ONLY=false
+[[ "${1:-}" == "--check" ]] && CHECK_ONLY=true
+
+fail=0
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=1; }
+note() { printf '    %s\n' "$1"; }
+
+echo "robbie setup"
+echo
+echo "host:"
+
+command -v docker >/dev/null 2>&1 && ok "docker" || bad "docker is not installed"
+docker compose version >/dev/null 2>&1 \
+  && ok "docker compose plugin" \
+  || bad "the docker compose plugin is missing (docker-compose v1 will not do)"
+docker info >/dev/null 2>&1 \
+  && ok "docker socket reachable" \
+  || bad "cannot talk to /var/run/docker.sock — add yourself to the docker group"
+command -v git >/dev/null 2>&1 && ok "git" || bad "git is not installed"
+
+echo
+echo "files you write yourself:"
+
+for pair in ".env:.env.example" "config/robbie.yaml:config/robbie.yaml.example"; do
+  want="${pair%%:*}" example="${pair##*:}"
+  if [[ -f "$want" ]]; then
+    ok "$want"
+  else
+    bad "$want is missing"
+    note "cp $example $want   # then edit it"
+  fi
+done
+
+# not fatal: without it an author gets no DM and the owner is told once, per author
+users_file="$(grep -oP '^\s*users_file:\s*\K\S+' config/robbie.yaml 2>/dev/null || true)"
+users_file="${users_file:-config/slack-users.tsv}"
+if [[ -f "$users_file" ]]; then
+  ok "$users_file"
+else
+  note "! $users_file (slack.users_file) is not there — author DMs will go unmapped"
+  note "  cp config/slack-users.tsv.example $users_file"
+fi
+
+if [[ -f .env ]] && [[ "$(stat -c '%a' .env)" != "600" ]]; then
+  note "note: .env is mode $(stat -c '%a' .env); it holds every token (chmod 600 .env)"
+fi
+
+# ponytail: greps the config instead of parsing YAML. The boot check is the real
+# one — this exists to catch it before docker turns a typo into an empty directory.
+if [[ -f config/robbie.yaml ]]; then
+  echo
+  echo "mirrors:"
+  mapfile -t slugs < <(grep -oP '^\s*-?\s*slug:\s*\K\S+' config/robbie.yaml || true)
+  mapfile -t bares < <(grep -oP '^\s*bare:\s*\K\S+' config/robbie.yaml || true)
+  if [[ ${#bares[@]} -eq 0 ]]; then
+    bad "no repos[].bare in config/robbie.yaml"
+  fi
+  for i in "${!bares[@]}"; do
+    bare="${bares[$i]}" slug="${slugs[$i]:-owner/repo}"
+    if [[ -f "$bare/HEAD" ]]; then
+      ok "$slug → $bare"
+    elif $CHECK_ONLY; then
+      bad "$slug has no mirror at $bare"
+      note "ROBBIE_MIRRORS=$(dirname "$bare") scripts/mirror-sync $slug"
+    else
+      note "$slug has no mirror at $bare — cloning it (this is the whole repo)"
+      ROBBIE_MIRRORS="$(dirname "$bare")" scripts/mirror-sync "$slug"
+      ok "$slug → $bare"
+    fi
+  done
+fi
+
+echo
+if [[ $fail -ne 0 ]]; then
+  echo "fix the above, then run this again."
+  exit 1
+fi
+if $CHECK_ONLY; then
+  echo "all set — scripts/setup (without --check) builds and starts it."
+  exit 0
+fi
+
+echo "building…"
+docker compose build
+echo "starting…"
+docker compose up -d
+
+echo
+echo "up. Prove it before it reviews anything:"
+echo "  docker compose exec robbie robbie --dry-run poll --once"
+echo "  docker compose logs -f robbie"
