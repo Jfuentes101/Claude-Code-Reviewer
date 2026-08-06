@@ -74,7 +74,8 @@ services:
     image: robbie-orchestrator:latest
     restart: unless-stopped
     env_file: .env
-    command: ["robbie", "dashboard", "--host", "0.0.0.0", "--port", "4020"]
+    # the image's entrypoint is `robbie`, so this is its arguments, not a command
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "4020"]
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-4020}:4020"
     networks: [robbie]
@@ -84,9 +85,13 @@ services:
       # The panel's own connection is opened read-only instead, so it cannot write
       # a row whatever happens in it.
       - ${ROBBIE_STATE:-robbie-state}:${ROBBIE_STATE:-/var/lib/robbie}
-      # the mirror is checked at boot like any other robbie process, so it has to
-      # see the same host path the config names
+      # the mirror and the policy dir are checked at boot like in any other robbie
+      # process, so this one has to see the same host paths the config names
       - ${ROBBIE_MIRRORS:-/srv/robbie/repos}:${ROBBIE_MIRRORS:-/srv/robbie/repos}:ro
+      - ${ROBBIE_POLICY:-/opt/robbie/policy}:${ROBBIE_POLICY:-/opt/robbie/policy}:ro
+      # :ro, unlike the daemon's — the panel reads the plan meter with this token
+      # and never refreshes it
+      - ${CLAUDE_CREDENTIALS:-/dev/null}:${CLAUDE_CREDENTIALS:-/dev/null}:ro
     depends_on: [robbie]
 
   # ---- MCP sidecars -------------------------------------------------------
