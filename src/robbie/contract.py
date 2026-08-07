@@ -46,8 +46,10 @@ def parse_blocks(text: str) -> Blocks:
 
 
 def _block(text: str, name: str) -> str:
-    m = re.search(rf"^<<<{name}>>>\s*$(.*?)^<<<END>>>\s*$", text, re.S | re.M)
-    return m.group(1).strip() if m else ""
+    """The LAST block of this name. A PR's files can carry these markers and a
+    reviewer quotes the code it judges, so an echoed one must not win the parse."""
+    found = re.findall(rf"^<<<{name}>>>\s*$(.*?)^<<<END>>>\s*$", text, re.S | re.M)
+    return found[-1].strip() if found else ""
 
 
 THREAD_ACTIONS = ("resolve", "reply", "leave")
