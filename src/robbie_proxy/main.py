@@ -198,6 +198,15 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         ]
         return JSONResponse({"status": "ok", "arms": arms})
 
+    async def hello(request: Request) -> JSONResponse:
+        """The CLI's reachability probe, which it sends with no credential.
+
+        Answered here rather than forwarded: it needs no upstream and carries no
+        auth, so refusing it logged a warning that read as a stolen token on every
+        single review — the CLI ignores the 401 and carries on regardless.
+        """
+        return JSONResponse({"ok": True})
+
     async def forward(request: Request) -> Response:
         arm = request.path_params["arm"]
         try:
@@ -266,6 +275,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     return Starlette(routes=[
         Route("/healthz", healthz),
         Route("/verify", verify),
+        Route("/{arm}/api/hello", hello, methods=["GET", "HEAD"]),
         Route(
             "/{arm}/{path:path}", forward,
             methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],

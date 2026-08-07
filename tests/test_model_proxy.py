@@ -390,3 +390,12 @@ def test_no_proxy_leaves_the_network_alone(tmp_path):
         docker=DockerConfig(network=None),
     )
     assert cfg.docker.network is None
+
+
+async def test_the_reachability_probe_needs_no_token_and_no_upstream(tmp_path, seen):
+    """The CLI sends it with no credential and ignores the answer; refusing it put
+    a warning that reads as a stolen token in front of every review."""
+    async with proxy(both_arms(tmp_path), seen) as client:
+        r = await client.head("/account/api/hello")
+    assert r.status_code == 200
+    assert seen == []
