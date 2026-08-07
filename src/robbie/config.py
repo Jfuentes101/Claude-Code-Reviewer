@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,21 @@ class Config(_Strict):
     review_models: list[ReviewModel] = Field(default_factory=list)
     docker: DockerConfig = DockerConfig()
     budget: BudgetConfig = BudgetConfig()
+
+    @model_validator(mode="after")
+    def _proxy_needs_a_network(self) -> Config:
+        """A reviewer reaches the proxy by service name, or it does not reach it.
+
+        Spawned over the docker socket, a container is on the default bridge and
+        cannot resolve one. Every review would then fail on a name lookup, which
+        reads as the model being unreachable rather than as this line.
+        """
+        if self.model_proxy and not self.docker.network:
+            raise ValueError(
+                "model_proxy is set but docker.network is null, so a reviewer cannot "
+                "resolve it. Set docker.network to the compose network name."
+            )
+        return self
 
     @property
     def endpoint_models(self) -> tuple[str, ...]:

@@ -9,13 +9,13 @@ them. So the comment, the inline notes and the label are deterministic rather
 than something a model has to remember to do.
 
 ```
-┌─ orchestrator ──────┐   docker.sock    ┌─ reviewer × N (--rm) ─┐
+┌─ orchestrator ──────┐   docker.sock    ┌─ reviewer × N (--rm) ──┐
 │ polling, gates, DB  │ ───────────────▶ │ clone, claude -p       │
-│ publish, slack.py   │                  │ MCP over http ─────┐   │
-└─────────┬───────────┘                  └────────────────────┼───┘
-          │            network "robbie"                       │
-          └──────────────┬────────────────────────────────────┘
-                         ▼
+│ publish, slack.py   │                  │ MCP over http          │
+└─────────┬───────────┘                  └────────────────────────┘
+          │            network "robbie"               │        
+          └──────────┬────────────────┬───────────────┘
+                     ▼                ▼
               ┌─ mcp-sentry ─┐ ┌─ mcp-asana ─┐   optional sidecars;
               │ read-only    │ │ read-only   │   tokens live here
               └──────────────┘ └─────────────┘

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from robbie import runner as runner_mod
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
@@ -366,3 +367,26 @@ async def test_no_proxy_configured_asks_nothing(tmp_path, monkeypatch):
 
     _probe(monkeypatch, boom)
     await check_model_proxy(_cfg(tmp_path), _secrets())
+
+
+def test_a_proxy_with_no_network_to_reach_it_is_a_startup_error(tmp_path):
+    """Every review would fail on a name lookup, which reads as the model being
+    unreachable rather than as one line of config."""
+    (tmp_path / "app.git").mkdir(exist_ok=True)
+    repo = RepoConfig(slug="acme/app", reviewer_login="rev", bare=tmp_path / "app.git")
+    with pytest.raises(ValidationError, match="docker.network"):
+        Config(
+            slack=SlackConfig(owner_id="U0"), repos=[repo], state_dir=tmp_path,
+            model_proxy="http://model-proxy:8080",
+            docker=DockerConfig(network=None),
+        )
+
+
+def test_no_proxy_leaves_the_network_alone(tmp_path):
+    (tmp_path / "app.git").mkdir(exist_ok=True)
+    repo = RepoConfig(slug="acme/app", reviewer_login="rev", bare=tmp_path / "app.git")
+    cfg = Config(
+        slack=SlackConfig(owner_id="U0"), repos=[repo], state_dir=tmp_path,
+        docker=DockerConfig(network=None),
+    )
+    assert cfg.docker.network is None
