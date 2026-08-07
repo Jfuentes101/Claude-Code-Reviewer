@@ -440,11 +440,22 @@ class Orchestrator:
             )
 
         if not run.ok:
-            # not recorded as judged, so the next tick retries
+            # Not recorded as judged, so the next tick retries — and the retry
+            # reuses this key, so `INSERT OR REPLACE` erases this row. `spend` is
+            # append-only, which makes it the only place a failure outlives the
+            # attempt that fixed it: without one, the operator DM about it
+            # correlates with nothing an hour later.
+            self.db.record_spend(
+                repo=repo.slug, pr=meta.number, kind="failed",
+                # an endpoint arm's cost is the CLI's own price table rather than
+                # the account's bill, and `spend` carries no model for
+                # `spend_since` to exclude it by, so it is not recorded as money
+                cost_usd=None if choice.via_endpoint else run.cost_usd,
+                duration_s=run.duration_s,
+            )
             self.db.finish_review(
                 key, state="failed", hold_reason=run.error, duration_s=run.duration_s,
-                cost_usd=run.cost_usd, transcript=str(run.transcript or ""),
-                model=choice.model,
+                transcript=str(run.transcript or ""), model=choice.model,
             )
             return await self._gave_up(
                 repo, meta, run.error or "unknown",

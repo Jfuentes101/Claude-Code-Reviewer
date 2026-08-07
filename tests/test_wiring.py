@@ -19,6 +19,7 @@ from robbie.runner import (
     TRANSCRIPT_DAYS,
     _docker_argv,
     _docker_env,
+    _kept,
     _stem,
     _why_it_failed,
     prune_transcripts,
@@ -303,6 +304,21 @@ def test_a_slug_without_an_owner_refuses_to_boot(tmp_path):
     """Otherwise `.name` raises IndexError mid-tick, which is what boot checks avoid."""
     with pytest.raises(Exception, match="string_pattern_mismatch|pattern"):
         RepoConfig(slug="app", reviewer_login="rev", bare=tmp_path)
+
+
+def test_a_failed_runs_transcript_is_not_left_for_the_retry_to_overwrite(tmp_path):
+    """`_stem` is a pure function of (repo, pr, sha, model), so the retry writes
+    these exact names — and the run that says why the first one failed is the one
+    that gets erased."""
+    stem = tmp_path / "app-7-abc1234"
+    stem.with_suffix(".json").write_text("the envelope that says why")
+    stem.with_suffix(".err").write_text("stderr")
+
+    kept = _kept(stem)
+
+    assert kept.read_text() == "the envelope that says why"
+    assert kept.with_suffix(".err").is_file()
+    assert not stem.with_suffix(".json").exists(), "the retry must find its own name free"
 
 
 def test_a_label_that_would_break_the_search_query_refuses_to_boot(tmp_path):

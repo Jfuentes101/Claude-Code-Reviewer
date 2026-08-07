@@ -96,7 +96,7 @@ async def run_review(
         return ReviewRun(
             ok=False,
             duration_s=elapsed,
-            transcript=stem.with_suffix(".json"),
+            transcript=_kept(stem),
             error=_why_it_failed(proc.returncode, out, err),
         )
 
@@ -106,7 +106,7 @@ async def run_review(
         return ReviewRun(
             ok=False,
             duration_s=elapsed,
-            transcript=stem.with_suffix(".json"),
+            transcript=_kept(stem),
             error=f"could not parse the run envelope: {ex}",
         )
 
@@ -194,6 +194,24 @@ def _stem(
         # a docker name and a filename both refuse most of what a model tag holds
         tag = f"{tag}-{re.sub(r'[^A-Za-z0-9]+', '-', model).strip('-')}"
     return tag
+
+
+def _kept(stem: Path) -> Path:
+    """Move a failed run's transcripts aside, and say where they went.
+
+    `_stem` is a pure function of (repo, pr, sha, model), so the retry writes the
+    same filenames — and the run that says why the first one failed is the one
+    erased. Kept under the same directory and the same 30-day prune, because this
+    is the file somebody reads when an operator DM arrives an hour late.
+
+    A rename that fails is not worth losing the run over: the caller still gets a
+    path, and at worst it is the one the retry will overwrite.
+    """
+    kept = stem.with_name(f"{stem.name}-failed-{int(time.time())}")
+    for suffix in (".json", ".err"):
+        with contextlib.suppress(OSError):
+            stem.with_suffix(suffix).rename(kept.with_suffix(suffix))
+    return kept.with_suffix(".json")
 
 
 def _why_it_failed(code: int | None, out: bytes, err: bytes) -> str:

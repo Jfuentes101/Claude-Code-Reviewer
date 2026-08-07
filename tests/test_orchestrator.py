@@ -618,6 +618,39 @@ async def test_no_publish_still_records_the_cost(orch, repo, monkeypatch):
     assert orch.db.spend_since(0) == pytest.approx(0.42), "the run cost real money"
 
 
+async def test_a_failure_outlives_the_retry_that_replaces_its_row(orch, repo, monkeypatch):
+    """The retry reuses the key, so `INSERT OR REPLACE` erases the failed row. If
+    nothing else recorded it, the operator DM about it correlates with nothing an
+    hour later — which is exactly how a stale one costs an afternoon."""
+    stub_run(monkeypatch, ReviewRun(ok=False, error="boom", cost_usd=0.30, duration_s=12.0))
+    await orch._review(repo, pr(), KEY, REQ)
+
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "posted")))
+    stub_run(monkeypatch, ok_run("needs-work"))
+    await orch._review(repo, pr(), KEY, REQ)
+
+    assert orch.db.get_review(KEY).state == "published", "the row is the retry's now"
+    kept = list(orch.db.conn.execute("SELECT kind, cost_usd FROM spend WHERE pr=7"))
+    assert [r["kind"] for r in kept] == ["failed"]
+    assert kept[0]["cost_usd"] == pytest.approx(0.30), "a container that died still spent"
+
+
+async def test_a_third_party_failure_is_not_recorded_as_the_account_s_money(
+    orch, cfg, repo, monkeypatch
+):
+    """`spend` carries no model, so `spend_since` cannot exclude an endpoint arm
+    from it the way it does for `reviews`."""
+    monkeypatch.setattr(
+        cfg, "review_models", [ReviewModel(model="glm-5.2:cloud", via="endpoint")]
+    )
+    stub_run(monkeypatch, ReviewRun(ok=False, error="boom", cost_usd=9.90, duration_s=12.0))
+    await orch._review(repo, pr(), KEY, REQ)
+
+    kept = list(orch.db.conn.execute("SELECT kind, cost_usd FROM spend WHERE pr=7"))
+    assert [r["kind"] for r in kept] == ["failed"], "the failure is still recorded"
+    assert kept[0]["cost_usd"] is None, "but not as dollars the account was billed"
+
+
 async def test_no_publish_leaves_the_key_unjudged(orch, repo, monkeypatch):
     """The row is what every gate reads. Recording this pass as published would
     park the PR out of the queue over a review that reached nobody, and the real
