@@ -157,6 +157,32 @@ def test_the_base_ref_reaches_the_container(tmp_path):
     assert "BASE_REF=release/2026" in argv
 
 
+def test_the_criteria_ref_is_config_not_the_base_the_pr_chose(tmp_path):
+    """The author picks the base, so a branch carrying poisoned criteria must not
+    become the rules by being targeted as one."""
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(base_ref="attacker"), name="n")
+    assert "CRITERIA_REF=main" in argv
+    assert "CRITERIA_REF=attacker" not in argv
+
+
+def test_a_repo_on_another_trunk_says_so(tmp_path):
+    cfg = _cfg(tmp_path, repos=[RepoConfig(
+        slug="acme/app", reviewer_login="rev", bare=Path("/srv/mirrors/app.git"),
+        criteria_ref="master",
+    )])
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+    assert "CRITERIA_REF=master" in argv
+
+
+def test_a_criteria_ref_that_could_forge_a_query_string_refuses_to_boot():
+    with pytest.raises(ValueError):
+        RepoConfig(
+            slug="acme/app", reviewer_login="rev", bare=Path("/srv/mirrors/app.git"),
+            criteria_ref="main&path=elsewhere",
+        )
+
+
 def test_the_image_is_the_last_argument(tmp_path):
     cfg = _cfg(tmp_path)
     argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
@@ -243,6 +269,21 @@ def test_truncation_never_leaves_a_half_character():
     out.encode("utf-8")  # would raise on a broken surrogate
     assert out.endswith("_…truncated._\n")
     assert len(out.encode("utf-8")) < MAX_BYTES + 200
+
+
+def test_nothing_a_pr_may_not_read_shares_the_reviewers_network():
+    """A reviewer joins `docker.network` and can reach any service on it by name.
+    The dashboard serves every transcript, title and spend figure with no auth."""
+    compose = __import__("yaml").safe_load(
+        Path("docker-compose.yml").read_text(encoding="utf-8")
+    )
+    on_it = {
+        name for name, svc in compose["services"].items()
+        if "robbie" in (svc.get("networks") or [])
+    }
+    assert on_it == {"robbie", "model-proxy", "mcp-sentry"}, (
+        "a service joined the reviewers' network; it must be one a PR may read"
+    )
 
 
 def test_the_shipped_policy_is_present_and_whole():

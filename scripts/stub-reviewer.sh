@@ -7,7 +7,7 @@
 # STUB_HOLD controls how long it sits still, so containers overlap observably.
 set -euo pipefail
 
-: "${REPO_SLUG:?}" "${PR_NUMBER:?}" "${BASE_REF:?}" "${REVIEW_COMMAND:?}"
+: "${REPO_SLUG:?}" "${PR_NUMBER:?}" "${BASE_REF:?}" "${CRITERIA_REF:?}" "${REVIEW_COMMAND:?}"
 
 cat > /dev/null   # drain the preamble the orchestrator pipes in
 
@@ -24,7 +24,7 @@ gh pr checkout "$PR_NUMBER" >/dev/null
 branch="$(git branch --show-current)"
 head="$(git rev-parse --short HEAD)"
 
-criteria_bytes=$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$BASE_REF" \
+criteria_bytes=$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$CRITERIA_REF" \
   -H "Accept: application/vnd.github.raw" | wc -c)
 
 sleep "${STUB_HOLD:-8}"

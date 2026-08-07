@@ -256,6 +256,8 @@ def _docker_argv(
         "-e", f"REVIEW_COMMAND={repo.review_command}",
         "-e", f"REVIEW_EFFORT={cfg.review_effort}",
         "-e", f"BASE_REF={meta.base_ref}",
+        # the diff is judged against BASE_REF; the criteria come from here
+        "-e", f"CRITERIA_REF={repo.criteria_ref}",
         "-e", f"REVIEW_MODE={mode}",
     ]
     if cfg.docker.no_new_privileges:

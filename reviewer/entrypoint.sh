@@ -4,6 +4,8 @@
 set -euo pipefail
 
 : "${REPO_SLUG:?}" "${PR_NUMBER:?}" "${PR_URL:?}" "${REVIEW_COMMAND:?}" "${BASE_REF:?}"
+# unset means an orchestrator too old to pin it, which is the bug this closes
+: "${CRITERIA_REF:?}"
 
 preamble="$(cat)"
 MODE="${REVIEW_MODE:-review}"
@@ -29,16 +31,17 @@ git remote set-url origin "https://github.com/$REPO_SLUG.git"
 # even for a fork or a branch the mirror has never seen
 gh pr checkout "$PR_NUMBER" >/dev/null
 
-# The review criteria come from the BASE branch, never from the checkout: a PR
-# must not be able to rewrite the rules it is judged by. Same reason the CLI runs
-# with --setting-sources user below, which keeps a .claude/ added by this PR from
-# being loaded as instructions. Fetched over the API rather than with git, which
-# has no credentials of its own here, and to avoid pulling a whole branch for one file.
+# The review criteria come from CRITERIA_REF, never from the checkout and never
+# from BASE_REF: a PR must not be able to rewrite the rules it is judged by, and
+# it chooses its own base branch. Same reason the CLI runs with
+# --setting-sources user below, which keeps a .claude/ added by this PR from being
+# loaded as instructions. Fetched over the API rather than with git, which has no
+# credentials of its own here, and to avoid pulling a whole branch for one file.
 body=""
 if [[ "$MODE" == "review" ]]; then
-  if ! body="$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$BASE_REF" \
+  if ! body="$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$CRITERIA_REF" \
                 -H "Accept: application/vnd.github.raw" 2>/dev/null)"; then
-    echo "entrypoint: $REVIEW_COMMAND not found on $BASE_REF" >&2
+    echo "entrypoint: $REVIEW_COMMAND not found on $CRITERIA_REF" >&2
     exit 3
   fi
   # frontmatter out, $ARGUMENTS in. Variable expansion, never eval: backticks

@@ -78,7 +78,8 @@ services:
     command: ["dashboard", "--host", "0.0.0.0", "--port", "4020"]
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-4020}:4020"
-    networks: [robbie]
+    # Deliberately NOT on the robbie network: the reviewers are, and this serves
+    # every transcript with no auth. It needs nothing there anyway.
     volumes:
       - ./config:/etc/robbie:ro
       # not :ro — SQLite needs to write the -shm file even to read a WAL database.

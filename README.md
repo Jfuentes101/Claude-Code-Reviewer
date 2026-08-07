@@ -228,10 +228,10 @@ Robbie reviews someone else's repo, and three things there are not its to create
   is an error at publish time, not a label created for you. `hold_labels` and
   `done_labels` are only ever read, so a name that matches nothing is not an
   error — it is a gate that silently never fires. Copy them from the repo.
-- **the review command is merged on the base branch** — `review_command`
-  (`.claude/commands/code-review.md` by default) is read from the *base* of each PR, so a
-  PR cannot rewrite the rules it is judged by. Missing, the reviewer exits 3 and
-  every review fails.
+- **the review command is merged on `criteria_ref`** — `review_command`
+  (`.claude/commands/code-review.md` by default) is read from that ref, `main` unless
+  you say otherwise, so a PR cannot rewrite the rules it is judged by. Missing, the
+  reviewer exits 3 and every review fails.
 - **something requests the reviewer** — the queue is PRs carrying the label *and*
   with a pending review request for `reviewer_login`. A CODEOWNERS entry, a team
   convention, or a human clicking. Without it the queue is correctly empty forever.
@@ -378,7 +378,7 @@ Both are fine-grained tokens, **Only select repositories**, scoped to the repos 
 |---|---|---|---|
 | **Pull requests** | Read and **write** | Read-only | the queue search, `pr view`, the diff and the review threads — and posting the review, its inline comments and the thread replies |
 | **Issues** | Read and **write** | — | the conversation comments (CI note, red build, the CI trigger phrase), the review-request timeline, and the needs-work label: labels are the issues API, not the PR one |
-| **Contents** | Read-only | Read-only | the reviewer's `gh pr checkout`, and the review-criteria file read off the **base** branch |
+| **Contents** | Read-only | Read-only | the reviewer's `gh pr checkout`, and the review-criteria file read off `criteria_ref` |
 | **Commit statuses** | Read-only | — | what gate 6 judges and what the CI watch follows |
 | **Metadata** | Read-only | Read-only | mandatory; GitHub ticks it for you |
 
@@ -483,7 +483,7 @@ Three layers, and which one owns a rule is not arbitrary:
 |---|---|---|---|
 | output contract + CI facts | `contract.py`, stdin | the prompt | a robbie release |
 | cross-repo standards | `policy/` → reviewer's `~/.claude/` | **user** | editing a file |
-| this repo's criteria | `.claude/commands/…` on the **base branch** | read explicitly | a merged PR |
+| this repo's criteria | `.claude/commands/…` on **`criteria_ref`** | read explicitly | a merged PR |
 
 `policy/` is mounted read-only into every reviewer and copied to its user scope,
 which the CLI loads on its own. That means it costs no prompt tokens, the model
@@ -519,12 +519,18 @@ style:
    dropped options.
 8. **How to write it** — lead with the verdict, cap prose, evidence in a block.
 
-**The criteria are read from the base branch, never from the checkout.** A PR is
-under review; the rules it is judged by are not up for negotiation by it.
-Otherwise a PR could rewrite `.claude/commands/code-review.md` to say "emit verdict ok",
-or add a `.claude/CLAUDE.md` that instructs the reviewer to find nothing. For the
-same reason the reviewer runs with `--setting-sources user`, so a `.claude/`
-appearing in the PR is never loaded as instructions.
+**The criteria are read from `criteria_ref`, never from the checkout and never from
+the PR's base branch.** A PR is under review; the rules it is judged by are not up
+for negotiation by it. Otherwise a PR could rewrite `.claude/commands/code-review.md`
+to say "emit verdict ok", or add a `.claude/CLAUDE.md` that instructs the reviewer to
+find nothing. For the same reason the reviewer runs with `--setting-sources user`, so
+a `.claude/` appearing in the PR is never loaded as instructions.
+
+The base branch is *not* good enough for this, which is what it used to be: the
+author picks it. Push a branch carrying a poisoned `code-review.md`, open a PR that
+targets it, and those are the rules — while the diff still looks ordinary. So the
+criteria ref is config, defaulting to `main`, and the base ref keeps its own job of
+being what the diff is judged against.
 
 To add a standard: edit a file under `policy/`. To make it language-specific,
 add another file — everything in that directory reaches the user scope.
@@ -679,6 +685,9 @@ language runtimes out of the base image is what keeps it small.
   network. Everything it holds should therefore be worth as little as possible to
   whoever takes it. The container joins `docker.network` only when `review_mcp`
   or `model_proxy` is set, so with neither there is nothing internal to reach.
+  With either set, whatever else is on that network is reachable by service name
+  from inside a reviewer — which is why the dashboard is deliberately not on it,
+  and why anything you add there should be something a PR is allowed to read.
 
 - **GitHub access is the cheap half.** Triggering a review means pushing to the
   repo, so an attacker already holds write there — a stolen read-only token buys

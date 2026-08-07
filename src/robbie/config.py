@@ -43,6 +43,9 @@ class RepoConfig(_Strict):
     # carries: `label` and one of these together means not reviewed.
     done_labels: tuple[str, ...] = ()
     review_command: str = ".claude/commands/code-review.md"
+    # Where `review_command` is read from. Not the PR's base branch: the PR picks
+    # that, and the rules it is judged by are not its to choose.
+    criteria_ref: str = Field(default="main", pattern=r"^[A-Za-z0-9._/-]+$")
     slack_channel: str | None = None
     image: str = "robbie-reviewer:latest"
     # CodeRabbit reports its review as a commit status; it is never a broken build

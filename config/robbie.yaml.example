@@ -91,6 +91,10 @@ repos:
     # these AND `label` is not reviewed, and it leaves the dashboard too.
     done_labels: ["Ready for Prod", "Ready to Merge"]
     review_command: .claude/commands/code-review.md
+    # which ref `review_command` is read from. NOT the PR's base branch: the PR
+    # picks that, so a branch carrying poisoned criteria could be targeted as the
+    # base and become the rules. Set it to this repo's trunk.
+    criteria_ref: main
     slack_channel: C01234567
     image: robbie-reviewer:latest
     ignore_checks: ["CodeRabbit"]
