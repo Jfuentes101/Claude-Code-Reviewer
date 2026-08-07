@@ -71,6 +71,10 @@ merged on the base branch — robbie creates neither.
 matches nothing is **not** an error — it is a gate that silently never fires. Copy
 them out of the repo rather than typing them: `gh label list --repo owner/name`.
 
+`label` is also the only one interpolated into a GraphQL search string, so it may
+carry no quote and no newline. robbie refuses to boot on one rather than let it
+surface three calls later as an unreadable query.
+
 Removing one: delete the entry and restart. Its rows stay in the database, and
 `ci_watch` stops chasing any approval it was still following.
 
@@ -108,6 +112,12 @@ The container then gets that token and a URL; the real credential is added insid
 the sidecar. robbie verifies the token against it at boot and refuses to start if
 it is wrong — otherwise the CLI retries the 401 until the container hits
 `docker.timeout_s` and every review is recorded as a timeout.
+
+The sidecar forwards `v1/messages` and `v1/models` and refuses everything else, so
+the token a reviewer holds cannot spend the credential behind it on the account's
+usage, profile or organization endpoints. `MODEL_PROXY_PATHS` in `.env` widens that
+list if a CLI release starts calling somewhere new; a refused path comes back as a
+403 naming what is allowed, which lands in the run's transcript.
 
 The account arm takes whichever credential the deployment has. `backend: oauth`
 gives it the session file, which it **re-reads rather than refreshes** — so whatever

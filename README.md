@@ -426,7 +426,18 @@ docker compose exec robbie robbie poll --once                   # a single tick
 docker compose exec robbie robbie digest --days 7               # stuck-in-review digest
 docker compose exec robbie robbie threads --pr 123              # just the replies half
 docker compose exec robbie robbie --dry-run poll --once         # decide, write nothing
+docker compose exec robbie robbie --no-publish poll --once      # review for real, post nothing
 ```
+
+The two quiet modes differ in what they cost. `--dry-run` decides and stops, so it
+starts no container and spends nothing. `--no-publish` runs the review for real and
+then writes nothing outward, which is how a deployment is proved before it comments
+on anybody's PR — it costs a full review each time.
+
+Neither leaves anything a gate would read as judged: a pass nobody saw must not park
+a PR out of the queue. So a `--no-publish` review keeps its cost, model and counts
+but lands in the panel under *waiting, held or failed* with `--no-publish: nothing
+was posted` as its reason, and the real tick behind it still reviews the PR.
 
 ## The metrics panel
 
