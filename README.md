@@ -588,10 +588,25 @@ language runtimes out of the base image is what keeps it small.
   arbitrary API.
 - **The accepted risk is exfiltration, not writes.** The reviewer runs arbitrary
   code from the PR with `bypassPermissions`, and nothing restricts its outbound
-  network. A read-only token means the worst it can do with `GH_TOKEN_REVIEWER`
-  is read and send it somewhere — that is the bet, and it only holds while that
-  token is read-only. The container joins `docker.network` only when
-  `review_mcp` is set, so with no sidecars there is nothing internal to reach.
+  network. Everything it holds should therefore be worth as little as possible to
+  whoever takes it. The container joins `docker.network` only when `review_mcp`
+  or `model_proxy` is set, so with neither there is nothing internal to reach.
+
+- **GitHub access is the cheap half.** Triggering a review means pushing to the
+  repo, so an attacker already holds write there — a stolen read-only token buys
+  them nothing they did not have. That reasoning only works while the token
+  really is read-only and really is scoped to that repo: robbie warns at boot
+  when `GH_TOKEN_REVIEWER` is unset, because the fallback is the token that
+  publishes, whose scopes cover every repo the account can reach.
+
+- **The model credentials are the expensive half, and `model_proxy` is how they
+  stay out.** Those are a bearer key with spend behind it, and on `backend=oauth`
+  a whole subscription session — refresh token and all, and in the same file as
+  every other OAuth session the host has logged into. None of that is anything a
+  PR author is supposed to have. Point `model_proxy` at the sidecar and the
+  container gets a URL and a token that is worth nothing off the compose network;
+  the real credential goes on the request inside `src/robbie_proxy`, which is the
+  only thing that ever reads it. Left empty, every reviewer holds the real one.
 - The orchestrator holds the docker socket, which is root on the host. That is
   the accepted trade for a single-tenant VPS. If the host is shared, run the
   orchestrator under systemd on the host instead and keep only the workers in

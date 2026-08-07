@@ -94,6 +94,47 @@ services:
       - ${CLAUDE_CREDENTIALS:-/dev/null}:${CLAUDE_CREDENTIALS:-/dev/null}:ro
     depends_on: [robbie]
 
+  # ---- model credential proxy (opt in) ------------------------------------
+  #
+  # A reviewer runs a model with bypassPermissions over a PR's own code, so a key
+  # in that container is readable by anything the PR can talk the model into
+  # running. This holds the real ones — the account's OAuth session, the review
+  # endpoint's key — and the reviewers get MODEL_PROXY_TOKEN, which is worth
+  # nothing off this network.
+  #
+  #   openssl rand -hex 32                 # put it in .env as MODEL_PROXY_TOKEN
+  #   docker compose --profile proxy up -d
+  #
+  # Then point `model_proxy` in robbie.yaml at it:
+  #   model_proxy: http://model-proxy:8080
+  #
+  # No ports: are published on purpose. Reachable from the compose network and
+  # nowhere else is the whole security property.
+  model-proxy:
+    profiles: [proxy]
+    build:
+      context: .
+      dockerfile: Dockerfile.model-proxy
+    image: robbie-model-proxy:latest
+    restart: unless-stopped
+    networks: [robbie]
+    environment:
+      - MODEL_PROXY_TOKEN
+      - REVIEW_BASE_URL
+      - REVIEW_API_TOKEN
+      - CLAUDE_CREDENTIALS
+    volumes:
+      # :ro, unlike the reviewers' old mount — this only reads the access token.
+      # It does not refresh, so whoever owns the host keeps that file current.
+      - ${CLAUDE_CREDENTIALS:-/dev/null}:${CLAUDE_CREDENTIALS:-/dev/null}:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # ---- MCP sidecars -------------------------------------------------------
   #
   # Read-only context the REVIEW MODEL may pull while judging a PR: "is this

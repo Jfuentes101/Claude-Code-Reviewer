@@ -131,6 +131,10 @@ class Config(_Strict):
     policy_dir: Path | None = None
     # passed to the reviewer as --mcp-config; empty means no MCP servers at all
     review_mcp: str = ""
+    # Where the model-credential proxy listens, e.g. http://model-proxy:8080.
+    # Empty (the default) hands each reviewer the real key or the real credentials
+    # file, which is what this exists to stop: see src/robbie_proxy.
+    model_proxy: str = ""
     # Empty (the default) means every review runs on the account's own model, which
     # is the only shape the spend gates can price. Listing arms splits reviews
     # between them by weight, for comparing models on one unchanged harness.
@@ -206,6 +210,9 @@ class Secrets(_Strict):
     # cannot pick one up: neither budget backend can measure spend there.
     review_base_url: str | None = None
     review_api_token: SecretStr | None = None
+    # what a reviewer presents to the model proxy. Worth nothing off the compose
+    # network, which is the point: it is what a container holds instead of a key.
+    model_proxy_token: SecretStr | None = None
 
 
 def load(path: str | Path | None = None) -> Config:
@@ -282,7 +289,10 @@ def load_secrets(cfg: Config) -> Secrets:
         ),
         review_base_url=os.environ.get("REVIEW_BASE_URL", "").strip() or None,
         review_api_token=_optional_secret("REVIEW_API_TOKEN"),
+        model_proxy_token=_optional_secret("MODEL_PROXY_TOKEN"),
     )
+    if cfg.model_proxy and s.model_proxy_token is None:
+        raise SystemExit("model_proxy is set, so MODEL_PROXY_TOKEN has to be too")
     if cfg.backend == "api" and not s.anthropic_api_key:
         raise SystemExit("backend=api needs ANTHROPIC_API_KEY")
     if cfg.backend == "oauth":

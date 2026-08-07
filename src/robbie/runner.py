@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from pydantic import SecretStr
 
 from robbie.config import Config, RepoConfig, Secrets
@@ -124,6 +125,33 @@ async def run_review(
     )
 
 
+async def check_model_proxy(cfg: Config, secrets: Secrets) -> None:
+    """Fail at boot if the reviewers cannot authenticate to the proxy.
+
+    Every model credential now reaches a run through it, and a wrong token does
+    not fail fast: the CLI retries a 401 until the container hits `timeout_s`, so
+    each PR would burn the full deadline and be recorded as a timeout.
+    """
+    if not cfg.model_proxy:
+        return
+    url = f"{cfg.model_proxy.rstrip('/')}/verify"
+    token = _plain(secrets.model_proxy_token)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as ex:
+        raise SystemExit(
+            f"model_proxy {cfg.model_proxy} is unreachable ({ex}). It is where every "
+            "model credential lives now, so no review can run without it."
+        ) from ex
+    if resp.status_code != 200:
+        raise SystemExit(
+            f"model_proxy {cfg.model_proxy} rejected MODEL_PROXY_TOKEN "
+            f"({resp.status_code}); it must be the same value the sidecar was given."
+        )
+    logger.info("model proxy at %s accepted our token", cfg.model_proxy)
+
+
 TRANSCRIPT_DAYS = 30
 
 
@@ -214,15 +242,23 @@ def _docker_argv(
     ]
     if cfg.docker.no_new_privileges:
         argv += ["--security-opt", "no-new-privileges"]
-    if cfg.docker.network and cfg.review_mcp:
-        # the network exists to reach the MCP sidecars; with none configured it is
+    if cfg.docker.network and (cfg.review_mcp or cfg.model_proxy):
+        # the network is how the sidecars are reached; with neither configured it is
         # only reachable surface for code the reviewer is about to run
         argv += ["--network", cfg.docker.network]
     if cfg.policy_dir:
         argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
     if model:
         argv += ["-e", f"REVIEW_MODEL={model}"]
-    if via_endpoint:
+    if cfg.model_proxy:
+        # Every arm goes through it and none of them carry a real credential: the
+        # arm is a path, and the proxy puts the key on the request at the far end.
+        arm = "endpoint" if via_endpoint else "account"
+        argv += [
+            "-e", "ANTHROPIC_AUTH_TOKEN",
+            "-e", f"ANTHROPIC_BASE_URL={cfg.model_proxy.rstrip('/')}/{arm}",
+        ]
+    elif via_endpoint:
         # naming a model does not move the run; only this does, and its endpoint
         # brings its own auth because the backend's would be the wrong key there
         argv += ["-e", "ANTHROPIC_AUTH_TOKEN"]
@@ -233,7 +269,8 @@ def _docker_argv(
     else:
         # rw because the CLI refreshes the OAuth token in place, and the next
         # container needs the fresh one. ponytail: concurrent refreshes can race
-        # on this file; backend=api has no such problem, which is why it's default.
+        # on this file, and it carries every other OAuth session the host has —
+        # `model_proxy` is what ends both, and this branch is what it replaces.
         argv += ["-v", f"{secrets.claude_credentials}:/home/robbie/.claude/.credentials.json"]
     if cfg.review_mcp:
         argv += ["-e", f"REVIEW_MCP={cfg.review_mcp}"]
@@ -247,10 +284,13 @@ def _docker_env(
     """The secrets `docker run -e NAME` picks up, kept out of the command line.
 
     The reviewer runs a model with bypassPermissions, so it gets the read-only
-    token when one is configured — publishing is not its job.
+    token when one is configured — publishing is not its job. With `model_proxy`
+    set it gets no model credential at all, only the token that reaches the proxy.
     """
     env = {"GH_TOKEN": secrets.reviewer_gh_token.get_secret_value()}
-    if via_endpoint:
+    if cfg.model_proxy:
+        env["ANTHROPIC_AUTH_TOKEN"] = _plain(secrets.model_proxy_token)
+    elif via_endpoint:
         env["ANTHROPIC_AUTH_TOKEN"] = _plain(secrets.review_api_token)
     elif cfg.backend == "api":
         env["ANTHROPIC_API_KEY"] = _plain(secrets.anthropic_api_key)

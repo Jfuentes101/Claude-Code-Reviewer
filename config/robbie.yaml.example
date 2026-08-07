@@ -20,6 +20,13 @@ policy_dir: /opt/robbie/policy
 # Not for robbie's own notifications — those are plain HTTP from the orchestrator.
 review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
 
+# Where the model-credential proxy listens. Empty (the default) hands every
+# reviewer the real key, or on backend=oauth mounts the account's whole session
+# file — into a container running a PR's own code with bypassPermissions. Set it
+# and the container gets MODEL_PROXY_TOKEN instead, which buys nothing off this
+# network.  docker compose --profile proxy up -d
+model_proxy: http://model-proxy:8080
+
 docker:
   cpus: "2"
   memory: 4g

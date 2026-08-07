@@ -29,6 +29,7 @@ from robbie import dashboard
 from robbie.db import Db
 from robbie.digest import post_digest
 from robbie.orchestrator import Orchestrator
+from robbie.runner import check_model_proxy
 from robbie.slack import Slack
 
 logger = logging.getLogger("robbie")
@@ -140,6 +141,10 @@ async def _run(args: argparse.Namespace) -> int:
     model = getattr(args, "model", None)
     if (why := why_no_model(cfg, secrets, model)) is not None:
         raise SystemExit(why)
+    if args.command in ("poll", "once", "threads"):
+        # only the commands that spawn one; `status` and `digest` stay usable
+        # precisely when something is down
+        await check_model_proxy(cfg, secrets)
     orch = Orchestrator(
         cfg, secrets, db, slack, dry_run=args.dry_run, no_publish=args.no_publish,
         model=model,

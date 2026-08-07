@@ -83,6 +83,32 @@ Weights are relative slots. `via: endpoint` needs `REVIEW_BASE_URL` and
 the account's. One model for one run, ignoring the split:
 `robbie once --repo o/r --pr N --model <tag>`.
 
+## Keep the model keys out of the reviewers
+
+A reviewer runs a model with `bypassPermissions` over a PR's own code, so a key in
+that container is readable by anything the PR can talk the model into running. The
+GitHub token is the cheap one — opening the PR already took write access. The model
+credentials are not, and on `backend: oauth` the mounted file is the account's whole
+session, refresh token included, alongside every other OAuth login on the host.
+
+```bash
+openssl rand -hex 32          # -> MODEL_PROXY_TOKEN in .env
+docker compose --profile proxy up -d
+```
+
+```yaml
+model_proxy: http://model-proxy:8080
+```
+
+The container then gets that token and a URL; the real credential is added inside
+the sidecar. robbie verifies the token against it at boot and refuses to start if
+it is wrong — otherwise the CLI retries the 401 until the container hits
+`docker.timeout_s` and every review is recorded as a timeout.
+
+The proxy does **not** refresh the OAuth token: it re-reads the file, so whatever
+keeps that file current on the host is what keeps reviews running. On a host where
+nobody runs `claude` interactively, reviews start failing within hours, loudly.
+
 ## Change what it is allowed to spend
 
 | | `backend: api` | `backend: oauth` |

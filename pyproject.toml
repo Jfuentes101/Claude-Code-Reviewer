@@ -12,10 +12,12 @@ dependencies = [
 [project.optional-dependencies]
 # the mcp sidecars ship as their own images; this is for running them locally
 mcp = ["mcp>=2.0", "uvicorn>=0.30"]
+# the model proxy needs no MCP SDK — it forwards HTTP and swaps one header
+proxy = ["uvicorn>=0.30", "starlette>=0.37"]
 dev = [
     "pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4",
     "mypy>=1.10", "types-PyYAML",
-    "mcp>=2.0", "uvicorn>=0.30",
+    "mcp>=2.0", "uvicorn>=0.30", "starlette>=0.37",
 ]
 
 [project.scripts]
