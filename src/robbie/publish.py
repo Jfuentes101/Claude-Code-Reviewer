@@ -9,6 +9,11 @@ are deterministic rather than something a model has to remember to do.
 and parks the PR out of their queue until the author re-requests. `comment` does
 not: the author gets the findings and the label, and the PR stays in the queue.
 That is why comment posts its inline notes one at a time instead of as a review.
+
+Nothing here asks GitHub whether it already posted something. It used to, and it
+cost a full paginated read of every comment on the PR per call — the second most
+expensive read in the system. The caller records a one-shot key instead, the way
+`_request_ci` always has. The trade: a comment deleted by hand is not reposted.
 """
 
 from __future__ import annotations
@@ -26,6 +31,15 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 60_000  # GitHub caps comment bodies at 65536
 SIGNATURE = "🤖 **Automated pre-review by robbie**"
+
+
+def posted_key(kind: str, repo: RepoConfig, meta: PrMeta) -> str:
+    """One post of `kind` per commit, recorded by the caller.
+
+    Lives next to the markers it replaced so the two cannot drift: the marker is
+    what a human sees in the body, this is what stops a second post.
+    """
+    return f"posted:{kind}:{repo.slug}:{meta.number}:{meta.head_sha}"
 
 
 @dataclass(frozen=True)
@@ -79,15 +93,9 @@ async def publish_review(
             "your own pull request.</sub>"
         )
 
+    # kept in the body for a human reading the PR; what stops a second post is
+    # the caller's `posted_key`, not a scan of every comment on the PR
     marker = f"<!-- robbie-review sha={meta.head_sha} -->"
-    # a review and a comment live at different endpoints, so dedup where we post
-    endpoint = (
-        f"pulls/{meta.number}/reviews" if as_review
-        else f"issues/{meta.number}/comments"
-    )
-    if await _already_posted(repo.slug, endpoint, marker):
-        return PublishResult(False, f"already has a robbie {verdict} for {meta.head_sha[:8]}")
-
     anchored = anchor(findings, await diff_lines(repo.slug, meta.number))
     full = _assemble(marker, repo.needs_work_label, body, anchored)
 
@@ -197,9 +205,6 @@ async def post_ci_note(
     """Not a review: no label, no review event, so the pending request stays."""
     # its own marker — sharing the review one would make the real review skip later
     marker = f"<!-- robbie-ci-red sha={meta.head_sha} -->"
-    if await _already_posted(repo.slug, f"issues/{meta.number}/comments", marker):
-        return PublishResult(False, f"already has the CI note for {meta.head_sha[:8]}")
-
     what = "CI is red on this commit"
     if checks:
         what += " (`" + "`, `".join(checks) + "`)"
@@ -227,8 +232,6 @@ async def report_red_build(
     is news about the build, which is the author's to act on. One per commit.
     """
     marker = f"<!-- robbie-approved-red sha={meta.head_sha} -->"
-    if await _already_posted(repo.slug, f"issues/{meta.number}/comments", marker):
-        return PublishResult(False, f"already reported the red build for {meta.head_sha[:8]}")
     what = "`" + "`, `".join(checks) + "`" if checks else "CI"
     body = (
         f"{marker}\n{SIGNATURE}\n\nI read this as ready and asked for a build, and "
@@ -288,13 +291,6 @@ def _truncate(text: str) -> str:
         return text
     # decode with errors='ignore' drops the multibyte char the cut split in half
     return raw[:MAX_BYTES].decode("utf-8", errors="ignore") + "\n\n_…truncated._\n"
-
-
-async def _already_posted(repo: str, endpoint: str, marker: str) -> bool:
-    bodies = await gh(
-        "api", f"repos/{repo}/{endpoint}", "--paginate", "--jq", ".[].body"
-    )
-    return marker in bodies
 
 
 async def _set_label(repo: RepoConfig, pr: int, *, add: bool) -> None:

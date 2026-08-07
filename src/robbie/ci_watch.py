@@ -81,10 +81,13 @@ class CiWatch:
             return Outcome(row["repo"], row["pr"], "ready", f"green after {by}")
 
         red = tuple(failing_checks(meta, ignore=repo.ignore_checks))
+        quiet = self.dry_run or self.no_publish
+        once = publish.posted_key("approved-red", repo, meta)
+        if not quiet and self.db.notice_seen(once):
+            self._settle(row["key"], outcome)
+            return None
         try:
-            result = await publish.report_red_build(
-                repo, meta, red, dry_run=self.dry_run or self.no_publish
-            )
+            result = await publish.report_red_build(repo, meta, red, dry_run=quiet)
         except GhError as ex:
             # left unsettled on purpose: the next tick owes the author this note
             logger.warning("%s: could not post the red-build note: %s", where, ex)
@@ -92,6 +95,8 @@ class CiWatch:
         except Exception as ex:  # noqa: BLE001 — inside a TaskGroup it cancels the siblings
             logger.exception("%s: unhandled error reporting the build", where)
             return Outcome(row["repo"], row["pr"], "failed", str(ex))
+        if result.posted:
+            self.db.notice_once(once)
         self._settle(row["key"], outcome)
         logger.info("%s: red after %s approved it — %s", where, by, result.detail)
         return Outcome(row["repo"], row["pr"], "ci-note", result.detail)

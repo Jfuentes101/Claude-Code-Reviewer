@@ -585,7 +585,9 @@ language runtimes out of the base image is what keeps it small.
   `no-new-privileges`, cpu/memory/pids caps).
 - `publish.py` is the only module that writes to GitHub: one review or one
   comment, plus the needs-work label. No approve, no merge, no close, no
-  arbitrary API.
+  arbitrary API. Nothing there asks GitHub whether it already posted something —
+  the caller records a one-shot key per commit instead, so a comment deleted by
+  hand is not reposted.
 - **The accepted risk is exfiltration, not writes.** The reviewer runs arbitrary
   code from the PR with `bypassPermissions`, and nothing restricts its outbound
   network. Everything it holds should therefore be worth as little as possible to

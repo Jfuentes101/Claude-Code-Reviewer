@@ -259,27 +259,22 @@ class Orchestrator:
             return Outcome(repo.slug, meta.number, "hold", decision.reason)
 
         if decision.action == "ci-note":
+            quiet = self.dry_run or self.no_publish
+            once = publish.posted_key("ci-red", repo, meta)
+            if not quiet and self.db.notice_seen(once):
+                return Outcome(
+                    repo.slug, meta.number, "ci-note",
+                    f"already noted the red build for {meta.head_sha[:8]}",
+                )
             result = await publish.post_ci_note(
-                repo, meta, decision.checks, dry_run=self.dry_run or self.no_publish
+                repo, meta, decision.checks, dry_run=quiet
             )
+            if result.posted:
+                self.db.notice_once(once)
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
-        _, gate = await self._admit(key)
-        if not gate.allowed:
-            if gate.notice_key:
-                await self._dm_owner_once(
-                    gate.notice_key,
-                    f"Holding off on reviews — {gate.detail}. I'll start again on my own.",
-                )
-            logger.info("budget gate closed: %s", gate.detail)
-            return Outcome(repo.slug, meta.number, "budget", gate.detail)
-        # either meter, not just the account's: an unguarded run is unguarded whoever
-        # was supposed to be measuring it
-        if gate.notice_key and budget.UNREADABLE in gate.notice_key:
-            await self._dm_owner_once(
-                gate.notice_key, f"I can't read the spend budget: {gate.detail}"
-            )
-
+        # the spend gate is `_slot`'s alone; asking here too meant two places
+        # deciding one thing, and only this one ever told the operator about it
         return await self._review(repo, meta, key, requested_at)
 
     def _choice(self, key: str) -> Choice:
@@ -298,6 +293,9 @@ class Orchestrator:
         Deciding and reserving happen under one lock because reading a meter
         suspends. `key` picks the arm and therefore the meter; without one the
         run is not a review and goes on the account's own.
+
+        The one place the spend gate is asked, and therefore the one place that
+        tells the operator about it — the caller only sees whether it has room.
         """
         async with self._sem:
             async with self._admit_lock:
@@ -307,6 +305,7 @@ class Orchestrator:
                 )
                 if gate.allowed:
                     self._inflight += 1
+            await self._tell_owner(gate)
             if not gate.allowed:
                 yield Slot(False, gate.detail)
                 return
@@ -314,6 +313,28 @@ class Orchestrator:
                 yield Slot(True, gate.detail, choice)
             finally:
                 self._inflight -= 1
+
+    async def _tell_owner(self, gate: budget.Verdict) -> None:
+        """What a spend verdict is worth waking the operator for, at most once each.
+
+        Two things are: reviews have stopped and will resume on their own, and a
+        review ran with nothing measuring it. The second is the one that used to
+        be missed — an unreadable meter reached this only on the path that also
+        happened to ask the gate a second time.
+        """
+        if gate.notice_key is None:
+            return
+        if not gate.allowed:
+            await self._dm_owner_once(
+                gate.notice_key,
+                f"Holding off on reviews — {gate.detail}. I'll start again on my own.",
+            )
+        # either meter, not just the account's: an unguarded run is unguarded
+        # whoever was supposed to be measuring it
+        elif budget.UNREADABLE in gate.notice_key:
+            await self._dm_owner_once(
+                gate.notice_key, f"I can't read the spend budget: {gate.detail}"
+            )
 
     async def _meter(self, *, via_endpoint: bool = False) -> budget.Verdict:
         """The spend gate, read off the event loop.
@@ -470,6 +491,12 @@ class Orchestrator:
         # recorded as judged either way: retrying a permanent publish failure
         # would burn a full review every tick
         self.db.finish_review(key, state="published", verdict=verdict, **common)
+        once = publish.posted_key("review", repo, meta)
+        if not self.no_publish and self.db.notice_seen(once):
+            return Outcome(
+                repo.slug, meta.number, "review",
+                f"already published for {meta.head_sha[:8]}",
+            )
         try:
             result = await publish.publish_review(
                 verdict, repo, meta, body=blocks.github, findings=findings,
@@ -484,6 +511,7 @@ class Orchestrator:
             )
 
         if result.posted:
+            self.db.notice_once(once)
             # how many of them reached a diff line, which is not the same number
             self.db.finish_review(
                 key, state="published", verdict=verdict,

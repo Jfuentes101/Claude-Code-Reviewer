@@ -540,14 +540,33 @@ async def test_cost_and_tokens_are_recorded(orch, repo, monkeypatch):
 
 async def test_the_budget_gate_stops_reviews_and_warns_once(orch, repo, monkeypatch):
     monkeypatch.setattr(orch.cfg.budget, "daily_usd", 0.0)
-    reviewed = []
-    monkeypatch.setattr(orch, "_review", lambda *a, **k: reviewed.append(1))
+    monkeypatch.setattr(orch_mod, "my_threads", _async(PrThreads()))
+
+    async def boom(*a, **k):
+        raise AssertionError("no container may spawn while the budget is closed")
+
+    monkeypatch.setattr(orch_mod, "run_review", boom)
 
     for _ in range(3):
-        outcome = await orch._act(repo, pr(), KEY, REQ, Decision("review"))
+        outcome = await orch._review(repo, pr(), KEY, REQ)
     assert outcome.action == "budget"
-    assert reviewed == [], "no container is spawned while the budget is closed"
     assert sum("Holding off" in m for m in orch.slack.owner) == 1
+
+
+async def test_the_spend_gate_is_asked_once_per_review(orch, repo, monkeypatch):
+    """It used to be asked in `_act` and again in `_slot`, and only the first of
+    the two ever told the operator anything."""
+    asked: list[int] = []
+    real = orch_mod.budget.check
+    monkeypatch.setattr(
+        orch_mod.budget, "check",
+        lambda *a, **k: (asked.append(1), real(*a, **k))[1],
+    )
+    monkeypatch.setattr(orch_mod, "my_threads", _async(PrThreads()))
+    stub_run(monkeypatch, ReviewRun(ok=False, error="container exited 1"))
+
+    await orch._act(repo, pr(), KEY, REQ, Decision("review"))
+    assert len(asked) == 1
 
 
 async def test_a_meter_nobody_can_read_is_reported_whichever_meter_it_was(
@@ -555,13 +574,13 @@ async def test_a_meter_nobody_can_read_is_reported_whichever_meter_it_was(
 ):
     """An unguarded run is unguarded whoever was supposed to be measuring it, and
     the key is dated so the second outage is not the silent one."""
-    monkeypatch.setattr(orch, "_review", _async(None))
     for key in ("budget:unreadable:2026-08-06", "budget:endpoint-unreadable:2026-08-06"):
         monkeypatch.setattr(
             orch_mod.budget, "check",
             lambda *a, k=key, **kw: Verdict(True, "endpoint down", notice_key=k),
         )
-        await orch._act(repo, pr(), KEY, REQ, Decision("review"))
+        async with orch._slot(KEY) as slot:
+            assert slot.ok, "unreadable is not closed; it runs and says so"
     assert sum("can't read the spend budget" in m for m in orch.slack.owner) == 2
 
 
@@ -746,3 +765,89 @@ async def test_github_going_down_does_not_lose_the_red_build_note(orch, monkeypa
     monkeypatch.setattr(publish_mod, "report_red_build", boom)
     assert await orch.ci.watch() == []
     assert _ci_state(orch, key) == "waiting", "unsettled, so the next tick posts it"
+
+
+# ----- posting once per commit, without asking GitHub ----------------------
+#
+# The marker scan this replaced cost a full paginated read of every comment on
+# the PR, per call. The trade it makes is real: a comment deleted by hand is not
+# reposted, so what a run records has to be exactly what it managed to post.
+
+
+async def _publish_twice(orch, repo, monkeypatch, result: PublishResult) -> list[int]:
+    posts: list[int] = []
+
+    async def publishing(*a, **k):
+        posts.append(1)
+        return result
+
+    monkeypatch.setattr(publish_mod, "publish_review", publishing)
+    stub_run(monkeypatch, ok_run("needs-work"))
+    for _ in range(2):
+        await orch._review(repo, pr(), KEY, REQ)
+    return posts
+
+
+async def test_a_review_is_published_once_per_commit(orch, repo, monkeypatch):
+    posts = await _publish_twice(
+        orch, repo, monkeypatch, PublishResult(True, "requested changes")
+    )
+    assert posts == [1], "the second pass on the same commit must post nothing"
+
+
+async def test_a_publish_that_failed_can_still_be_retried(orch, repo, monkeypatch):
+    """Recording on anything but a real post would bury the findings for good."""
+    posts = await _publish_twice(orch, repo, monkeypatch, PublishResult(False, "empty body"))
+    assert posts == [1, 1]
+
+
+async def test_no_publish_records_nothing_so_a_real_tick_still_posts(
+    orch, repo, monkeypatch
+):
+    orch.no_publish = True
+    await _publish_twice(orch, repo, monkeypatch, PublishResult(False, "dry run"))
+    orch.no_publish = False
+    posts = await _publish_twice(
+        orch, repo, monkeypatch, PublishResult(True, "requested changes")
+    )
+    assert posts == [1]
+
+
+async def test_the_ci_note_goes_out_once_per_commit(orch, repo, monkeypatch):
+    notes: list[tuple[str, ...]] = []
+
+    async def note(_repo, _meta, checks, *, dry_run=False):
+        notes.append(checks)
+        return PublishResult(True, "posted the CI note")
+
+    monkeypatch.setattr(publish_mod, "post_ci_note", note)
+    red = Decision("ci-note", "ci red", checks=("ci/build",))
+    first = await orch._act(repo, pr(), KEY, REQ, red)
+    second = await orch._act(repo, pr(), KEY, REQ, red)
+
+    assert notes == [("ci/build",)]
+    assert first.action == second.action == "ci-note"
+    assert "already noted" in second.detail
+
+
+async def test_the_red_build_note_goes_out_once_per_commit(orch, repo, monkeypatch):
+    orch.db.start_review(
+        key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
+    )
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    posted: list[int] = []
+
+    async def report(*a, **k):
+        posted.append(1)
+        return PublishResult(True, "reported the red build")
+
+    monkeypatch.setattr(publish_mod, "report_red_build", report)
+    monkeypatch.setattr(
+        ci_mod, "pr_meta",
+        _async(pr(checks=({"context": "ci/build", "state": "FAILURE"},))),
+    )
+
+    await orch.ci.watch()
+    orch.db.set_ci_state(KEY, "waiting")  # as a second row on the same commit would
+    await orch.ci.watch()
+    assert posted == [1]

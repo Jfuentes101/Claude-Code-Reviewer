@@ -323,6 +323,22 @@ class CheckSummary:
         return " · ".join(parts)
 
 
+CHECK_NAME_CAP = 120
+
+
+def _one_line(name: str) -> str:
+    """Flatten a check's name — it reaches a prompt, and a PR chooses it.
+
+    A workflow's `name:` comes from the branch under review and a third-party
+    status names itself, so this is the same untrusted shape `contract._strip`
+    exists for: a block marker is only a marker on a line of its own, and text
+    that can never carry a newline can never forge one. Flattened here rather
+    than at the prompt because the label and the comment bodies read it too.
+    """
+    flat = " ".join(name.split())
+    return flat if len(flat) <= CHECK_NAME_CAP else flat[:CHECK_NAME_CAP] + "…"
+
+
 def summarize_checks(meta: PrMeta) -> CheckSummary:
     """Bucket every check on the head commit, including the ones gate 6 ignores.
 
@@ -330,7 +346,7 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
     """
     passing, failing, running, other = [], [], [], []
     for check in meta.checks:
-        name = check.get("context") or check.get("name") or "check"
+        name = _one_line(check.get("context") or check.get("name") or "check")
         state = (check.get("state") or check.get("conclusion") or "").upper()
         status = (check.get("status") or "").upper()
         if state == "SUCCESS":
