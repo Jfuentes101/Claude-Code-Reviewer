@@ -42,13 +42,22 @@ else
   fi
 fi
 
-echo
-echo "building…"
-docker compose build
-echo "restarting…"
-docker compose up -d
+# A service behind a profile is invisible to a plain `compose up -d`, so it would
+# keep running the old image without a word. Whichever are up now stay up.
+profiles=()
+running="$(docker compose ps --services 2>/dev/null)"
+for pair in dashboard:dashboard model-proxy:proxy mcp-sentry:sentry; do
+  grep -qx "${pair%%:*}" <<<"$running" && profiles+=(--profile "${pair##*:}")
+done
+[[ ${#profiles[@]} -gt 0 ]] && echo "profiles up:${profiles[*]//--profile/}"
 
 echo
-docker compose ps
+echo "building…"
+docker compose "${profiles[@]}" build
+echo "restarting…"
+docker compose "${profiles[@]}" up -d
+
+echo
+docker compose "${profiles[@]}" ps
 echo
 echo "  docker compose logs -f robbie"
