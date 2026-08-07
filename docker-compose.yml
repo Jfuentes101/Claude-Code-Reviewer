@@ -120,6 +120,10 @@ services:
     networks: [robbie]
     environment:
       - MODEL_PROXY_TOKEN
+      # what it will forward at all, comma-separated. Unset is the model surface
+      # and nothing else, which is what makes holding the real credential here
+      # worth anything; widen it only if a CLI release starts calling elsewhere.
+      - MODEL_PROXY_PATHS
       # whichever the account arm runs on. An API key never expires, so it is what
       # a host nobody logs into wants; the oauth session wins if both are set.
       - ANTHROPIC_API_KEY

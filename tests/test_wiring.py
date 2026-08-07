@@ -305,6 +305,15 @@ def test_a_slug_without_an_owner_refuses_to_boot(tmp_path):
         RepoConfig(slug="app", reviewer_login="rev", bare=tmp_path)
 
 
+def test_a_label_that_would_break_the_search_query_refuses_to_boot(tmp_path):
+    """It is interpolated into `label:"..."` in a GraphQL search, where a stray
+    quote surfaces as an unreadable parse error rather than as a bad label."""
+    for bad in ('Code "Review"', "Code\nReview"):
+        with pytest.raises(Exception, match="string_pattern_mismatch|pattern"):
+            RepoConfig(slug="a/b", reviewer_login="rev", bare=tmp_path, label=bad)
+    RepoConfig(slug="a/b", reviewer_login="rev", bare=tmp_path, label="Code Review ✨")
+
+
 def test_a_key_set_twice_in_the_yaml_refuses_to_boot(tmp_path):
     """PyYAML keeps the last one silently; a dead block is not a config."""
     path = _write_config(tmp_path)

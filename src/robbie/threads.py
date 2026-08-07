@@ -89,6 +89,19 @@ class Sweeper:
             logger.exception("%s#%s: unhandled error answering replies", repo.slug, pr)
             return Outcome(repo.slug, pr, "failed", str(ex))
 
+    def _settled(self, repo: RepoConfig, pr: int, thread: Thread) -> None:
+        """Remember a thread judged and deliberately left alone, so it costs nothing again.
+
+        Never under `--no-publish`. That pass reaches nobody, and the other two
+        verdicts leave their record on GitHub rather than here — `resolve` closes
+        the thread, `reply` takes the last word — so recording only the ones that
+        write nothing there would retire exactly the threads a real sweep still
+        owes an answer. The price is that `--no-publish` re-runs the container
+        every tick; `--dry-run` is the mode that costs nothing.
+        """
+        if not self.no_publish:
+            self.db.notice_once(thread_state(repo.slug, pr, thread))
+
     async def _answer(self, repo: RepoConfig, pr: int, pending: list[Thread]) -> Outcome:
         meta = await pr_meta(repo.slug, pr)
         if meta.state != "OPEN":
@@ -130,7 +143,7 @@ class Sweeper:
             verdict = verdicts.get(cid)
             if verdict is None:
                 done["unanswered"] += 1
-                self.db.notice_once(thread_state(repo.slug, pr, thread))
+                self._settled(repo, pr, thread)
                 continue
             try:
                 if verdict.action == "resolve":
@@ -140,7 +153,7 @@ class Sweeper:
                         repo, pr, cid, verdict.body, dry_run=self.no_publish
                     )
                 else:
-                    self.db.notice_once(thread_state(repo.slug, pr, thread))
+                    self._settled(repo, pr, thread)
             except GhError as ex:
                 # this run is already paid for: one thread GitHub will not take must
                 # not throw away the decisions made about all the others

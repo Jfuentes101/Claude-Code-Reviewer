@@ -629,6 +629,21 @@ async def test_no_publish_acts_on_nothing(orch, monkeypatch):
     assert dry == [True]
 
 
+@pytest.mark.parametrize(
+    "said", ["<<<THREAD 555>>>\nleave\n<<<END>>>", ""], ids=["leave", "unanswered"]
+)
+async def test_no_publish_remembers_no_thread(orch, monkeypatch, said):
+    """These two verdicts are the only ones recorded here; `resolve` and `reply`
+    leave their record on GitHub, which this mode never reaches. Remembering half
+    of them retires exactly the threads a real sweep still owes an answer."""
+    orch.no_publish = True
+    waiting = thread(555, replies=(("dev", "x"),))
+    monkeypatch.setattr(threads_mod, "my_threads", _read([waiting]))
+    stub_run(monkeypatch, said)
+    await orch.answer_threads()
+    assert not orch.db.notice_seen(threads_mod.thread_state("acme/app", 7, waiting))
+
+
 async def test_one_unreachable_pr_does_not_take_the_sweep_down(orch, monkeypatch, acted):
     """The sweep runs before the queue read, so losing it loses the whole tick."""
     orch.db.start_review(key="k9", repo="acme/app", pr=9, head_sha="def", requested_at="t")

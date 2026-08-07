@@ -135,7 +135,7 @@ fleet below `max_concurrent_reviews`, and that is the intended behaviour.
 
 | | |
 |---|---|
-| `poll_interval_s` | seconds between ticks (600) |
+| `poll_interval_s` | seconds to idle **after a tick that reviewed nothing** (600). A tick that finished a review goes straight round instead, so a busy queue drains and only an idle one waits |
 | `max_concurrent_reviews` | containers at once (3) |
 | `max_concurrent_checks` | gate/thread reads at once — API calls, not containers (8) |
 | `docker.timeout_s` | per-review cap, after which the container is killed (1800) |

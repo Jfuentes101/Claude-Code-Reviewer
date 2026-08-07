@@ -57,6 +57,14 @@ DROP_REQUEST = frozenset({
 })
 DROP_RESPONSE = frozenset({"content-length", "transfer-encoding"})
 
+# The model surface the CLI actually calls. Holding the real credential here
+# only buys something if a reviewer cannot spend it on everything else that
+# credential reaches — an OAuth session also opens the account's usage and
+# profile endpoints, and an API key the organization ones.
+DEFAULT_PATHS = ("v1/messages", "v1/models")
+# a refusal reaches the run as an SDK error, so it should say which kind it was
+ERROR_TYPE = {401: "authentication_error", 403: "permission_error"}
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -67,6 +75,9 @@ class Settings:
     review_api_token: str | None = None
     host: str = "0.0.0.0"
     port: int = 8080
+    # MODEL_PROXY_PATHS widens this without a rebuild: a CLI that starts calling
+    # somewhere new would otherwise fail every review until this file changes
+    paths: tuple[str, ...] = DEFAULT_PATHS
 
     @property
     def serves_account(self) -> bool:
@@ -94,15 +105,22 @@ class Settings:
             review_api_token=endpoint_key or None,
             host=os.environ.get("MODEL_PROXY_HOST", "0.0.0.0"),
             port=int(os.environ.get("MODEL_PROXY_PORT", "8080")),
+            paths=_paths(os.environ.get("MODEL_PROXY_PATHS", "")),
         )
+
+
+def _paths(raw: str) -> tuple[str, ...]:
+    listed = tuple(p.strip().strip("/") for p in raw.split(",") if p.strip().strip("/"))
+    return listed or DEFAULT_PATHS
 
 
 class Denied(Exception):
     """Why this request cannot be forwarded, in words a reviewer log can show.
 
-    401 is only for a token we did not mint — the caller's problem, and retrying
-    it cannot help. Everything else here is this proxy's own problem, so it goes
-    back as 502 and says which.
+    401 is only for a token we did not mint and 403 for a path we forward for
+    nobody — both the caller's problem, and retrying either cannot help.
+    Everything else here is this proxy's own problem, so it goes back as 502 and
+    says which.
     """
 
     def __init__(self, message: str, status: int = 401) -> None:
@@ -149,6 +167,29 @@ def authorize(header: str, expected: str) -> None:
     offered = header[7:] if header.lower().startswith("bearer ") else header
     if not secretslib.compare_digest(offered, expected):
         raise Denied("this token is not the one the fleet was given")
+
+
+def allow_path(path: str, allowed: tuple[str, ...]) -> str:
+    """The upstream path to forward, or Denied. Everything else is not ours to hand over.
+
+    A reviewer holds MODEL_PROXY_TOKEN and no real credential, which is the whole
+    property — but a proxy that forwards whatever path it is handed gives that
+    token the run of every endpoint the credential behind it reaches, with the
+    credential attached on the way past.
+
+    `..` is refused rather than resolved: this compares prefixes, and a segment
+    that climbs out of one lands somewhere no prefix here ever named.
+    """
+    clean = path.strip("/")
+    if ".." in clean.split("/"):
+        raise Denied("a path segment of '..' is not forwarded", 403)
+    if not any(clean == p or clean.startswith(f"{p}/") for p in allowed):
+        raise Denied(
+            f"this proxy forwards {', '.join(allowed)} only, not /{clean}. Set "
+            "MODEL_PROXY_PATHS if the CLI legitimately needs it",
+            403,
+        )
+    return clean
 
 
 class Upstream(NamedTuple):
@@ -211,13 +252,17 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         arm = request.path_params["arm"]
         try:
             authorize(request.headers.get("authorization", ""), settings.token)
+            rest = allow_path(request.path_params["path"], settings.paths)
             up = upstream_for(arm, settings)
         except Denied as ex:
             logger.warning("refused %s %s: %s", request.method, request.url.path, ex)
             # the shape the SDK expects, so the reason reaches the run's transcript
             # instead of surfacing as an unexplained parse failure
             return JSONResponse(
-                {"type": "error", "error": {"type": "authentication_error", "message": str(ex)}},
+                {
+                    "type": "error",
+                    "error": {"type": ERROR_TYPE.get(ex.status, "api_error"), "message": str(ex)},
+                },
                 status_code=ex.status,
             )
 
@@ -229,7 +274,6 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
             headers["anthropic-beta"] = merge_beta(headers.get("anthropic-beta", ""), up.beta)
 
         # the arm is this proxy's own routing; upstream never sees it
-        rest = request.path_params["path"]
         target = f"{up.base}/{rest}" if rest else up.base
         outbound = http.build_request(
             request.method, target,
@@ -307,8 +351,9 @@ def main() -> None:
         else "api key" if settings.api_key else "off"
     )
     logger.info(
-        "model-proxy up on %s:%d — account=%s endpoint=%s",
+        "model-proxy up on %s:%d — account=%s endpoint=%s forwarding=%s",
         settings.host, settings.port, account, settings.review_base_url or "off",
+        ", ".join(settings.paths),
     )
     uvicorn.run(build_app(settings), host=settings.host, port=settings.port, log_level="warning")
 

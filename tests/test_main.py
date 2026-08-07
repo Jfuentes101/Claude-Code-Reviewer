@@ -7,6 +7,7 @@ from pathlib import Path
 
 from robbie.config import Config, RepoConfig, ReviewModel, Secrets, SlackConfig
 from robbie.main import _loop, why_no_model
+from robbie.outcome import Outcome
 
 
 def _cfg(tmp_path, **kw) -> Config:
@@ -105,3 +106,68 @@ def test_an_endpoint_arm_with_both_halves_runs(tmp_path):
 def test_a_base_url_without_a_token_is_still_not_enough(tmp_path):
     cfg = _cfg(tmp_path, review_models=[ARM])
     assert why_no_model(cfg, _secrets(review_base_url="https://x"), "glm-5.2:cloud") is not None
+
+
+# ----- draining, rather than idling on top of a queue of containers ---------
+
+
+class _Ticker:
+    """Answers each tick from a script, then asks the loop to stop."""
+
+    def __init__(self, script: list[list[Outcome]]) -> None:
+        self.script = list(script)
+        self.ticks = 0
+        self.stop: asyncio.Event | None = None
+
+    async def poll_once(self) -> list[Outcome]:
+        self.ticks += 1
+        assert self.stop is not None
+        out = self.script.pop(0) if self.script else []
+        if not self.script:
+            self.stop.set()
+        return out
+
+
+def _count_waits(monkeypatch) -> list[float]:
+    waited: list[float] = []
+    real = asyncio.wait_for
+
+    async def counted(aw, timeout):
+        waited.append(timeout)
+        return await real(aw, timeout=timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", counted)
+    return waited
+
+
+def _reviewed() -> Outcome:
+    return Outcome("acme/app", 7, "review", "ok — asked CI to run")
+
+
+def _failed() -> Outcome:
+    return Outcome("acme/app", 7, "failed", "container exited 1")
+
+
+async def test_a_tick_that_reviewed_goes_straight_round(tmp_path, monkeypatch):
+    """A tick waits for its containers, so anything pushed meanwhile would sit out
+    the whole of that plus a full idle interval."""
+    waited = _count_waits(monkeypatch)
+    orch = _Ticker([[_reviewed()], []])
+    await _one_tick(_cfg(tmp_path, poll_interval_s=600), orch, monkeypatch)
+    assert orch.ticks == 2
+    assert waited == [600], "only the tick that reviewed nothing may idle"
+
+
+async def test_a_failed_review_does_not_buy_a_free_round(tmp_path, monkeypatch):
+    """The interval is the only thing rate-limiting a container that dies fast."""
+    waited = _count_waits(monkeypatch)
+    orch = _Ticker([[_failed()]])
+    await _one_tick(_cfg(tmp_path, poll_interval_s=600), orch, monkeypatch)
+    assert (orch.ticks, waited) == (1, [600])
+
+
+async def test_a_drained_queue_stops_going_round(tmp_path, monkeypatch):
+    waited = _count_waits(monkeypatch)
+    orch = _Ticker([[_reviewed()], [_reviewed()], []])
+    await _one_tick(_cfg(tmp_path, poll_interval_s=600), orch, monkeypatch)
+    assert (orch.ticks, waited) == (3, [600])

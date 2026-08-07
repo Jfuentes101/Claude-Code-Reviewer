@@ -31,7 +31,10 @@ class RepoConfig(_Strict):
     # where a stray quote fails as an unreadable parse error three calls later.
     reviewer_login: str = Field(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$")
     bare: Path  # local mirror, mounted read-only into every reviewer
-    label: str = "Code Review"
+    # No quote and no newline: unlike the other label fields, this one is
+    # interpolated into a GraphQL search string (`label:"..."`), where a stray
+    # quote surfaces as an unreadable parse error rather than as a bad label.
+    label: str = Field(default="Code Review", pattern=r'^[^"\n]+$')
     needs_work_label: str = "❌ NEEDS WORK! ❌"
     # Temporary: the PR waits on something that is not the author, so it comes
     # back on its own the moment the label comes off and no row is written.

@@ -213,20 +213,37 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator) -> int:
     )
     while not stop.is_set():
         started = time.monotonic()
+        reviewed = 0
         try:
             for outcome in await orch.poll_once():
                 logger.info("%s", outcome)
+                reviewed += outcome.action == "review"
         except Exception:  # noqa: BLE001 — a bad tick must not end the daemon
             logger.exception("tick failed; continuing")
-        # Ticks cannot overlap — the wait below starts after this one returns — so
-        # outgrowing the interval costs drift rather than a pile-up, and nothing
-        # else would ever say so. It is the signal that the queue has outgrown
-        # polling and wants webhooks.
         elapsed = time.monotonic() - started
+
+        # A tick waits for every container it started, so a queue of them costs
+        # far more than the interval, and anything pushed meanwhile would sit out
+        # the whole of it plus a full idle wait. Go straight round instead.
+        #
+        # Only a finished review earns that, and only a finished review: it leaves
+        # the key judged, so the next pass skips it and a drained queue falls
+        # through to the wait on its own. A run that FAILED is `failed`, not
+        # `review`, and must not buy a free retry — the interval is the only thing
+        # rate-limiting a container that dies in ten seconds.
+        if reviewed:
+            logger.info(
+                "%d review(s) in %.0fs; going straight round rather than idling %ds",
+                reviewed, elapsed, cfg.poll_interval_s,
+            )
+            continue
+
+        # Nothing was reviewed and it still outran the interval: the reading and
+        # gating alone are behind the queue, which is what wants webhooks.
         if elapsed > cfg.poll_interval_s:
             logger.warning(
-                "tick took %.0fs, longer than the %ds interval; reviews are running "
-                "behind the queue", elapsed, cfg.poll_interval_s,
+                "an idle tick took %.0fs, longer than the %ds interval; the queue has "
+                "outgrown polling", elapsed, cfg.poll_interval_s,
             )
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=cfg.poll_interval_s)

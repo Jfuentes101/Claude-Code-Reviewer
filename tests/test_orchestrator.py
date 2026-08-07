@@ -19,7 +19,7 @@ from robbie.budget import Verdict
 from robbie.config import Config, DockerConfig, RepoConfig, ReviewModel, Secrets, SlackConfig
 from robbie.contract import Blocks
 from robbie.db import Db
-from robbie.gates import Decision, dedup_key
+from robbie.gates import Decision, already_judged, dedup_key
 from robbie.github import GhError, PrMeta, PrThreads, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
@@ -616,6 +616,37 @@ async def test_no_publish_still_records_the_cost(orch, repo, monkeypatch):
     stub_run(monkeypatch, ok_run("needs-work"))
     await orch._review(repo, pr(), KEY, REQ)
     assert orch.db.spend_since(0) == pytest.approx(0.42), "the run cost real money"
+
+
+async def test_no_publish_leaves_the_key_unjudged(orch, repo, monkeypatch):
+    """The row is what every gate reads. Recording this pass as published would
+    park the PR out of the queue over a review that reached nobody, and the real
+    tick behind it would skip it for good."""
+    orch.no_publish = True
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(False, "dry run")))
+    stub_run(monkeypatch, ok_run("needs-work"))
+    await orch._review(repo, pr(), KEY, REQ)
+
+    row = orch.db.get_review(KEY)
+    assert row is not None, "the run happened and cost money; the row has to exist"
+    assert already_judged(row.state) is None
+    assert not orch.db.sha_was_judged("acme/app", 7, "abc1234567"), "gate 4 reads this too"
+
+
+async def test_no_publish_records_no_hold_either(orch, repo):
+    """Same row, same gate: `record=True` holds are the ones that stick."""
+    orch.no_publish = True
+    await orch._act(repo, pr(), KEY, REQ, Decision("hold", "nothing new pushed", record=True))
+    assert orch.db.get_review(KEY) is None
+
+
+async def test_a_verdict_it_could_not_use_is_not_judged_under_no_publish(orch, repo, monkeypatch):
+    """The held-for-a-bad-contract path writes the same gating row as the rest."""
+    orch.no_publish = True
+    stub_run(monkeypatch, ReviewRun(ok=True, blocks=Blocks(None, "", ""), cost_usd=0.42))
+    await orch._review(repo, pr(), KEY, REQ)
+    row = orch.db.get_review(KEY)
+    assert row is not None and already_judged(row.state) is None
 
 
 async def test_dry_run_writes_nothing(orch, repo, monkeypatch):

@@ -99,6 +99,23 @@ class Orchestrator:
             dry_run=self.dry_run, no_publish=self.no_publish,
         )
 
+    @property
+    def _quiet(self) -> bool:
+        """This pass writes nothing outward, so it may record nothing either."""
+        return self.dry_run or self.no_publish
+
+    def _pass_state(self, state: str, reason: str | None = None) -> dict[str, Any]:
+        """How a finished pass is recorded, given that `--no-publish` posts nothing.
+
+        The row keeps its cost, its model and its counts either way — that is what
+        the mode is for. What it cannot keep is the state: `published` and `held`
+        are what every gate reads as judged, so a review nobody ever saw would
+        park the PR out of the queue and the real pass would never run.
+        """
+        if self.no_publish:
+            return {"state": "failed", "hold_reason": "--no-publish: nothing was posted"}
+        return {"state": state, "hold_reason": reason}
+
     # ----- entry points --------------------------------------------------
 
     async def poll_once(self) -> list[Outcome]:
@@ -251,7 +268,9 @@ class Orchestrator:
         if decision.action == "hold":
             if decision.dm:
                 await self._dm_owner_once(f"hold:{key}", decision.dm)
-            if decision.record and not self.dry_run:
+            # `no_publish` counts as much as `dry_run`: this row is what a later
+            # gate reads as judged, and a pass that told nobody must not spend it
+            if decision.record and not self._quiet:
                 self.db.record_hold(
                     key=key, repo=repo.slug, pr=meta.number, head_sha=meta.head_sha,
                     requested_at=requested_at, reason=decision.reason,
@@ -259,18 +278,19 @@ class Orchestrator:
             return Outcome(repo.slug, meta.number, "hold", decision.reason)
 
         if decision.action == "ci-note":
-            quiet = self.dry_run or self.no_publish
-            once = publish.posted_key("ci-red", repo, meta)
-            if not quiet and self.db.notice_seen(once):
+            result = await publish.once_per(
+                self.db,
+                publish.posted_key("ci-red", repo, meta),
+                lambda: publish.post_ci_note(
+                    repo, meta, decision.checks, dry_run=self._quiet
+                ),
+                quiet=self._quiet,
+            )
+            if result is None:
                 return Outcome(
                     repo.slug, meta.number, "ci-note",
                     f"already noted the red build for {meta.head_sha[:8]}",
                 )
-            result = await publish.post_ci_note(
-                repo, meta, decision.checks, dry_run=quiet
-            )
-            if result.posted:
-                self.db.notice_once(once)
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
         # the spend gate is `_slot`'s alone; asking here too meant two places
@@ -465,7 +485,7 @@ class Orchestrator:
 
         if (bad := _unusable(blocks)) is not None:
             self.db.finish_review(
-                key, state="held", verdict=blocks.verdict, hold_reason=bad.reason, **common
+                key, verdict=blocks.verdict, **self._pass_state("held", bad.reason), **common
             )
             return await self._gave_up(
                 repo, meta, bad.detail,
@@ -480,7 +500,7 @@ class Orchestrator:
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             ci = await self._request_ci(repo, meta)
             self.db.finish_review(
-                key, state="published", verdict="ok",
+                key, verdict="ok", **self._pass_state("published"),
                 # nothing asked CI on a run that publishes nothing, so nothing to wait for
                 ci_state=None if self.no_publish else "waiting",
                 **common,
@@ -490,17 +510,19 @@ class Orchestrator:
 
         # recorded as judged either way: retrying a permanent publish failure
         # would burn a full review every tick
-        self.db.finish_review(key, state="published", verdict=verdict, **common)
-        once = publish.posted_key("review", repo, meta)
-        if not self.no_publish and self.db.notice_seen(once):
-            return Outcome(
-                repo.slug, meta.number, "review",
-                f"already published for {meta.head_sha[:8]}",
-            )
+        self.db.finish_review(key, verdict=verdict, **self._pass_state("published"), **common)
+        # resolved before the lambda, which cannot await: it is one `whoami` per
+        # process either way, since `_token_login` caches what it resolved
+        self_login = await self._token_login()
         try:
-            result = await publish.publish_review(
-                verdict, repo, meta, body=blocks.github, findings=findings,
-                dry_run=self.no_publish, self_login=await self._token_login(),
+            result = await publish.once_per(
+                self.db,
+                publish.posted_key("review", repo, meta),
+                lambda: publish.publish_review(
+                    verdict, repo, meta, body=blocks.github, findings=findings,
+                    dry_run=self.no_publish, self_login=self_login,
+                ),
+                quiet=self.no_publish,
             )
         except Exception as ex:  # noqa: BLE001 — the review is done; only delivery failed
             logger.exception("publish failed for %s#%s", repo.slug, meta.number)
@@ -509,12 +531,16 @@ class Orchestrator:
                 f"I couldn't publish my {verdict} review of *{meta.title}* "
                 f"({meta.url}): {ex}. It's ready to post by hand: {run.transcript}",
             )
+        if result is None:
+            return Outcome(
+                repo.slug, meta.number, "review",
+                f"already published for {meta.head_sha[:8]}",
+            )
 
         if result.posted:
-            self.db.notice_once(once)
             # how many of them reached a diff line, which is not the same number
             self.db.finish_review(
-                key, state="published", verdict=verdict,
+                key, verdict=verdict, **self._pass_state("published"),
                 inline=result.inline, **common,
             )
             await self._notify(repo, meta, verdict, findings)
@@ -560,10 +586,12 @@ class Orchestrator:
         approved must not pay for a second one.
         """
         key = f"run-ci:{repo.slug}:{meta.number}:{meta.head_sha}"
-        if not self.no_publish and self.db.notice_seen(key):
-            return f"CI already asked for {meta.head_sha[:8]}"
         try:
-            result = await publish.request_ci(repo, meta, dry_run=self.no_publish)
+            result = await publish.once_per(
+                self.db, key,
+                lambda: publish.request_ci(repo, meta, dry_run=self.no_publish),
+                quiet=self.no_publish,
+            )
         except GhError as ex:
             logger.warning("could not ask for CI on %s#%s: %s", repo.slug, meta.number, ex)
             await self.slack.dm_owner(
@@ -571,8 +599,8 @@ class Orchestrator:
                 f"`{repo.ci_phrase}`, so CI has not started: {ex}"
             )
             return "CI request failed"
-        if result.posted:
-            self.db.notice_once(key)
+        if result is None:
+            return f"CI already asked for {meta.head_sha[:8]}"
         return result.detail
 
     async def _token_login(self) -> str | None:

@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from robbie.anchor import SIGNATURE as anchor_signature
 from robbie.anchor import Anchored, anchor, commentable
 from robbie.config import RepoConfig
+from robbie.db import Db
 from robbie.github import GhError, PrMeta, gh, gh_json
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,26 @@ class PublishResult:
     detail: str
     inline: int = 0
     url: str | None = None
+
+
+async def once_per(
+    db: Db, key: str, post: Callable[[], Awaitable[PublishResult]], *, quiet: bool
+) -> PublishResult | None:
+    """Post something at most once per key. None means it already went out.
+
+    The one place that decides what "already" means, because it used to be four
+    places and they disagreed: a `--no-publish` pass must neither read the key as
+    spent nor spend it. Reading it there hides what the run would have done;
+    spending it retires a note the author is still owed, and no later tick posts
+    it. Only a call that actually reached GitHub records anything, which is also
+    what keeps a failed post retryable.
+    """
+    if not quiet and db.notice_seen(key):
+        return None
+    result = await post()
+    if result.posted:
+        db.notice_once(key)
+    return result
 
 
 async def diff_lines(repo: str, pr: int) -> dict[str, set[int]]:

@@ -23,7 +23,16 @@ from robbie.runner import (
     _docker_env,
     check_model_proxy,
 )
-from robbie_proxy.main import Denied, Settings, account_bearer, build_app, merge_beta
+from robbie_proxy.main import (
+    DEFAULT_PATHS,
+    Denied,
+    Settings,
+    _paths,
+    account_bearer,
+    allow_path,
+    build_app,
+    merge_beta,
+)
 
 TOKEN = "the-fleet-token"
 CLI_BETAS = "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24"
@@ -132,6 +141,79 @@ async def test_accept_encoding_reaches_upstream(tmp_path, seen):
             content=b"{}",
         )
     assert seen[0].headers["accept-encoding"] == "gzip, zstd"
+
+
+# ----- what it will forward at all ----------------------------------------
+
+
+async def test_the_model_surface_goes_through(tmp_path, seen):
+    async with proxy(both_arms(tmp_path), seen) as client:
+        for path in ("/account/v1/messages", "/account/v1/messages/count_tokens"):
+            r = await client.post(
+                path, headers={"authorization": f"Bearer {TOKEN}"}, content=b"{}"
+            )
+            assert r.status_code == 200, path
+    assert len(seen) == 2
+
+
+async def test_the_rest_of_the_credential_is_not_on_offer(tmp_path, seen):
+    """Holding the real key here only buys something if the token cannot spend it
+    on everything else that key reaches — the account's usage and profile among
+    them, which is exactly what a reviewer would want with a stolen one."""
+    async with proxy(both_arms(tmp_path), seen) as client:
+        r = await client.get(
+            "/account/api/oauth/usage", headers={"authorization": f"Bearer {TOKEN}"}
+        )
+    assert r.status_code == 403
+    assert r.json()["error"]["type"] == "permission_error"
+    assert seen == [], "it must not reach upstream at all, credential attached"
+
+
+async def test_climbing_out_of_an_allowed_prefix_is_refused(tmp_path, seen):
+    """This compares prefixes, so a `..` segment lands somewhere none of them named."""
+    async with proxy(both_arms(tmp_path), seen) as client:
+        r = await client.get(
+            "/account/v1/messages/../../api/oauth/usage",
+            headers={"authorization": f"Bearer {TOKEN}"},
+        )
+    assert r.status_code == 403
+    assert seen == []
+
+
+async def test_a_bad_token_is_still_401_not_403(tmp_path, seen):
+    """The two refusals are different problems and the transcript should say which."""
+    async with proxy(both_arms(tmp_path), seen) as client:
+        r = await client.post(
+            "/account/v1/messages", headers={"authorization": "Bearer wrong"}, content=b"{}"
+        )
+    assert r.status_code == 401
+    assert r.json()["error"]["type"] == "authentication_error"
+
+
+async def test_the_allowlist_can_be_widened_without_a_rebuild(tmp_path, seen):
+    settings = Settings(
+        token=TOKEN, credentials=creds(tmp_path), paths=("v1/messages", "api/oauth")
+    )
+    async with proxy(settings, seen) as client:
+        r = await client.get(
+            "/account/api/oauth/usage", headers={"authorization": f"Bearer {TOKEN}"}
+        )
+    assert r.status_code == 200
+
+
+def test_a_dot_dot_segment_is_refused_rather_than_resolved():
+    """Asked of the function directly: the ASGI layer decodes and normalises the
+    path first, so going through it does not prove this branch runs."""
+    with pytest.raises(Denied) as ex:
+        allow_path("v1/messages/../../api/oauth/usage", DEFAULT_PATHS)
+    assert ex.value.status == 403
+    assert allow_path("/v1/messages/", DEFAULT_PATHS) == "v1/messages"
+
+
+def test_an_empty_override_keeps_the_default():
+    assert _paths("") == DEFAULT_PATHS
+    assert _paths("  ,  ") == DEFAULT_PATHS
+    assert _paths("/v1/messages/, v1/models") == ("v1/messages", "v1/models")
 
 
 # ----- the account arm's other shape --------------------------------------

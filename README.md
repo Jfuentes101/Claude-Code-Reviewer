@@ -134,6 +134,21 @@ read that fetches the threads returns the PR's state too, and a merged one is
 never read again. Merged only — a closed PR can be reopened, so those age out on
 the window instead. A `done_labels` label retires a PR from the sweep as well.
 
+**A busy tick does not idle afterwards.** A tick waits for every container it
+started, so a queue of them costs far more than `poll_interval_s`, and anything
+pushed meanwhile would sit out the whole of that *plus* a full interval. A tick
+that finished at least one review goes straight round instead; the queue drains
+and only an idle tick waits.
+
+Only a finished review earns that. It leaves the key judged, so the next pass
+skips it and a drained queue falls through to the wait on its own — there is no
+round it can keep buying. A run that *failed* is not a finished review, on
+purpose: the interval is the only thing rate-limiting a container that dies in
+ten seconds.
+
+The consequence worth knowing: the clock is no longer a second brake on spend.
+`budget.*` is what limits throughput now, which is what it was always for.
+
 Dedup key is `repo:pr:head_sha:last_review_requested_at`, so a PR is reviewed
 once and re-reviewed when new commits land. A re-request without new commits
 changes the key too, but gate 4 turns that into one DM instead of a second
@@ -666,6 +681,11 @@ language runtimes out of the base image is what keeps it small.
   container gets a URL and a token that is worth nothing off the compose network;
   the real credential goes on the request inside `src/robbie_proxy`, which is the
   only thing that ever reads it. Left empty, every reviewer holds the real one.
+  That proxy forwards the model surface (`v1/messages`, `v1/models`) and nothing
+  else, so the token it hands out cannot spend the credential behind it on the
+  account's usage, profile or organization endpoints. `MODEL_PROXY_PATHS` widens
+  the list if a CLI release starts calling somewhere new; a refused path says so
+  in the run's transcript rather than failing as an unexplained parse error.
 - The orchestrator holds the docker socket, which is root on the host. That is
   the accepted trade for a single-tenant VPS. If the host is shared, run the
   orchestrator under systemd on the host instead and keep only the workers in
