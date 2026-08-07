@@ -133,6 +133,61 @@ async def test_accept_encoding_reaches_upstream(tmp_path, seen):
     assert seen[0].headers["accept-encoding"] == "gzip, zstd"
 
 
+# ----- the account arm's other shape --------------------------------------
+
+
+async def test_an_api_key_account_uses_x_api_key_and_no_oauth_beta(seen):
+    """backend=api is the shape a VPS wants: an API key does not expire, so the
+    arm that has no refresh flow never needs one."""
+    settings = Settings(token=TOKEN, api_key="sk-ant-real")
+    async with proxy(settings, seen) as client:
+        r = await client.post(
+            "/account/v1/messages",
+            headers={"authorization": f"Bearer {TOKEN}", "anthropic-beta": CLI_BETAS},
+            content=b"{}",
+        )
+    assert r.status_code == 200
+    sent = seen[0]
+    assert sent.headers["x-api-key"] == "sk-ant-real"
+    assert "authorization" not in sent.headers
+    assert sent.headers["anthropic-beta"] == CLI_BETAS, "the oauth beta is not its shape"
+    assert str(sent.url) == "https://api.anthropic.com/v1/messages"
+
+
+async def test_an_oauth_session_wins_when_both_are_configured(tmp_path, seen):
+    settings = Settings(token=TOKEN, credentials=creds(tmp_path), api_key="sk-ant-real")
+    async with proxy(settings, seen) as client:
+        await client.post(
+            "/account/v1/messages",
+            headers={"authorization": f"Bearer {TOKEN}"}, content=b"{}",
+        )
+    assert seen[0].headers["authorization"] == "Bearer oauth-access-token"
+    assert "x-api-key" not in seen[0].headers
+
+
+async def test_an_api_key_account_serves_the_arm(seen):
+    async with proxy(Settings(token=TOKEN, api_key="sk-ant-real"), seen) as client:
+        assert (await client.get("/healthz")).json()["arms"] == ["account"]
+
+
+def test_from_env_takes_the_api_key(monkeypatch):
+    for name in ("CLAUDE_CREDENTIALS", "REVIEW_BASE_URL", "REVIEW_API_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MODEL_PROXY_TOKEN", TOKEN)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-real")
+    settings = Settings.from_env()
+    assert (settings.api_key, settings.credentials) == ("sk-ant-real", None)
+    assert settings.serves_account
+
+
+def test_from_env_refuses_a_proxy_with_nothing_to_proxy(monkeypatch):
+    for name in ("CLAUDE_CREDENTIALS", "ANTHROPIC_API_KEY", "REVIEW_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MODEL_PROXY_TOKEN", TOKEN)
+    with pytest.raises(SystemExit, match="nothing to proxy"):
+        Settings.from_env()
+
+
 # ----- refusing -----------------------------------------------------------
 
 

@@ -120,9 +120,12 @@ services:
     networks: [robbie]
     environment:
       - MODEL_PROXY_TOKEN
+      # whichever the account arm runs on. An API key never expires, so it is what
+      # a host nobody logs into wants; the oauth session wins if both are set.
+      - ANTHROPIC_API_KEY
+      - CLAUDE_CREDENTIALS
       - REVIEW_BASE_URL
       - REVIEW_API_TOKEN
-      - CLAUDE_CREDENTIALS
     volumes:
       # :ro, unlike the reviewers' old mount — this only reads the access token.
       # It does not refresh, so whoever owns the host keeps that file current.

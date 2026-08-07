@@ -33,6 +33,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import uvicorn
@@ -61,10 +62,15 @@ DROP_RESPONSE = frozenset({"content-length", "transfer-encoding"})
 class Settings:
     token: str  # what a reviewer must present; minted by whoever runs the fleet
     credentials: Path | None = None  # backend=oauth, the account's own session
+    api_key: str | None = None  # backend=api, and the one that never expires
     review_base_url: str | None = None
     review_api_token: str | None = None
     host: str = "0.0.0.0"
     port: int = 8080
+
+    @property
+    def serves_account(self) -> bool:
+        return self.credentials is not None or self.api_key is not None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -72,17 +78,20 @@ class Settings:
         if not token:
             raise SystemExit("MODEL_PROXY_TOKEN is not set")
         creds = os.environ.get("CLAUDE_CREDENTIALS", "").strip()
+        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         base = os.environ.get("REVIEW_BASE_URL", "").strip()
-        key = os.environ.get("REVIEW_API_TOKEN", "").strip()
-        if not creds and not base:
+        endpoint_key = os.environ.get("REVIEW_API_TOKEN", "").strip()
+        if not creds and not key and not base:
             raise SystemExit(
-                "nothing to proxy: set CLAUDE_CREDENTIALS, REVIEW_BASE_URL, or both"
+                "nothing to proxy: set CLAUDE_CREDENTIALS, ANTHROPIC_API_KEY, "
+                "REVIEW_BASE_URL, or any of them"
             )
         return cls(
             token=token,
             credentials=Path(creds) if creds else None,
+            api_key=key or None,
             review_base_url=base.rstrip("/") or None,
-            review_api_token=key or None,
+            review_api_token=endpoint_key or None,
             host=os.environ.get("MODEL_PROXY_HOST", "0.0.0.0"),
             port=int(os.environ.get("MODEL_PROXY_PORT", "8080")),
         )
@@ -142,18 +151,37 @@ def authorize(header: str, expected: str) -> None:
         raise Denied("this token is not the one the fleet was given")
 
 
-def upstream_for(arm: str, settings: Settings) -> tuple[str, dict[str, str]]:
-    """Where an arm's traffic goes, and the headers that authenticate it there."""
+class Upstream(NamedTuple):
+    base: str
+    auth: dict[str, str]
+    beta: str | None = None  # a flag to merge into whatever the CLI already asked for
+
+
+def upstream_for(arm: str, settings: Settings) -> Upstream:
+    """Where an arm's traffic goes, and what authenticates it there.
+
+    The account arm has two shapes and they are not interchangeable: an OAuth
+    session is a `Bearer` plus a beta flag and expires; an API key is `x-api-key`
+    and does not. Which one is here is which one the deployment has — a VPS that
+    nobody logs into wants the key precisely because it never needs refreshing.
+    """
     if arm == "account":
-        if settings.credentials is None:
-            raise Denied("no account credentials are configured on this proxy", 502)
-        return ACCOUNT_UPSTREAM, {"authorization": f"Bearer {account_bearer(settings.credentials)}"}
+        if settings.credentials is not None:
+            return Upstream(
+                ACCOUNT_UPSTREAM,
+                {"authorization": f"Bearer {account_bearer(settings.credentials)}"},
+                OAUTH_BETA,
+            )
+        if settings.api_key is not None:
+            return Upstream(ACCOUNT_UPSTREAM, {"x-api-key": settings.api_key})
+        raise Denied("no account credentials are configured on this proxy", 502)
     if arm == "endpoint":
         if not settings.review_base_url:
             raise Denied("no REVIEW_BASE_URL is configured on this proxy", 502)
-        return settings.review_base_url, {
-            "authorization": f"Bearer {settings.review_api_token or ''}"
-        }
+        return Upstream(
+            settings.review_base_url,
+            {"authorization": f"Bearer {settings.review_api_token or ''}"},
+        )
     raise Denied(f"unknown arm {arm!r}; expected /account or /endpoint", 502)
 
 
@@ -164,7 +192,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     async def healthz(_request: Request) -> JSONResponse:
         arms = [
             name for name, on in
-            (("account", settings.credentials is not None),
+            (("account", settings.serves_account),
              ("endpoint", bool(settings.review_base_url)))
             if on
         ]
@@ -174,7 +202,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         arm = request.path_params["arm"]
         try:
             authorize(request.headers.get("authorization", ""), settings.token)
-            base, auth = upstream_for(arm, settings)
+            up = upstream_for(arm, settings)
         except Denied as ex:
             logger.warning("refused %s %s: %s", request.method, request.url.path, ex)
             # the shape the SDK expects, so the reason reaches the run's transcript
@@ -187,15 +215,13 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         headers = {
             k: v for k, v in request.headers.items() if k.lower() not in DROP_REQUEST
         }
-        headers.update(auth)
-        if arm == "account":
-            headers["anthropic-beta"] = merge_beta(
-                headers.get("anthropic-beta", ""), OAUTH_BETA
-            )
+        headers.update(up.auth)
+        if up.beta:
+            headers["anthropic-beta"] = merge_beta(headers.get("anthropic-beta", ""), up.beta)
 
         # the arm is this proxy's own routing; upstream never sees it
         rest = request.path_params["path"]
-        target = f"{base}/{rest}" if rest else base
+        target = f"{up.base}/{rest}" if rest else up.base
         outbound = http.build_request(
             request.method, target,
             params=dict(request.query_params),
@@ -205,7 +231,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
         try:
             resp = await http.send(outbound, stream=True)
         except httpx.HTTPError as ex:
-            logger.warning("upstream %s unreachable: %s", base, ex)
+            logger.warning("upstream %s unreachable: %s", up.base, ex)
             return JSONResponse(
                 {"type": "error", "error": {"type": "api_error", "message": str(ex)}},
                 status_code=502,
@@ -253,6 +279,11 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     settings = Settings.from_env()
+    if settings.credentials is not None and settings.api_key is not None:
+        logger.warning(
+            "both an oauth session and an API key are configured; the session wins. "
+            "Unset CLAUDE_CREDENTIALS to serve the account arm with the key instead"
+        )
     if settings.credentials is not None:
         try:
             account_bearer(settings.credentials)
@@ -261,10 +292,13 @@ def main() -> None:
             # mistake, and finding out 10 minutes later costs a paid-for run
             print(f"model-proxy: {ex}", file=sys.stderr)
             raise SystemExit(1) from ex
+    account = (
+        "oauth session" if settings.credentials is not None
+        else "api key" if settings.api_key else "off"
+    )
     logger.info(
         "model-proxy up on %s:%d — account=%s endpoint=%s",
-        settings.host, settings.port,
-        settings.credentials is not None, settings.review_base_url or "off",
+        settings.host, settings.port, account, settings.review_base_url or "off",
     )
     uvicorn.run(build_app(settings), host=settings.host, port=settings.port, log_level="warning")
 

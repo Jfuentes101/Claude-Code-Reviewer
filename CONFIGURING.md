@@ -105,9 +105,13 @@ the sidecar. robbie verifies the token against it at boot and refuses to start i
 it is wrong — otherwise the CLI retries the 401 until the container hits
 `docker.timeout_s` and every review is recorded as a timeout.
 
-The proxy does **not** refresh the OAuth token: it re-reads the file, so whatever
-keeps that file current on the host is what keeps reviews running. On a host where
-nobody runs `claude` interactively, reviews start failing within hours, loudly.
+The account arm takes whichever credential the deployment has. `backend: oauth`
+gives it the session file, which it **re-reads rather than refreshes** — so whatever
+keeps that file current on the host is what keeps reviews running, and on a host
+where nobody runs `claude` interactively reviews start failing within hours (loudly:
+it says the token expired and when). `backend: api` gives it `ANTHROPIC_API_KEY`
+instead, which never expires and needs none of that. On an unattended host, prefer
+the key; the session wins if both are set.
 
 ## Change what it is allowed to spend
 
