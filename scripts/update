@@ -5,11 +5,13 @@
 #
 # Builds both images every time, on purpose: the reviewer image carries
 # reviewer/entrypoint.sh, and a change there is invisible until something
-# rebuilds it — which for a long time nothing did.
+# rebuilds it.
 #
-# `up -d` recreates only what changed. A review in flight is not killed: compose
-# sends SIGTERM and robbie finishes the tick, which is what stop_grace_period is
-# for, so an update can take as long as the longest running review.
+# Draining before building, not after, is what keeps the reviewers in flight
+# alive: they hold an ANTHROPIC_BASE_URL pointing at model-proxy and they were
+# spawned from an image the orchestrator that owns them agrees with. So an update
+# can take as long as the longest running review, and the stack is briefly down
+# for the build rather than briefly inconsistent underneath it.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -52,6 +54,8 @@ done
 [[ ${#profiles[@]} -gt 0 ]] && echo "profiles up:${profiles[*]//--profile/}"
 
 echo
+echo "draining robbie (SIGTERM; it finishes the tick, so this can take a while)…"
+docker compose stop robbie
 echo "building…"
 docker compose "${profiles[@]}" build
 echo "restarting…"
