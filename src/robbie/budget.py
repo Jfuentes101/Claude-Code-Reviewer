@@ -71,7 +71,12 @@ class _Window:
     def refresh(self, fetch: Callable[[], tuple[float, str]]) -> None:
         was = self.now
         now = time.monotonic()
-        if now - was.at < USAGE_TTL_S or now < was.quiet_until:
+        # `was.at` of 0 means never read, which is not the same as read at
+        # monotonic 0 — and monotonic counts from boot, so on a host in its first
+        # minute of uptime the difference is the whole gate: without the guard
+        # this reads "fresh enough" and never fetches, and every review in that
+        # window runs unmeasured. `usable` protects the same sentinel already.
+        if (was.at and now - was.at < USAGE_TTL_S) or now < was.quiet_until:
             return
         try:
             pct, note = fetch()

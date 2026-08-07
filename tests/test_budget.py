@@ -194,6 +194,21 @@ def test_a_failed_read_holds_to_the_last_number_rather_than_unguarding(tmp_path,
     assert not v.notice_key.startswith("budget:unreadable")
 
 
+def test_a_host_in_its_first_minute_of_uptime_still_reads_the_meter(monkeypatch):
+    """`at` of 0 means never read, not read at monotonic 0 — and monotonic counts
+    from boot. Without the distinction a machine that just came up reads its own
+    empty reading as fresh, never fetches, and runs the whole first minute of
+    reviews unmeasured. This is what CI kept catching: a runner is always young."""
+    monkeypatch.setattr(budget.time, "monotonic", lambda: 30.0)
+    window = budget._Window()
+    reads: list[int] = []
+
+    window.refresh(lambda: (reads.append(1), (10.0, "x"))[1])
+
+    assert reads == [1], "a meter that has never been read is not a fresh reading"
+    assert window.now.usable
+
+
 def test_a_reading_too_old_to_trust_gives_up_on_it(tmp_path, db, monkeypatch):
     usage(monkeypatch, 85)
     assert not budget.check(cfg(tmp_path, stop_pct=90), secrets(tmp_path), db).allowed
