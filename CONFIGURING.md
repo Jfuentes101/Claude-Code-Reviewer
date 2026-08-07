@@ -101,7 +101,8 @@ session, refresh token included, alongside every other OAuth login on the host.
 
 ```bash
 openssl rand -hex 32          # -> MODEL_PROXY_TOKEN in .env
-docker compose --profile proxy up -d
+                              # -> and `proxy` in COMPOSE_PROFILES, same file
+docker compose up -d
 ```
 
 ```yaml

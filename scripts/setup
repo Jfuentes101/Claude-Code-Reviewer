@@ -92,6 +92,31 @@ if [[ -f config/robbie.yaml ]]; then
   done
 fi
 
+# Every sidecar sits behind a compose profile, so a plain `up -d` starts none of
+# them — and `model_proxy` is checked at BOOT, so getting this wrong is not a
+# degraded review, it is an orchestrator that exits. COMPOSE_PROFILES in .env is
+# what compose reads on its own, which is why it is the thing checked here.
+if [[ -f config/robbie.yaml ]]; then
+  echo
+  echo "sidecars the config asks for:"
+  enabled="$(grep -oP '^\s*COMPOSE_PROFILES=\K.*' .env 2>/dev/null || true)"
+  sidecar() {  # <config pattern> <profile> <what breaks without it>
+    grep -qP "$1" config/robbie.yaml || return 0
+    if grep -qw "$2" <<<"${enabled//,/ }"; then
+      ok "$2"
+    else
+      bad "the config wants the $2 sidecar, but COMPOSE_PROFILES in .env omits it"
+      note "$3"
+      note "add it: COMPOSE_PROFILES=$(printf '%s' "${enabled:+$enabled,}")$2"
+    fi
+  }
+  sidecar '^\s*model_proxy:\s*http' proxy \
+    "robbie exits at boot when the proxy is unreachable — no review would run"
+  sidecar '^\s*review_mcp:.*mcp-sentry' sentry \
+    "every review would fail its MCP connection to a name that does not resolve"
+  [[ -z "$enabled" ]] && note "nothing in COMPOSE_PROFILES — only the orchestrator comes up"
+fi
+
 echo
 if [[ $fail -ne 0 ]]; then
   echo "fix the above, then run this again."

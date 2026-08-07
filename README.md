@@ -51,7 +51,7 @@ sees it. Same reasoning as `GH_TOKEN_REVIEWER`.
 
 ### mcp-sentry
 
-Ships enabled. It answers one question that changes review outcomes: **is the
+Opt-in, like every other sidecar. It answers one question that changes review outcomes: **is the
 code this PR touches already failing in production?** A dropped nil guard on a
 line throwing 4k times a day is not a nitpick.
 
@@ -69,9 +69,12 @@ Without the fallback it answers "nothing" for most real PRs. The response carrie
 name, and `truncated` when a PR changed more files than the cap.
 
 Needs `SENTRY_TOKEN` (read-only: `event:read`, `project:read`) and
-`SENTRY_ORG_SLUG`; `SENTRY_PROJECTS` optionally narrows it. Opt in with
-`docker compose --profile sentry up -d` and point `review_mcp` at it; leaving
-both alone is how you don't run it.
+`SENTRY_ORG_SLUG`; `SENTRY_PROJECTS` optionally narrows it. Opt in by adding
+`sentry` to `COMPOSE_PROFILES` in `.env` **and** pointing `review_mcp` at it;
+leaving both alone is how you don't run it. Doing only the second is the one
+combination that fails — the sidecar never starts and every review fails its MCP
+connection to a name that does not resolve, which is why `scripts/setup` checks
+the two against each other.
 
 `MCP_ALLOWED_HOSTS` is load-bearing, not decoration: the SDK's DNS rebinding
 protection validates the `Host` header, and a reviewer connecting to

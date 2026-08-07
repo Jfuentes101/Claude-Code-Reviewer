@@ -18,13 +18,20 @@ policy_dir: /opt/robbie/policy
 # `stdio` runs inside the reviewer image; `http` reaches a compose sidecar, which
 # is how a token stays out of a container running bypassPermissions.
 # Not for robbie's own notifications — those are plain HTTP from the orchestrator.
-review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
+#
+# Naming a sidecar here is half of turning it on: it also needs `sentry` in
+# COMPOSE_PROFILES (.env) and a SENTRY_TOKEN. Without both, the sidecar never
+# starts and every review fails its MCP connection to a name that does not
+# resolve — so this ships empty and the line below is what you uncomment.
+review_mcp: ''
+# review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
 
 # Where the model-credential proxy listens. Empty (the default) hands every
 # reviewer the real key, or on backend=oauth mounts the account's whole session
 # file — into a container running a PR's own code with bypassPermissions. Set it
 # and the container gets MODEL_PROXY_TOKEN instead, which buys nothing off this
-# network.  docker compose --profile proxy up -d
+# network. Keep `proxy` in COMPOSE_PROFILES (.env) or the sidecar never comes up
+# and robbie refuses to boot: this is a startup check, not a runtime one.
 model_proxy: http://model-proxy:8080
 
 docker:
