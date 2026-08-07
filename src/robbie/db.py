@@ -1,17 +1,12 @@
-"""SQLite state. Replaces git-sentinel's seen.txt / state.tsv / hold: prefixes.
-
-Two things the text files could not do: express "held, retry next tick" vs
-"held, done with this key" as data instead of an absent line, and survive
-several reviews finishing at once.
+"""SQLite state.
 
 ponytail: sync sqlite3, single writer process. Calls are sub-ms against a poll
-loop, so the async wrapper would buy nothing. If robbie ever runs more than one
+loop, so an async wrapper would buy nothing. If robbie ever runs more than one
 orchestrator, this is the thing to move to postgres.
 
-Adding a table is free — `IF NOT EXISTS` runs on every boot. Adding a *column* to
-one of these is not: the CREATE is skipped on an existing database and nothing
-notices until a query mentions the column. That one needs an explicit ALTER,
-guarded by `PRAGMA user_version`.
+Adding a table is free — `IF NOT EXISTS` runs on every boot. Adding a *column* is
+not: the CREATE is skipped on an existing database and nothing notices until a
+query mentions it. That needs an explicit ALTER, guarded by `PRAGMA user_version`.
 """
 
 from __future__ import annotations
@@ -103,28 +98,22 @@ SCHEMA_VERSION = 4
 class Db:
     def __init__(self, path: Path, *, read_only: bool = False) -> None:
         if read_only:
-            # a reader cannot create the schema or migrate it, and must not: the
-            # dashboard opens this way so a bug there cannot touch a review's row.
-            # The file's directory still has to be writable — SQLite needs the
-            # -shm file to read a WAL database at all.
+            # the dashboard opens this way, so a bug there cannot touch a review's
+            # row. The directory still has to be writable: SQLite needs the -shm
+            # file to read a WAL database at all.
             self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
             self.conn.row_factory = sqlite3.Row
             return
         # check_same_thread=False because the spend gate is read through
-        # asyncio.to_thread — its HTTP meters must not block the event loop. Safe
-        # here and only here: sqlite3.threadsafety is 3 (serialized) and this stays
-        # a single writer process.
+        # asyncio.to_thread. Safe only while sqlite3.threadsafety is 3 (serialized)
+        # and this stays a single writer process.
         self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self._migrate()
 
     def _migrate(self) -> None:
-        """Bring an existing database up to what the code above assumes.
-
-        `IF NOT EXISTS` covers a new table but skips a new column entirely, so a
-        column has to be added here or nothing fails until a query names it.
-        """
+        """Bring an existing database up to what the code above assumes."""
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
         added = {
             1: [("model", "TEXT")],
@@ -156,8 +145,7 @@ class Db:
     def sha_was_judged(self, repo: str, pr: int, head_sha: str) -> bool:
         """True when this exact commit already got a pass or a recorded hold.
 
-        Gate 4 leans on this: a re-request that changes the key but not the sha
-        means the author asked again with no new code.
+        Gate 4's evidence that a re-request brought no new code.
         """
         row = self.conn.execute(
             "SELECT 1 FROM reviews WHERE repo=? AND pr=? AND head_sha=? "
@@ -196,13 +184,8 @@ class Db:
         summary_findings: int | None = None,
         ci_state: str | None = None,
     ) -> None:
-        """Writes only the columns it was given.
-
-        A full-column UPDATE would null everything the caller left out, so the
-        publish path's second call — the one that adds `inline` once the comments
-        landed — would wipe the cost, the model and the counts it wrote moments
-        before unless every caller remembered to repeat them.
-        """
+        """Writes only the columns it was given: a full-column UPDATE would null
+        whatever the caller left out, and the publish path calls this twice."""
         given = {
             name: value
             for name, value in (
@@ -264,10 +247,8 @@ class Db:
     def settle_done(self, repo: str, pr: int) -> int:
         """A human has taken this PR; retire it from the panel and the sweep.
 
-        Keyed on (repo, pr) rather than on a review key, because building that key
-        needs the timeline read this whole gate exists to skip. Every row for the
-        PR, not just the approval: a needs-work pass is what the reply sweep reads,
-        and it is just as done as the rest of them.
+        Keyed on (repo, pr): building a review key needs the timeline read this gate
+        exists to skip. Every row, not just the approval.
         """
         cur = self.conn.execute(
             "UPDATE reviews SET ci_state='done' WHERE repo=? AND pr=? "
@@ -290,10 +271,8 @@ class Db:
     def reviewed_prs(self, repo: str, *, since_ms: int = 0) -> list[int]:
         """PRs reviewed since `since_ms` — where threads of ours can exist.
 
-        Windowed because every one of these costs an API read on every tick, and
-        the list only ever grows: most of it is PRs that merged months ago. A PR a
-        human has taken drops out early for the same reason — nobody is going to
-        argue a review thread on something already on its way to prod.
+        Windowed because each costs an API read every tick and the list only grows.
+        A PR a human has taken drops out early for the same reason.
         """
         return [
             int(r["pr"]) for r in self.conn.execute(
@@ -305,8 +284,8 @@ class Db:
 
     # ----- what the panel reads ------------------------------------------
     #
-    # Here rather than in dashboard.py so every query against this schema lives
-    # next to it: a column added above is one place to check, not two.
+    # Here rather than in dashboard.py so a column added above is one place to
+    # check, not two.
 
     def counts(self) -> tuple[int, int, int]:
         """(reviewing right now, published, rows in total)."""
@@ -350,11 +329,8 @@ class Db:
         )
 
     def reap_running(self) -> int:
-        """Mark orphaned 'running' rows failed at boot.
-
-        A row can only be 'running' while this process holds the container; if
-        we are starting up, whoever owned it is gone.
-        """
+        """Mark orphaned 'running' rows failed at boot: a row is only 'running'
+        while a process holds the container, and that process is gone."""
         cur = self.conn.execute(
             "UPDATE reviews SET state='failed', hold_reason='orchestrator restarted', "
             "finished_at=? WHERE state='running'",
@@ -375,9 +351,8 @@ class Db:
     def spend_since(self, since_ms: int, exclude_models: tuple[str, ...] = ()) -> float:
         """Dollars the account was billed since `since_ms`.
 
-        A run on a third-party endpoint reports a `cost_usd` the CLI computed from
-        its own price table, which is not that provider's bill and was never the
-        account's. Counting it would trip `daily_usd` on money nobody spent.
+        A third-party endpoint's `cost_usd` is the CLI's own price table, never the
+        account's bill, so counting it trips `daily_usd` on money nobody spent.
         """
         holes = ",".join("?" * len(exclude_models))
         skip = f" AND COALESCE(model, '') NOT IN ({holes})" if exclude_models else ""

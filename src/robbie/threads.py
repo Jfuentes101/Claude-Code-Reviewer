@@ -1,13 +1,11 @@
 """Act on replies to the reviewer's own open threads.
 
-Only threads where somebody else spoke last are considered: after robbie answers
-one it holds the last word, so the next run leaves it alone and the ball stays
-with the author. That is also what keeps gate 5 honest — conceded threads get
-closed instead of blocking reviews forever.
+Only threads where somebody else spoke last: after robbie answers one it holds the
+last word, so the ball stays with the author. That is also what keeps gate 5
+honest — conceded threads get closed instead of blocking reviews forever.
 
 This spawns the same kind of container a review does, so it spends the same money
-and takes the same capacity. `slot` is the whole of what it borrows from the
-review path: one container's worth of room, already gated.
+out of the same cap. `slot` is the whole of what it borrows.
 """
 
 from __future__ import annotations
@@ -61,9 +59,8 @@ class Sweeper:
         return [out for job in jobs if (out := job.result()) is not None]
 
     async def _one(self, repo: RepoConfig, pr: int) -> Outcome | None:
-        """One PR's replies. Same shape as the queue phase, and for the same two
-        reasons: a thread read per PR in series is the slowest thing in the tick,
-        and one unreachable PR must not take the whole sweep down with it."""
+        """One PR's replies, concurrent and caught like the queue phase: these reads
+        in series are the slowest thing in a tick, and one bad PR must not end it."""
         try:
             if self.db.notice_seen(merged_key(repo.slug, pr)):
                 return None
@@ -90,14 +87,11 @@ class Sweeper:
             return Outcome(repo.slug, pr, "failed", str(ex))
 
     def _settled(self, repo: RepoConfig, pr: int, thread: Thread) -> None:
-        """Remember a thread judged and deliberately left alone, so it costs nothing again.
+        """Remember a thread judged and left alone, so it costs nothing again.
 
-        Never under `--no-publish`. That pass reaches nobody, and the other two
-        verdicts leave their record on GitHub rather than here — `resolve` closes
-        the thread, `reply` takes the last word — so recording only the ones that
-        write nothing there would retire exactly the threads a real sweep still
-        owes an answer. The price is that `--no-publish` re-runs the container
-        every tick; `--dry-run` is the mode that costs nothing.
+        Never under `--no-publish`: the other two verdicts record themselves on
+        GitHub, so writing only these would retire exactly the threads a real sweep
+        still owes an answer.
         """
         if not self.no_publish:
             self.db.notice_once(thread_state(repo.slug, pr, thread))
@@ -182,22 +176,16 @@ def _sweep_from() -> int:
 def merged_key(slug: str, pr: int) -> str:
     """A PR nobody will reply on again, so the sweep stops paying to read it.
 
-    Every PR published in the last 30 days costs a paginated GraphQL read on every
-    tick, and most of them are merged long before that. Written by whoever learns
-    the state for free — this sweep and the CI watch — because asking on purpose
-    would cost the call it is trying to save.
+    Written by whoever learns the state for free — this sweep and the CI watch —
+    since asking would cost the call it saves.
 
-    Merged only, never closed: a closed PR can be reopened, and this key would
-    then keep it unswept for the rest of the window. So a closed PR still costs a
-    read per tick until it ages out — the rarer case, and the safe direction.
+    Merged only, never closed: a closed PR can be reopened, and this key would keep
+    it unswept for the rest of the window.
     """
     return f"merged:{slug}:{pr}"
 
 
 def thread_state(slug: str, pr: int, thread: Thread) -> str:
-    """Identifies a thread *and* the reply that is waiting on it.
-
-    Judging one and leaving it alone must not be judged again, but a new reply
-    has to bring it straight back, so the reply count is part of the key.
-    """
+    """Identifies a thread *and* the reply waiting on it: the count is in the key so
+    a thread judged once is not judged again, but a new reply brings it back."""
     return f"thread:{slug}:{pr}:{thread.comment_id}:{len(thread.replies)}"

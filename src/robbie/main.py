@@ -105,9 +105,8 @@ def why_no_model(
 ) -> str | None:
     """Why `--model` cannot run, if it cannot.
 
-    Only an arm the config routes to REVIEW_BASE_URL needs that endpoint's own auth.
-    A tag nobody configured runs on the account's own backend, where the account's
-    own credentials are the right ones and an unknown name fails cleanly.
+    Only an arm the config routes to REVIEW_BASE_URL needs that endpoint's own auth;
+    anything else runs on the account, where the account's credentials are right.
     """
     if not model or not cfg.named_model(model).via_endpoint:
         return None
@@ -222,14 +221,12 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = Fals
             logger.exception("tick failed; continuing")
         elapsed = time.monotonic() - started
 
-        # A tick waits for every container it started, so a queue of them costs
-        # far more than the interval, and anything pushed meanwhile would sit out
-        # the whole of it plus a full idle wait. Go straight round instead.
+        # A tick waits for every container it started, so anything pushed meanwhile
+        # would sit out that plus a full idle wait. Go straight round instead.
         #
-        # Only a finished review earns that, and only a finished review: it leaves
-        # the key judged, so the next pass skips it and a drained queue falls
-        # through to the wait on its own. A run that FAILED is `failed`, not
-        # `review`, and must not buy a free retry — the interval is the only thing
+        # Only a FINISHED review earns it: that leaves the key judged, so the next
+        # pass skips it and a drained queue falls through to the wait on its own. A
+        # failed run must not buy a free retry — the interval is the only thing
         # rate-limiting a container that dies in ten seconds.
         # Never in a quiet mode: those leave the key unjudged on purpose, so going
         # round would re-review the same commit forever.

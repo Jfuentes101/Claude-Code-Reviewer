@@ -71,8 +71,8 @@ class ThreadVerdict:
 def parse_thread_verdicts(text: str) -> list[ThreadVerdict]:
     """Read the per-thread decisions out of a run.
 
-    Anything malformed is dropped rather than guessed: leaving a thread alone is
-    always safe, and acting on a misparsed id would touch the wrong conversation.
+    Malformed blocks are dropped, never guessed: acting on a misparsed id would
+    touch the wrong conversation, and leaving a thread alone is always safe.
     """
     out: list[ThreadVerdict] = []
     for m in re.finditer(
@@ -170,11 +170,9 @@ BODY_CAP = 400
 def _strip(body: str, cap: int = BODY_CAP) -> str:
     """Flatten anything that came from GitHub to a single capped line.
 
-    Everything embedded in a prompt goes through here, and the flattening is the
-    load-bearing half: a block marker is only a marker on a line of its own, so
-    text that can never carry a newline can never forge one. That covers reply
-    bodies — written by whoever can comment — and paths, since git allows a
-    newline in a filename and a PR chooses its own filenames.
+    The flattening is the load-bearing half: a block marker is only a marker on a
+    line of its own, so text that cannot carry a newline cannot forge one. Covers
+    reply bodies and paths — git allows a newline in a filename.
     """
     lines = [
         line for line in body.splitlines()
@@ -190,11 +188,7 @@ def _where(t: Thread) -> str:
 
 
 def threads_block(threads: list[Thread]) -> str:
-    """What the reviewer already said on this PR, and what came back.
-
-    Read from GitHub each time rather than stored: it owns the threads, their
-    replies and their resolution state, so a local copy would only go stale.
-    """
+    """What the reviewer already said on this PR, and what came back."""
     live = [t for t in threads if not t.outdated]
     if not live:
         return ""
@@ -213,8 +207,8 @@ def preamble(
 ) -> str:
     """The instructions wrapped around the repo's own review command.
 
-    The summary itself, not the line it renders to: asking it what is failing cannot
-    drift out of step with how it words that, which sniffing the rendered text could.
+    Takes the summary itself, not the line it renders to, so asking what is failing
+    cannot drift out of step with how it is worded.
     """
     failing = bool(ci and ci.failing)
     nothing_ran = bool(ci and ci.empty)

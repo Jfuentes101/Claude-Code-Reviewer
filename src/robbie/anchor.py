@@ -114,14 +114,9 @@ SEVERITY_LINE = re.compile(r":\d+")
 def summary_findings(body: str) -> int:
     """How many findings a summary indexes, by the severity words it cites with a line.
 
-    The inline count alone reads as zero for a re-review, which is told to keep
-    findings out of the inline block when they are already posted on the diff — so
-    without this, a model that found seven things scores nothing.
-
-    A severity named without a `file:line` is not counted, which loses the odd
-    finding about the PR as a whole. That is the same bar the policy sets: cite a
-    changed line or you are guessing. It also keeps the closing "clear the three
-    Should-fixes" line out of the count.
+    A re-review keeps already-posted findings out of the inline block, so the inline
+    count alone scores it zero. A severity named without a `file:line` is not
+    counted — the same bar the policy sets.
     """
     words = tuple(BADGE)
     return sum(

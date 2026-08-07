@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Everything the real reviewer does except call the model: clone from the mirror,
-# check the PR out, read the criteria from the base, load the policy into the user
-# scope, then emit a valid run envelope. Used by scripts/fleet-check to exercise
-# container spawning and isolation without paying for a review.
+# check the PR out, read the criteria off CRITERIA_REF, load the policy into the
+# user scope, then emit a valid run envelope. Used by scripts/fleet-check to
+# exercise container spawning and isolation without paying for a review.
 #
 # STUB_HOLD controls how long it sits still, so containers overlap observably.
 set -euo pipefail
@@ -29,8 +29,8 @@ criteria_bytes=$(gh api "repos/$REPO_SLUG/contents/$REVIEW_COMMAND?ref=$CRITERIA
 
 sleep "${STUB_HOLD:-8}"
 
-# a real envelope, so the orchestrator's parsing and persistence run unchanged
-result="$(printf '<<<VERDICT>>>\nok\n<<<END>>>\n<<<SLACK>>>\nstub: pr=%s branch=%s head=%s criteria=%sB policy=%sB\n<<<END>>>' \
+# the markers contract.MARKERS actually parses, so persistence runs unchanged
+result="$(printf '<<<VERDICT>>>\nok\n<<<END>>>\n<<<GITHUB>>>\nstub: pr=%s branch=%s head=%s criteria=%sB policy=%sB\n<<<END>>>\n<<<INLINE>>>\n[]\n<<<END>>>' \
   "$PR_NUMBER" "$branch" "$head" "$criteria_bytes" "$policy_bytes")"
 jq -n --arg r "$result" \
   '{result:$r, total_cost_usd:0, usage:{input_tokens:1,output_tokens:1},

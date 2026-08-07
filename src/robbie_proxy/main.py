@@ -2,24 +2,22 @@
 
 A reviewer runs a model with bypassPermissions over a PR's own code, so anything
 in that container is readable by whatever the PR can talk the model into running.
-The keys that matter are not GitHub's — a read-only token buys an attacker what
-they already have, since opening the PR is what started the review. It is the
-model credentials: a bearer key with spend behind it, and on `backend=oauth` a
-whole subscription session, refresh token and all, mounted read-write.
+The GitHub token is the cheap half — read-only, and opening the PR is what started
+the review. The expensive half is the model credential: a bearer key with spend
+behind it, and on `backend=oauth` a whole subscription session, refresh token and
+all.
 
-So the container gets `ANTHROPIC_BASE_URL` pointed here and a token that is worth
-nothing outside the compose network, and the real credential goes on the request
-here, on its way past. Stealing what the container holds buys the length of one
-review on a network the thief is not on.
+So the container gets `ANTHROPIC_BASE_URL` pointed here plus a token worth nothing
+off the compose network, and the real credential goes on the request on its way
+past.
 
-Two arms, one per upstream, picked by the first path segment: `/account` for the
-account's own backend and `/endpoint` for REVIEW_BASE_URL. The CLI preserves a
-base URL's path prefix, so that is the whole of the routing.
+Two arms, picked by the first path segment: `/account` for the account's own
+backend and `/endpoint` for REVIEW_BASE_URL. The CLI preserves a base URL's path
+prefix, so that is the whole of the routing.
 
-A sidecar rather than a task inside the orchestrator, which already holds every
-one of these secrets: that process also holds the docker socket, which is root on
-the host, and a listener reachable by the containers it spawns does not belong in
-it.
+A sidecar rather than a task inside the orchestrator, which holds all of these
+secrets already: that process also holds the docker socket, and a listener
+reachable by the containers it spawns does not belong in it.
 """
 
 from __future__ import annotations
@@ -49,18 +47,15 @@ ACCOUNT_UPSTREAM = "https://api.anthropic.com"
 OAUTH_BETA = "oauth-2025-04-20"
 # hop-by-hop, plus the two we replace. `accept-encoding` is deliberately NOT here:
 # the CLI and the upstream negotiate compression end to end and the body goes back
-# raw, so this never has to understand a payload. Strip it and forward the raw
-# bytes anyway and the CLI reports "Failed to parse JSON" with nothing else to go on.
+# raw. Strip it and the CLI reports "Failed to parse JSON" with nothing else to go on.
 DROP_REQUEST = frozenset({
     "host", "authorization", "x-api-key", "content-length", "connection",
     "transfer-encoding",
 })
 DROP_RESPONSE = frozenset({"content-length", "transfer-encoding"})
 
-# The model surface the CLI actually calls. Holding the real credential here
-# only buys something if a reviewer cannot spend it on everything else that
-# credential reaches — an OAuth session also opens the account's usage and
-# profile endpoints, and an API key the organization ones.
+# The model surface the CLI actually calls, and nothing else: an OAuth session also
+# opens the account's usage and profile endpoints, an API key the organization ones.
 DEFAULT_PATHS = ("v1/messages", "v1/models")
 # a refusal reaches the run as an SDK error, so it should say which kind it was
 ERROR_TYPE = {401: "authentication_error", 403: "permission_error"}
@@ -117,10 +112,8 @@ def _paths(raw: str) -> tuple[str, ...]:
 class Denied(Exception):
     """Why this request cannot be forwarded, in words a reviewer log can show.
 
-    401 is only for a token we did not mint and 403 for a path we forward for
-    nobody — both the caller's problem, and retrying either cannot help.
-    Everything else here is this proxy's own problem, so it goes back as 502 and
-    says which.
+    401 for a token we did not mint, 403 for a path we forward for nobody. Anything
+    that is this proxy's own problem goes back as 502.
     """
 
     def __init__(self, message: str, status: int = 401) -> None:
@@ -131,11 +124,10 @@ class Denied(Exception):
 def account_bearer(path: Path) -> str:
     """The account's current OAuth access token, read fresh on every request.
 
-    ponytail: no refresh flow here. The host's own CLI refreshes this file, and
-    re-reading it is how that arrives — which also ends the race `runner` used to
-    document, since one process now touches the file instead of N containers. On a
-    host where nobody runs `claude` interactively it goes stale within hours and
-    every review fails loudly; that is the day this needs to refresh for itself.
+    ponytail: no refresh flow. The host's own CLI refreshes the file and re-reading
+    it is how that arrives, which also means one process touches it instead of N
+    containers. On a host where nobody runs `claude` interactively it goes stale
+    within hours and every review fails loudly; that is the day this needs one.
     """
     try:
         oauth = json.loads(path.read_text())["claudeAiOauth"]
@@ -153,9 +145,8 @@ def account_bearer(path: Path) -> str:
 def merge_beta(existing: str, wanted: str) -> str:
     """Add a beta flag to whatever the CLI already asked for.
 
-    Replacing the header instead of merging drops the flags the run depends on —
-    the CLI sends eight of them, versioned — and the failure surfaces as a model
-    that quietly behaves like a different one.
+    Replacing the header drops the flags the run depends on, and that surfaces as a
+    model quietly behaving like a different one.
     """
     flags = [f for f in re.split(r"\s*,\s*", existing) if f]
     if wanted not in flags:
@@ -170,15 +161,11 @@ def authorize(header: str, expected: str) -> None:
 
 
 def allow_path(path: str, allowed: tuple[str, ...]) -> str:
-    """The upstream path to forward, or Denied. Everything else is not ours to hand over.
+    """The upstream path to forward, or Denied.
 
-    A reviewer holds MODEL_PROXY_TOKEN and no real credential, which is the whole
-    property — but a proxy that forwards whatever path it is handed gives that
-    token the run of every endpoint the credential behind it reaches, with the
-    credential attached on the way past.
-
-    `..` is refused rather than resolved: this compares prefixes, and a segment
-    that climbs out of one lands somewhere no prefix here ever named.
+    Forwarding whatever it is handed would give MODEL_PROXY_TOKEN the run of every
+    endpoint the credential behind it reaches. `..` is refused rather than resolved,
+    since this compares prefixes.
     """
     clean = path.strip("/")
     if ".." in clean.split("/"):
@@ -201,10 +188,9 @@ class Upstream(NamedTuple):
 def upstream_for(arm: str, settings: Settings) -> Upstream:
     """Where an arm's traffic goes, and what authenticates it there.
 
-    The account arm has two shapes and they are not interchangeable: an OAuth
-    session is a `Bearer` plus a beta flag and expires; an API key is `x-api-key`
-    and does not. Which one is here is which one the deployment has — a VPS that
-    nobody logs into wants the key precisely because it never needs refreshing.
+    The account arm has two shapes and they are not interchangeable: an OAuth session
+    is a `Bearer` plus a beta flag and expires; an API key is `x-api-key` and does
+    not, which is what a host nobody logs into wants.
     """
     if arm == "account":
         if settings.credentials is not None:
@@ -242,9 +228,8 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     async def hello(request: Request) -> JSONResponse:
         """The CLI's reachability probe, which it sends with no credential.
 
-        Answered here rather than forwarded: it needs no upstream and carries no
-        auth, so refusing it logged a warning that read as a stolen token on every
-        single review — the CLI ignores the 401 and carries on regardless.
+        Answered rather than forwarded: refusing it logs a warning that reads as a
+        stolen token on every single review.
         """
         return JSONResponse({"ok": True})
 
@@ -305,10 +290,7 @@ def build_app(settings: Settings, client: httpx.AsyncClient | None = None) -> St
     async def verify(request: Request) -> Response:
         """Does this token work — asked without spending anything upstream.
 
-        The orchestrator asks at boot. Without it a wrong token is invisible until
-        a review runs, and then it is not even a fast failure: the CLI retries a
-        401 until the container hits `docker.timeout_s`, so every PR burns the full
-        30 minutes and lands in the database as a timeout.
+        The orchestrator asks at boot; see `runner.check_model_proxy`.
         """
         try:
             authorize(request.headers.get("authorization", ""), settings.token)

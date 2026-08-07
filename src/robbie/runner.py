@@ -126,12 +126,8 @@ async def run_review(
 
 
 async def check_model_proxy(cfg: Config, secrets: Secrets) -> None:
-    """Fail at boot if the reviewers cannot authenticate to the proxy.
-
-    Every model credential now reaches a run through it, and a wrong token does
-    not fail fast: the CLI retries a 401 until the container hits `timeout_s`, so
-    each PR would burn the full deadline and be recorded as a timeout.
-    """
+    """Fail at boot if the reviewers cannot authenticate to the proxy: the CLI
+    retries a 401 until `timeout_s`, so every PR would burn the full deadline."""
     if not cfg.model_proxy:
         return
     url = f"{cfg.model_proxy.rstrip('/')}/verify"
@@ -158,13 +154,8 @@ TRANSCRIPT_DAYS = 30
 def prune_transcripts(cfg: Config) -> int:
     """Drop transcripts older than TRANSCRIPT_DAYS, and say how many went.
 
-    Nothing reads one that old. The numbers a review is judged on live in SQLite;
-    these are the raw run, kept for the days where somebody might still go and
-    read why a verdict came out the way it did. Past a month a PR has been rebased
-    out from under it anyway, so the honest answer is a fresh pass, not this file.
-
-    Every failure is swallowed per file: a disk that will not let go of one
-    transcript is not a reason to skip the tick that was about to start.
+    The numbers a review is judged on live in SQLite; these are the raw run. Errors
+    are swallowed per file — one unreadable transcript must not skip the tick.
     """
     cutoff = time.time() - TRANSCRIPT_DAYS * 86_400
     try:
@@ -199,13 +190,9 @@ def _stem(
 def _kept(stem: Path) -> Path:
     """Move a failed run's transcripts aside, and say where they went.
 
-    `_stem` is a pure function of (repo, pr, sha, model), so the retry writes the
-    same filenames — and the run that says why the first one failed is the one
-    erased. Kept under the same directory and the same 30-day prune, because this
-    is the file somebody reads when an operator DM arrives an hour late.
-
-    A rename that fails is not worth losing the run over: the caller still gets a
-    path, and at worst it is the one the retry will overwrite.
+    `_stem` is pure in (repo, pr, sha, model), so a retry would otherwise write the
+    same filenames over the run that said why the first one failed. A rename that
+    fails is not worth losing the run over.
     """
     kept = stem.with_name(f"{stem.name}-failed-{int(time.time())}")
     for suffix in (".json", ".err"):
@@ -215,12 +202,8 @@ def _kept(stem: Path) -> Path:
 
 
 def _why_it_failed(code: int | None, out: bytes, err: bytes) -> str:
-    """Whatever the run itself said, in the order the reason is likeliest to be in.
-
-    The CLI reports its own failures in the envelope on stdout, and stderr here
-    opens with git's fetch and checkout chatter — enough of it to fill a
-    head-anchored excerpt on its own and bury the line that explains anything.
-    """
+    """Whatever the run itself said, envelope first: stderr opens with enough git
+    chatter to fill an excerpt on its own."""
     with contextlib.suppress(Exception):
         envelope = json.loads(out.decode(errors="replace"))
         said = str(envelope.get("result") or envelope.get("error") or "").strip()
@@ -271,8 +254,7 @@ def _docker_argv(
     if model:
         argv += ["-e", f"REVIEW_MODEL={model}"]
     if cfg.model_proxy:
-        # Every arm goes through it and none of them carry a real credential: the
-        # arm is a path, and the proxy puts the key on the request at the far end.
+        # the arm is a path; the proxy puts the real key on at the far end
         arm = "endpoint" if via_endpoint else "account"
         argv += [
             "-e", "ANTHROPIC_AUTH_TOKEN",
@@ -303,9 +285,8 @@ def _docker_env(
 ) -> dict[str, str]:
     """The secrets `docker run -e NAME` picks up, kept out of the command line.
 
-    The reviewer runs a model with bypassPermissions, so it gets the read-only
-    token when one is configured — publishing is not its job. With `model_proxy`
-    set it gets no model credential at all, only the token that reaches the proxy.
+    The read-only token when one is configured, and with `model_proxy` set, no
+    model credential at all.
     """
     env = {"GH_TOKEN": secrets.reviewer_gh_token.get_secret_value()}
     if cfg.model_proxy:

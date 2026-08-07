@@ -1,8 +1,7 @@
 """The review policy, as one pure function.
 
-This module is the whole reason robbie is predictable: no I/O, no clock, no
-subprocess. Everything it decides is a function of data the caller already
-fetched, which is what makes the policy unit-testable instead of only
+No I/O, no clock, no subprocess: everything here is a function of data the caller
+already fetched, which is what makes the policy testable rather than only
 observable in production.
 
 A PR is reviewed when all of these hold:
@@ -48,9 +47,8 @@ class Decision:
 def label_hold(meta: PrMeta, repo: RepoConfig) -> Decision | None:
     """Gate 3 alone, so a caller can rule on it before paying for the rest.
 
-    The normal state of a blocked PR: no DM, and it re-checks every tick. Same
-    for `hold_labels`, which say the PR waits on something other than the author
-    — a dependency, usually. Neither records, so removing the label is enough.
+    Silent and unrecorded, both for this and for `hold_labels`: it is the normal
+    state of a blocked PR, and removing the label is all it takes to come back.
     """
     for name in (repo.needs_work_label, *repo.hold_labels):
         if meta.has_label(name):
@@ -61,8 +59,7 @@ def label_hold(meta: PrMeta, repo: RepoConfig) -> Decision | None:
 def done_label(meta: PrMeta, repo: RepoConfig) -> str | None:
     """The label a human puts on once they have taken the PR themselves.
 
-    Excluding, and checked before anything that costs an API call: a PR carrying
-    both this and the queue label is not reviewed, whatever else is true of it.
+    Excluding, and checked before anything that costs an API call.
     """
     return next((name for name in repo.done_labels if meta.has_label(name)), None)
 
@@ -83,8 +80,7 @@ def evaluate(
 ) -> Decision:
     """Decide what to do with one PR. See the module docstring for the order.
 
-    Gates 3 and 4 are also callable on their own above, because each of them makes
-    an API call the caller would otherwise have made to get here.
+    Gates 3 and 4 are callable on their own above: each saves an API call.
     """
     where = f"{repo.slug}#{meta.number}"
 

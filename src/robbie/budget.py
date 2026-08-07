@@ -44,25 +44,22 @@ class _Reading:
 
     @property
     def usable(self) -> bool:
-        """Asked of the reading, not of the window: a caller that took one and then
-        re-derived this could pair a stale verdict with a fresh number."""
+        """On the reading, not the window: re-deriving it after taking one could
+        pair a stale verdict with a fresh number."""
         return bool(self.at) and time.monotonic() - self.at < USAGE_STALE_S
 
 
 class _Window:
     """The last thing known about one meter, kept across calls.
 
-    The gate is asked once per reviewable PR, and reading a meter every time earned
-    a 429 from the plan endpoint — after which an unreadable meter runs unguarded,
-    which is the opposite of a guard. So a reading is held briefly, a failure is
-    held the same way (retrying a rate limit per PR is how it stays one), and a
-    failed read keeps using the last number while it is worth anything. Only a
-    cold start has nothing to go on.
+    The gate is asked once per reviewable PR, and a fetch per ask earns a 429 —
+    after which the meter is unreadable and reviews run unguarded. So a reading is
+    held briefly, a failure is held the same way, and a failed read keeps using the
+    last number while it is worth anything.
 
-    The reading is rebound in one assignment rather than mutated field by field:
-    the dashboard asks from several request threads at once, and a torn read would
-    pair a fresh percentage with the previous reset time. Two threads can still
-    fetch at the same moment, which costs one extra GET and nothing else.
+    Rebound in one assignment, never mutated field by field: the dashboard asks
+    from several threads, and a torn read pairs a fresh percentage with a stale
+    reset time.
     """
 
     def __init__(self) -> None:
@@ -71,11 +68,10 @@ class _Window:
     def refresh(self, fetch: Callable[[], tuple[float, str]]) -> None:
         was = self.now
         now = time.monotonic()
-        # `was.at` of 0 means never read, which is not the same as read at
-        # monotonic 0 — and monotonic counts from boot, so on a host in its first
-        # minute of uptime the difference is the whole gate: without the guard
-        # this reads "fresh enough" and never fetches, and every review in that
-        # window runs unmeasured. `usable` protects the same sentinel already.
+        # `was.at` of 0 means never read, not read at monotonic 0 — and monotonic
+        # counts from boot, so on a host in its first minute of uptime dropping
+        # this guard reads "fresh enough", never fetches, and leaves every review
+        # in that window unmeasured.
         if (was.at and now - was.at < USAGE_TTL_S) or now < was.quiet_until:
             return
         try:
@@ -104,15 +100,11 @@ def check(
 ) -> Verdict:
     """May another review start, given `inflight` of them already running?
 
-    Every meter reads what has already been *spent*, which is the wrong quantity
-    on its own: a container that is halfway through a review has spent nothing
-    yet and will spend plenty. So each review in flight, plus the one asking,
-    holds back a reserve. Without it a fleet all reads the same safe number at
-    once and starts together — the failure the cutoff exists to prevent.
+    Every meter reads what has already been *spent*, and a container halfway through
+    a review has spent nothing yet and will spend plenty — so each one in flight,
+    plus the one asking, holds back a reserve.
 
-    Which meter follows where the run will be billed, not `backend`: a review sent
-    to REVIEW_BASE_URL spends nothing on the account, so holding it against the
-    account's window would refuse it for a reason that does not apply to it.
+    Which meter follows where the run will be billed, not `backend`.
     """
     if via_endpoint:
         return _check_endpoint(cfg, secrets, inflight)
@@ -139,9 +131,7 @@ def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     """ponytail: undocumented endpoint, so it can change under us. A read failure
     must be reported as unknown, never as "plenty left".
 
-    The read blocks, which is why every async caller runs `check` in a thread: a
-    hung meter would otherwise stall the tick that is asking, and with it every
-    other review's bookkeeping, for the whole HTTP timeout.
+    The read blocks, which is why every async caller runs `check` in a thread.
     """
     _plan.refresh(lambda: _fetch_plan(secrets))
     reading = _plan.now
@@ -149,8 +139,8 @@ def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
         return Verdict(
             True,
             f"usage unreadable ({reading.why}); running unguarded",
-            # dated, like every other pause key: a constant one is announced once in
-            # the life of the database, and the second outage is the silent one
+            # dated, like every other pause key: a constant one is announced once
+            # in the life of the database and every later outage is silent
             notice_key=f"budget:unreadable:{datetime.now(UTC):%Y-%m-%d}",
         )
     pct, held = reading.pct, (inflight + 1) * cfg.budget.reserve_pct
@@ -168,10 +158,8 @@ def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
 def _check_endpoint(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
     """The review endpoint's own limits, which the account's meters know nothing of.
 
-    Gated on `limits.*.usage` — the share of the session and weekly allowance
-    already used — and not on `activity.cost`, because a review's cost only appears
-    there after it has been paid for. Whichever of the two is closer to its ceiling
-    is the one that will stop reviews, so the gate reads the worse of them.
+    Gated on `limits.*.usage` and not on `activity.cost`, which only fills in after
+    a review has been paid for. The worse of session and weekly wins.
     """
     _endpoint.refresh(lambda: _fetch_endpoint(secrets))
     reading = _endpoint.now

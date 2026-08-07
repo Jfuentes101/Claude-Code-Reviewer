@@ -145,8 +145,7 @@ def _ready(cfg: Config, db: Db) -> str:
     """Approvals and what the build robbie asked for made of them.
 
     The window is a backstop, not the way rows leave: a PR drops off when someone
-    labels it taken. Clocking it any tighter hid the ones nobody had got to yet,
-    which are the only ones this panel is for.
+    labels it taken.
     """
     rows = []
     for r in db.approved_and_green(budget.midnight_ms() - READY_DAYS * 86_400_000):

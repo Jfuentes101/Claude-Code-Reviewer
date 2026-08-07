@@ -1,8 +1,7 @@
 """GitHub access through the `gh` CLI.
 
-Why the CLI and not httpx: auth, pagination, retries and the GraphQL endpoint
-come for free, and these exact queries are the ones git-sentinel proved against
-the real repo. Reimplementing them would be more code and new bugs.
+The CLI and not httpx because auth, pagination, retries and the GraphQL endpoint
+come for free.
 
 Every function distinguishes three outcomes, not two: a value, a documented
 "nothing recorded" sentinel, or GhError. A transient API failure must never be
@@ -94,8 +93,8 @@ QUEUE_LIMIT = 200
 async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
     """PRs carrying the label AND pending this reviewer — gates 1 and 2.
 
-    A submitted changes-requested review clears the request, so those drop out
-    of here until the author re-requests; `digest` nags the ones that never do.
+    A changes-requested review clears the request, so those drop out until the
+    author re-requests; `digest` nags the ones that never do.
     """
     rows = await gh_json(
         "search", "prs", "--repo", repo,
@@ -171,9 +170,9 @@ async def pr_meta(repo: str, pr: int) -> PrMeta:
 async def last_review_request(repo: str, pr: int, reviewer: str) -> str:
     """ISO timestamp of the most recent review request for `reviewer`.
 
-    Folded into the dedup key so a re-request triggers a fresh look even when
-    the head commit has not moved. Returns NO_DIRECT_REQUEST when the timeline
-    has no such event — a stable value, unlike an error.
+    Folded into the dedup key, so a re-request triggers a fresh look even when the
+    head commit has not moved. NO_DIRECT_REQUEST when the timeline has no such
+    event — a stable value, unlike an error.
     """
     raw = await gh(
         "api", f"repos/{repo}/issues/{pr}/timeline", "--paginate",
@@ -186,12 +185,8 @@ async def last_review_request(repo: str, pr: int, reviewer: str) -> str:
 
 @dataclass(frozen=True)
 class Thread:
-    """One review thread the reviewer started, with whatever came back.
-
-    GitHub is the store for this; robbie keeps no copy. Resolution state, the
-    replies and their order all live here, so a local mirror would only be a
-    cache to invalidate.
-    """
+    """One review thread the reviewer started, with whatever came back. GitHub owns
+    resolution state and the replies; robbie keeps no copy."""
 
     path: str
     line: int | None
@@ -216,9 +211,8 @@ class Thread:
     def answered(self) -> bool:
         """Open and someone else spoke last, so it is the reviewer's move.
 
-        Outdated counts here, unlike in `awaiting_author`: the code moving is
-        usually the fix landing, so it is the likeliest thread to close. What it
-        does rule out is a reply — GitHub collapses those out of sight.
+        Outdated counts here, unlike in `awaiting_author` — the code moving is
+        usually the fix landing. It does rule out replying: GitHub collapses those.
         """
         return not self.resolved and not self.mine_is_last
 
@@ -230,12 +224,8 @@ THREAD_PAGE = 100  # GraphQL's per-page maximum for both connections
 class PrThreads:
     """The reviewer's threads on a PR, and whether the PR is still alive.
 
-    The state rides along because this read is the whole cost of the reply sweep:
-    learning here that a PR merged is what stops it being read again on every tick
-    for the rest of the window, and asking on purpose would cost the call it saves.
-
-    Empty when it could not be read, never guessed — a caller retires a PR on
-    MERGED and on nothing else, so an unreadable state costs a read, not a thread.
+    The state rides along because learning a merge here retires the PR from the
+    sweep for free. Empty when unreadable, never guessed.
     """
 
     state: str = ""
@@ -245,9 +235,9 @@ class PrThreads:
 async def my_threads(repo: str, pr: int, reviewer: str) -> PrThreads:
     """Every review thread opened by `reviewer`, with its replies.
 
-    Paged to the end rather than capped at one page: gate 5 counts these, and a
-    truncated read can only under-count, which is the direction that lets a
-    review through while robbie's last findings still stand unanswered.
+    Paged to the end, not capped at one page: gate 5 counts these, and a truncated
+    read under-counts, which is the direction that lets a review through while the
+    last findings stand unanswered.
     """
     owner, name = repo.split("/", 1)
     query = """
@@ -325,12 +315,8 @@ PENDING = {"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED", "WAITING"}
 
 @dataclass(frozen=True)
 class CheckSummary:
-    """What CI says about the head commit, bucketed.
-
-    The reviewer container has no CI-provider credentials, so this is the only
-    CI truth it gets — and it is the same data gate 6 judged, which is why the
-    model's "CI & linters" line can never contradict the decision to review.
-    """
+    """What CI says about the head commit, bucketed. The reviewer has no CI-provider
+    credentials, so this is the only CI truth it gets, and gate 6 judged the same."""
 
     passing: tuple[str, ...] = ()
     failing: tuple[str, ...] = ()
@@ -363,11 +349,8 @@ CHECK_NAME_CAP = 120
 def _one_line(name: str) -> str:
     """Flatten a check's name — it reaches a prompt, and a PR chooses it.
 
-    A workflow's `name:` comes from the branch under review and a third-party
-    status names itself, so this is the same untrusted shape `contract._strip`
-    exists for: a block marker is only a marker on a line of its own, and text
-    that can never carry a newline can never forge one. Flattened here rather
-    than at the prompt because the label and the comment bodies read it too.
+    Same untrusted shape `contract._strip` exists for: a marker is only a marker on
+    a line of its own, so text that cannot carry a newline cannot forge one.
     """
     flat = " ".join(name.split())
     return flat if len(flat) <= CHECK_NAME_CAP else flat[:CHECK_NAME_CAP] + "…"
@@ -402,9 +385,8 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
 def ci_outcome(meta: PrMeta, *, ignore: tuple[str, ...]) -> str:
     """`green`, `red` or `waiting` for a commit robbie already approved.
 
-    Read off the same buckets gate 6 reads, so "red" means here what it means
-    there. Nothing reporting yet is `waiting`, not green: the build robbie asked
-    for may not have started, and an approval is not evidence about a test.
+    Nothing reporting yet is `waiting`, never green: the build may not have started,
+    and an approval is not evidence about a test.
     """
     summary = summarize_checks(meta)
     if [name for name in summary.failing if name not in ignore]:
@@ -417,11 +399,8 @@ def ci_outcome(meta: PrMeta, *, ignore: tuple[str, ...]) -> str:
 def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
     """Gate 6's red list: what the summary calls failing, minus the ignored ones.
 
-    Derived from the same bucketing the reviewer is handed rather than repeating
-    it, so the model's CI line cannot contradict the gate that let it run. It did
-    diverge while these were two lists: a commit status reporting TIMED_OUT was
-    failing to the model and green to the gate. Still-running is not red — the
-    code is judged as it stands.
+    Derived from the bucketing the reviewer is handed, so the model's CI line cannot
+    contradict the gate that let it run. Still-running is not red.
     """
     return [name for name in summarize_checks(meta).failing if name not in ignore]
 
@@ -431,9 +410,9 @@ async def stale_changes_requested(
 ) -> list[dict[str, Any]]:
     """PRs sitting on a standing changes-requested review from `reviewer`.
 
-    Clocked on the age of the review, not on last activity: these authors keep
-    pushing, they just never re-request, so "no recent activity" finds nothing.
-    The age cut itself is the caller's, since the search cannot express it.
+    Clocked on the review's age, not on last activity: these authors keep pushing,
+    they just never re-request. The age cut is the caller's — the search cannot
+    express it.
     """
     query = """
       query($q: String!, $me: String!) {

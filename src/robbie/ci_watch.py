@@ -103,11 +103,7 @@ class CiWatch:
         return Outcome(row["repo"], row["pr"], "ci-note", result.detail)
 
     def _settle(self, key: str, state: str) -> None:
-        """A pass that publishes nothing decides but must not settle it.
-
-        `--no-publish` counts here as much as `--dry-run` does: settling a red build
-        whose note never went out retires the row, and the author is then owed a
-        comment no later tick will ever post.
-        """
+        """A quiet pass decides but must not settle it: settling a red build whose
+        note never went out leaves the author owed a comment nobody will post."""
         if not (self.dry_run or self.no_publish):
             self.db.set_ci_state(key, state)

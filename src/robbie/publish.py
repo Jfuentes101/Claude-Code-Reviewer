@@ -10,10 +10,9 @@ and parks the PR out of their queue until the author re-requests. `comment` does
 not: the author gets the findings and the label, and the PR stays in the queue.
 That is why comment posts its inline notes one at a time instead of as a review.
 
-Nothing here asks GitHub whether it already posted something. It used to, and it
-cost a full paginated read of every comment on the PR per call — the second most
-expensive read in the system. The caller records a one-shot key instead, the way
-`_request_ci` always has. The trade: a comment deleted by hand is not reposted.
+Nothing here asks GitHub whether it already posted something — that costs a full
+paginated read of every comment on the PR. The caller records a one-shot key
+instead, so a comment deleted by hand is not reposted.
 """
 
 from __future__ import annotations
@@ -36,11 +35,8 @@ SIGNATURE = "🤖 **Automated pre-review by robbie**"
 
 
 def posted_key(kind: str, repo: RepoConfig, meta: PrMeta) -> str:
-    """One post of `kind` per commit, recorded by the caller.
-
-    Lives next to the markers it replaced so the two cannot drift: the marker is
-    what a human sees in the body, this is what stops a second post.
-    """
+    """One post of `kind` per commit, recorded by the caller. Next to the body
+    markers so the two cannot drift."""
     return f"posted:{kind}:{repo.slug}:{meta.number}:{meta.head_sha}"
 
 
@@ -57,12 +53,10 @@ async def once_per(
 ) -> PublishResult | None:
     """Post something at most once per key. None means it already went out.
 
-    The one place that decides what "already" means, because it used to be four
-    places and they disagreed: a `--no-publish` pass must neither read the key as
-    spent nor spend it. Reading it there hides what the run would have done;
-    spending it retires a note the author is still owed, and no later tick posts
-    it. Only a call that actually reached GitHub records anything, which is also
-    what keeps a failed post retryable.
+    A quiet pass must neither read the key as spent nor spend it: the first hides
+    what the run would have done, the second retires a note the author is owed.
+    Only a call that reached GitHub records anything, which keeps a failed post
+    retryable.
     """
     if not quiet and db.notice_seen(key):
         return None
@@ -115,8 +109,7 @@ async def publish_review(
             "your own pull request.</sub>"
         )
 
-    # kept in the body for a human reading the PR; what stops a second post is
-    # the caller's `posted_key`, not a scan of every comment on the PR
+    # for a human reading the PR; what stops a second post is the caller's key
     marker = f"<!-- robbie-review sha={meta.head_sha} -->"
     anchored = anchor(findings, await diff_lines(repo.slug, meta.number))
     full = _assemble(marker, repo.needs_work_label, body, anchored)
@@ -248,11 +241,8 @@ async def post_ci_note(
 async def report_red_build(
     repo: RepoConfig, meta: PrMeta, checks: tuple[str, ...], *, dry_run: bool = False
 ) -> PublishResult:
-    """The build robbie's approval paid for came back red.
-
-    No label and no review event: the approval was about the code as read, and this
-    is news about the build, which is the author's to act on. One per commit.
-    """
+    """The build robbie's approval paid for came back red. No label and no review
+    event: the approval was about the code as read. One per commit."""
     marker = f"<!-- robbie-approved-red sha={meta.head_sha} -->"
     what = "`" + "`, `".join(checks) + "`" if checks else "CI"
     body = (
@@ -277,8 +267,8 @@ async def request_ci(
 ) -> PublishResult:
     """Ask CI to run, now that the review says the code is worth building.
 
-    The body is the trigger phrase and nothing else — no signature, no hidden
-    marker — because whatever listens for it may be matching the whole comment.
+    The body is the trigger phrase and nothing else — no signature, no marker —
+    because whatever listens for it may match the whole comment.
     """
     if dry_run:
         logger.info("DRY %r on %s#%s", repo.ci_phrase, repo.slug, meta.number)

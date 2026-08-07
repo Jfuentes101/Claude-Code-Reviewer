@@ -4,15 +4,14 @@ Everything stateful about a review lives here; the modules it calls are either
 pure (gates, anchor, contract) or a single narrow surface (publish, slack,
 runner). That split is what makes the policy testable without a GitHub account.
 
-The other two phases of a tick are their own modules, because neither is about
-reviewing a diff: `threads` answers replies to earlier findings and `ci_watch`
-reads the build an approval paid for. What the sweep borrows from here is one
-thing, `_slot` — capacity for a container, already gated — since it spends the
+The other two phases of a tick are their own modules: `threads` answers replies to
+earlier findings and `ci_watch` reads the build an approval paid for. Both borrow
+`_slot` from here — capacity for a container, already gated — since they spend the
 same money out of the same cap.
 
 Concurrency is per PR, capped by `max_concurrent_reviews`. A slow review cannot
-delay the others and cannot collide with the next tick, because the tick only
-schedules work the semaphore has room for.
+delay the others or collide with the next tick, because a tick only schedules work
+the semaphore has room for.
 """
 
 from __future__ import annotations
@@ -76,10 +75,9 @@ class Orchestrator:
         self._inflight = 0  # containers spending right now, which no gate can see
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
         self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
-        # Reading a meter suspends (it runs in a thread), so deciding and taking
-        # the reserve have to happen under one lock: without it every waiting
-        # review reads the same pre-reserve number and admits itself, which is
-        # the stampede `reserve_usd`/`reserve_pct` exist to prevent.
+        # Reading a meter suspends, so deciding and reserving happen under one
+        # lock: without it every waiting review reads the same pre-reserve number
+        # and admits itself, the stampede the reserves exist to prevent.
         self._admit_lock = asyncio.Lock()
 
     # Built per call rather than held: both are frozen views over this object's
@@ -107,10 +105,9 @@ class Orchestrator:
     def _pass_state(self, state: str, reason: str | None = None) -> dict[str, Any]:
         """How a finished pass is recorded, given that `--no-publish` posts nothing.
 
-        The row keeps its cost, its model and its counts either way — that is what
-        the mode is for. What it cannot keep is the state: `published` and `held`
-        are what every gate reads as judged, so a review nobody ever saw would
-        park the PR out of the queue and the real pass would never run.
+        The row keeps its cost, model and counts, but not the state: every gate
+        reads `published` and `held` as judged, and a review nobody saw must not
+        park the PR out of the queue.
         """
         if self.no_publish:
             return {"state": "failed", "hold_reason": "--no-publish: nothing was posted"}
@@ -121,10 +118,9 @@ class Orchestrator:
     async def poll_once(self) -> list[Outcome]:
         """One tick across every configured repo: answer replies, then review.
 
-        Answering first because a single `my_threads` read per PR feeds both gate
-        5 and the prompt's prior-conversation block. Do it the other way and that
-        read is stale: the gate rules on threads this tick is about to close, and
-        a re-review re-raises findings it conceded seconds later.
+        In that order because one `my_threads` read per PR feeds both gate 5 and
+        the prompt's prior-conversation block. Reversed, the gate rules on threads
+        this tick is about to close and a re-review re-raises conceded findings.
         """
         self._threads.clear()
         if not self.dry_run:  # housekeeping, so it belongs to a real tick only
@@ -230,9 +226,8 @@ class Orchestrator:
         if (held := label_hold(meta, repo)) is not None:
             return meta, "", "", held
 
-        # the expensive one: `last_review_request` pages the whole issue timeline,
-        # and an approved PR sits in the queue until somebody merges it. This is
-        # what stops it being re-gated every tick for as long as it takes.
+        # before the expensive one: `last_review_request` pages the whole issue
+        # timeline, and an approved PR sits in the queue until somebody merges it
         if (done := done_label(meta, repo)) is not None:
             if not self.dry_run and self.db.settle_done(repo.slug, pr):
                 logger.info("%s#%s: %s — a human has it; done reviewing", repo.slug, pr, done)
@@ -268,8 +263,8 @@ class Orchestrator:
         if decision.action == "hold":
             if decision.dm:
                 await self._dm_owner_once(f"hold:{key}", decision.dm)
-            # `no_publish` counts as much as `dry_run`: this row is what a later
-            # gate reads as judged, and a pass that told nobody must not spend it
+            # a later gate reads this row as judged, so a pass that told nobody
+            # must not write it
             if decision.record and not self._quiet:
                 self.db.record_hold(
                     key=key, repo=repo.slug, pr=meta.number, head_sha=meta.head_sha,
@@ -293,8 +288,8 @@ class Orchestrator:
                 )
             return Outcome(repo.slug, meta.number, "ci-note", result.detail)
 
-        # the spend gate is `_slot`'s alone; asking here too meant two places
-        # deciding one thing, and only this one ever told the operator about it
+        # the spend gate is `_slot`'s alone; asking here too is two places
+        # deciding one thing
         return await self._review(repo, meta, key, requested_at)
 
     def _choice(self, key: str) -> Choice:
@@ -307,15 +302,9 @@ class Orchestrator:
     async def _slot(self, key: str | None = None) -> AsyncIterator[Slot]:
         """Capacity to run one container: a semaphore slot and a spend reserve.
 
-        The only thing the thread sweep needs from the review path, which is why
-        it is a context manager and not four attributes shared between them.
-
-        Deciding and reserving happen under one lock because reading a meter
-        suspends. `key` picks the arm and therefore the meter; without one the
-        run is not a review and goes on the account's own.
-
-        The one place the spend gate is asked, and therefore the one place that
-        tells the operator about it — the caller only sees whether it has room.
+        `key` picks the arm and therefore the meter; without one the run is not a
+        review and goes on the account's. The one place the spend gate is asked,
+        and so the one place that tells the operator about it.
         """
         async with self._sem:
             async with self._admit_lock:
@@ -335,13 +324,8 @@ class Orchestrator:
                 self._inflight -= 1
 
     async def _tell_owner(self, gate: budget.Verdict) -> None:
-        """What a spend verdict is worth waking the operator for, at most once each.
-
-        Two things are: reviews have stopped and will resume on their own, and a
-        review ran with nothing measuring it. The second is the one that used to
-        be missed — an unreadable meter reached this only on the path that also
-        happened to ask the gate a second time.
-        """
+        """What a spend verdict is worth waking the operator for, at most once each:
+        reviews have stopped, or a review ran with nothing measuring it."""
         if gate.notice_key is None:
             return
         if not gate.allowed:
@@ -357,12 +341,8 @@ class Orchestrator:
             )
 
     async def _meter(self, *, via_endpoint: bool = False) -> budget.Verdict:
-        """The spend gate, read off the event loop.
-
-        Both plan meters are blocking HTTP with a 15s timeout. Asked inline, a hung
-        one stalls the whole tick — every other PR's gating and every running
-        review's bookkeeping — for as long as it hangs.
-        """
+        """The spend gate, read off the event loop: both meters are blocking HTTP,
+        and asked inline a hung one stalls the whole tick."""
         return await asyncio.to_thread(
             budget.check, self.cfg, self.secrets, self.db, self._inflight,
             via_endpoint=via_endpoint,
@@ -371,11 +351,8 @@ class Orchestrator:
     async def _admit(self, key: str) -> tuple[Choice, budget.Verdict]:
         """The arm that will review this key, and whether its meter allows it.
 
-        The arms cover for each other: a PR held while the other provider sits idle
-        is a review nobody gets, which trades the exact ratio for coverage. What a
-        run fell back *from* stays recoverable, since `choose_model` is a pure
-        function of the key. A model named on the CLI is never substituted — that
-        one was a request, not a routing preference.
+        The arms cover for each other, trading the exact ratio for coverage. A model
+        named on the CLI is never substituted — that was a request.
         """
         first = self._choice(key)
         verdict = await self._meter(via_endpoint=first.via_endpoint)
@@ -394,12 +371,8 @@ class Orchestrator:
         return other, spare
 
     async def _dm_owner_once(self, key: str, text: str) -> None:
-        """One DM per key, ever — and a run that cannot send must not spend the key.
-
-        `--dry-run` is the documented way to prove a deployment before it reviews
-        anything. Recording the notice there would make the operator DMs for every
-        currently-held PR disappear from the next real tick instead.
-        """
+        """One DM per key, ever — and a quiet run must not spend the key, or the
+        next real tick has nothing left to say about every currently-held PR."""
         if self.dry_run or self.no_publish:
             if not self.db.notice_seen(key):
                 await self.slack.dm_owner(text)  # this Slack only logs
@@ -440,16 +413,13 @@ class Orchestrator:
             )
 
         if not run.ok:
-            # Not recorded as judged, so the next tick retries — and the retry
-            # reuses this key, so `INSERT OR REPLACE` erases this row. `spend` is
-            # append-only, which makes it the only place a failure outlives the
-            # attempt that fixed it: without one, the operator DM about it
-            # correlates with nothing an hour later.
+            # Not judged, so the next tick retries — and the retry reuses this key,
+            # so `INSERT OR REPLACE` erases this row. Append-only `spend` is the
+            # only place a failure outlives the attempt that fixed it.
             self.db.record_spend(
                 repo=repo.slug, pr=meta.number, kind="failed",
-                # an endpoint arm's cost is the CLI's own price table rather than
-                # the account's bill, and `spend` carries no model for
-                # `spend_since` to exclude it by, so it is not recorded as money
+                # an endpoint arm's cost is the CLI's price table, not the
+                # account's bill, and `spend` carries no model to exclude it by
                 cost_usd=None if choice.via_endpoint else run.cost_usd,
                 duration_s=run.duration_s,
             )
@@ -470,10 +440,8 @@ class Orchestrator:
     ) -> Outcome:
         """What a finished run comes to: record what it cost, then post what it said.
 
-        Split from `_review` because the two halves fail differently. Up there a
-        failure is the container's and the key stays unjudged, so the next tick
-        pays for another try. Down here the review exists and was paid for — every
-        way out leaves a transcript and tells the operator where to find it.
+        The review is paid for by the time it gets here, so every way out leaves a
+        transcript and tells the operator where to find it.
         """
         blocks = run.blocks
         if blocks is None:  # mode="review" always parses; a caller could still lie
@@ -562,8 +530,7 @@ class Orchestrator:
     ) -> Outcome:
         """A paid-for review that reached nobody. Tell the operator, say so upward.
 
-        Not `_dm_owner_once`: each of these is about one run, not about a standing
-        condition, and a second failure on the same PR is news again.
+        Not `_dm_owner_once`: a second failure on the same PR is news again.
         """
         await self.slack.dm_owner(told)
         return Outcome(repo.slug, meta.number, "failed", detail)
@@ -590,12 +557,8 @@ class Orchestrator:
         return f"This is pass {len(rows) + 1} on this PR. Earlier passes: {past}.\n"
 
     async def _request_ci(self, repo: RepoConfig, meta: PrMeta) -> str:
-        """Trigger a build for an approved commit, at most once per commit.
-
-        CI stopped running on push, so a build is now something robbie spends
-        rather than something it observes: a forced re-review of a commit already
-        approved must not pay for a second one.
-        """
+        """Trigger a build for an approved commit, at most once per commit: CI does
+        not run on push, so a build is something robbie spends rather than sees."""
         key = f"run-ci:{repo.slug}:{meta.number}:{meta.head_sha}"
         try:
             result = await publish.once_per(
@@ -647,12 +610,8 @@ class Orchestrator:
             )
 
     async def _announce_approval(self, meta: PrMeta, ci: str) -> None:
-        """One line, not a briefing: the reviews worth reading announce themselves.
-
-        A needs-work review shows up on the PR and in the channel. An `ok` shows
-        up nowhere, so it is the only verdict that has to be told — to everyone
-        whose queue it just left, not only to the operator.
-        """
+        """An `ok` leaves no trace on the PR, so it is the only verdict that has to
+        be told — and to everyone whose queue it just left, not only the operator."""
         await self.slack.dm_reviewers(
             slackmod.approved_note(meta.number, meta.title, meta.url, ci)
         )
@@ -696,11 +655,8 @@ class _Unusable(NamedTuple):
 
 
 def _unusable(blocks: Blocks) -> _Unusable | None:
-    """Why a finished run cannot be published, if it cannot.
-
-    Both cases are the model not honouring the output contract, and both are held
-    rather than failed: the row keeps no verdict, so the PR comes back on its own.
-    """
+    """Why a finished run cannot be published, if it cannot. Held rather than
+    failed: the row keeps no verdict, so the PR comes back on its own."""
     if blocks.verdict is None:
         return _Unusable("run gave no verdict", "couldn't parse a verdict", "no verdict")
     if blocks.verdict != "ok" and not blocks.publishable:
