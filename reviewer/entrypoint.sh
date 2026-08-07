@@ -15,6 +15,11 @@ if [ -d /policy ]; then
   cp -r /policy/. "$HOME/.claude/"
 fi
 
+# `gh` authenticates from GH_TOKEN; plain git over https does not. The review
+# command fetches the base ref to get one fresher than the mirror's, and without
+# this that asks for a username on a terminal nobody is holding.
+gh auth setup-git
+
 # --shared keeps the objects in the read-only mirror instead of copying them:
 # on a large repo that is the difference between a 2s and a 40s start.
 git clone --quiet --shared /bare /work/repo
