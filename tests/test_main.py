@@ -36,7 +36,7 @@ class _Orch:
         return []
 
 
-async def _one_tick(cfg, orch, monkeypatch) -> int:
+async def _one_tick(cfg, orch, monkeypatch, *, quiet: bool = False) -> int:
     """Let _loop build its own Event, keep a handle on it, run exactly one tick."""
     real = asyncio.Event
 
@@ -45,7 +45,7 @@ async def _one_tick(cfg, orch, monkeypatch) -> int:
         return orch.stop
 
     monkeypatch.setattr(asyncio, "Event", capture)
-    return await _loop(cfg, orch)
+    return await _loop(cfg, orch, quiet=quiet)
 
 
 async def test_a_tick_slower_than_the_interval_says_so(tmp_path, monkeypatch, caplog):
@@ -163,6 +163,15 @@ async def test_a_failed_review_does_not_buy_a_free_round(tmp_path, monkeypatch):
     waited = _count_waits(monkeypatch)
     orch = _Ticker([[_failed()]])
     await _one_tick(_cfg(tmp_path, poll_interval_s=600), orch, monkeypatch)
+    assert (orch.ticks, waited) == (1, [600])
+
+
+async def test_a_quiet_pass_never_buys_a_free_round(tmp_path, monkeypatch):
+    """`--dry-run` and `--no-publish` record nothing a gate reads as judged, so the
+    same commit is reviewable again next tick: going round is an unbounded loop."""
+    waited = _count_waits(monkeypatch)
+    orch = _Ticker([[_reviewed()]])
+    await _one_tick(_cfg(tmp_path, poll_interval_s=600), orch, monkeypatch, quiet=True)
     assert (orch.ticks, waited) == (1, [600])
 
 

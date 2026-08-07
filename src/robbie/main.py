@@ -195,12 +195,12 @@ async def _run(args: argparse.Namespace) -> int:
                 logger.info("%s", outcome)
             return 0
 
-        return await _loop(cfg, orch)
+        return await _loop(cfg, orch, quiet=args.dry_run or args.no_publish)
     finally:
         db.close()
 
 
-async def _loop(cfg: configmod.Config, orch: Orchestrator) -> int:
+async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = False) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -231,7 +231,9 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator) -> int:
         # through to the wait on its own. A run that FAILED is `failed`, not
         # `review`, and must not buy a free retry — the interval is the only thing
         # rate-limiting a container that dies in ten seconds.
-        if reviewed:
+        # Never in a quiet mode: those leave the key unjudged on purpose, so going
+        # round would re-review the same commit forever.
+        if reviewed and not quiet:
             logger.info(
                 "%d review(s) in %.0fs; going straight round rather than idling %ds",
                 reviewed, elapsed, cfg.poll_interval_s,

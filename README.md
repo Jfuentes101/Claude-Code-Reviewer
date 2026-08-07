@@ -442,6 +442,10 @@ a PR out of the queue. So a `--no-publish` review keeps its cost, model and coun
 but lands in the panel under *waiting, held or failed* with `--no-publish: nothing
 was posted` as its reason, and the real tick behind it still reviews the PR.
 
+That is also why neither mode ever skips the idle wait, however much it reviewed: as
+a daemon rather than `--once`, going straight round would re-review the same commit
+every lap forever, with the spend gate as the only brake.
+
 ## The metrics panel
 
 Off unless asked for:
