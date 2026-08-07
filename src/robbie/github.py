@@ -113,11 +113,45 @@ async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
     return prs
 
 
+PR_FIELDS = (
+    "number,title,url,author,headRefOid,changedFiles,labels,"
+    "statusCheckRollup,baseRefName,state"
+)
+FORBIDDEN_NODE = "not accessible by personal access token"
+
+
+async def _commit_statuses(repo: str, sha: str) -> list[dict[str, Any]]:
+    """The rollup's commit statuses over REST, in the shape `summarize_checks` reads."""
+    if not sha:
+        return []
+    return await gh_json(
+        "api", f"repos/{repo}/commits/{sha}/status",
+        "--jq", "[.statuses[] | {context, state}]",
+    ) or []
+
+
 async def pr_meta(repo: str, pr: int) -> PrMeta:
-    data = await gh_json(
-        "pr", "view", str(pr), "--repo", repo, "--json",
-        "number,title,url,author,headRefOid,changedFiles,labels,statusCheckRollup,baseRefName,state",
-    )
+    try:
+        data = await gh_json("pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS)
+    except GhError as ex:
+        if FORBIDDEN_NODE not in str(ex):
+            raise
+        # No fine-grained PAT can read a check run — GitHub has no Checks permission
+        # for them — and one unreadable node fails the whole view rather than nulling
+        # itself out, taking the labels and the sha with it. Commit statuses still
+        # come back over REST, so the PR is judged on those instead of being skipped.
+        data = await gh_json(
+            "pr", "view", str(pr), "--repo", repo,
+            "--json", PR_FIELDS.replace("statusCheckRollup,", ""),
+        )
+        if data:
+            data["statusCheckRollup"] = await _commit_statuses(
+                repo, data.get("headRefOid") or ""
+            )
+            logger.warning(
+                "%s#%s: this token cannot read check runs; judged on commit statuses only",
+                repo, pr,
+            )
     if not data:
         raise GhError(f"could not fetch {repo}#{pr}")
     return PrMeta(

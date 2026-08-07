@@ -72,3 +72,33 @@ async def test_a_queue_with_room_left_stays_quiet(fake_gh, caplog):
     with caplog.at_level("WARNING"):
         assert await gh_mod.queue("acme/app", label="Code Review", reviewer="rev") == [1]
     assert caplog.text == ""
+
+
+async def test_an_unreadable_check_run_falls_back_to_commit_statuses(fake_gh, caplog):
+    """A fine-grained PAT cannot read check runs at all, and one unreadable node
+    fails the whole `pr view` — labels and sha included. The PR must still be
+    judged on what the token CAN see, not skipped as unreachable."""
+    fake_gh("""
+if [[ "$*" == *statusCheckRollup* ]]; then
+  echo "GraphQL: Resource not accessible by personal access token" >&2; exit 1
+fi
+if [[ "$1" == "api" ]]; then
+  echo '[{"context":"ci/circleci: build","state":"failure"}]'; exit 0
+fi
+echo '{"number":7,"title":"t","url":"u","author":{"login":"dev"},
+       "headRefOid":"abc123","changedFiles":2,"labels":[{"name":"Code Review"}],
+       "baseRefName":"main","state":"OPEN"}'
+""")
+    with caplog.at_level("WARNING"):
+        meta = await gh_mod.pr_meta("acme/app", 7)
+    assert meta.head_sha == "abc123"
+    assert meta.has_label("Code Review"), "the labels must survive the fallback"
+    assert gh_mod.failing_checks(meta, ignore=()) == ["ci/circleci: build"]
+    assert "cannot read check runs" in caplog.text
+
+
+async def test_any_other_failure_is_still_a_skip(fake_gh):
+    """Only the forbidden-node case degrades; a real outage must stay an error."""
+    fake_gh('echo "bad credentials" >&2; exit 1')
+    with pytest.raises(GhError, match="bad credentials"):
+        await gh_mod.pr_meta("acme/app", 7)
