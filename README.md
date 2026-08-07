@@ -226,7 +226,7 @@ Nothing here is created for you. `up` is the last step, not the first.
 |---|---|
 | **docker + the compose plugin** | and access to `/var/run/docker.sock`: reviewers are *sibling* containers spawned over it, so there is no docker-in-docker to install |
 | **`git`, and disk for a mirror** | one bare clone per repo, the size of that repo — ~1 GB for a monolith. `./scripts/mirror-sync` makes it; compose never can, because the mirror is mounted read-only |
-| **a GitHub account for the reviewer** | its *pending review requests are the queue*. `GH_TOKEN` (scope `repo`) must belong to it, because reviews are posted as that account. Put a second, **read-only** token in `GH_TOKEN_REVIEWER` — that is the one the model gets |
+| **a GitHub account for the reviewer** | its *pending review requests are the queue*. `GH_TOKEN` must belong to it, because reviews are posted as that account. Put a second, **read-only** token in `GH_TOKEN_REVIEWER` — that is the one the model gets. Which permissions each one needs: [The two GitHub tokens](#the-two-github-tokens) |
 | **a Slack bot token** | `chat:write`, invited to `slack_channel`. Author DMs need a `slack-users.tsv` you fill in by hand; the shipped example maps nobody |
 | **a model to review with** | `ANTHROPIC_API_KEY` for `backend: api`, or a `.credentials.json` from a machine where `claude login` ran for `backend: oauth`. Any endpoint speaking the Anthropic Messages API can take some or all of the reviews instead — see [Which model reviews](#which-model-reviews) |
 
@@ -299,7 +299,8 @@ choosing `backend`, because it decides which of them matter: `api` needs
 `ANTHROPIC_API_KEY`, `oauth` needs `CLAUDE_CREDENTIALS` pointing at a copy of
 `~/.claude/.credentials.json` from a machine where `claude login` has run. Put a
 **read-only** `GH_TOKEN_REVIEWER` next to the writing `GH_TOKEN`: the reviewer
-runs a model with `bypassPermissions`, and publishing is not its job.
+runs a model with `bypassPermissions`, and publishing is not its job. What to tick
+when generating either one is [The two GitHub tokens](#the-two-github-tokens).
 
 **`config/robbie.yaml`** — the identity that matters is `reviewer_login`, whose
 pending review requests *are* the queue; `GH_TOKEN` must belong to it, because
@@ -344,6 +345,62 @@ quiet: `docker.timeout_s` cannot end a hung review, so the run is recorded as
 timed out and its slot freed while the container keeps spending. `docker-ce` from
 the distro or Docker's own repo has no such problem; if you must keep the snap,
 `--security-opt apparmor=unconfined` is the only way to get the signal through.
+
+### The two GitHub tokens
+
+Reviews are posted **as** `reviewer_login`, so `GH_TOKEN` has to belong to that
+account — not to whoever is setting robbie up. The reviewer containers get
+`GH_TOKEN_REVIEWER` instead, and it must be a *different*, read-only token: the
+model runs with `bypassPermissions`, and publishing is not its job.
+
+Both are fine-grained tokens, **Only select repositories**, scoped to the repos in
+`repos[]`. Everything not listed here stays at *No access*.
+
+| permission | `GH_TOKEN` | `GH_TOKEN_REVIEWER` | what needs it |
+|---|---|---|---|
+| **Pull requests** | Read and **write** | Read-only | the queue search, `pr view`, the diff and the review threads — and posting the review, its inline comments and the thread replies |
+| **Issues** | Read and **write** | — | the conversation comments (CI note, red build, the CI trigger phrase), the review-request timeline, and the needs-work label: labels are the issues API, not the PR one |
+| **Contents** | Read-only | Read-only | the reviewer's `gh pr checkout`, and the review-criteria file read off the **base** branch |
+| **Commit statuses** | Read-only | — | what gate 6 judges and what the CI watch follows |
+| **Metadata** | Read-only | Read-only | mandatory; GitHub ticks it for you |
+
+**There is no Checks permission for fine-grained tokens.** It is not hidden in the
+list — GitHub does not offer one, so *no* fine-grained token can read a check run.
+This matters more than it sounds: `gh pr view` does not null the unreadable node
+out, it fails the whole call, which used to cost the labels and the head sha too
+and left the PR skipped as unreachable on every tick. `pr_meta` now retries without
+the rollup and fills the checks from the commit-status REST endpoint, warning once
+per PR that the judgement was made on partial CI.
+
+So a repo whose CI reports as **commit statuses** (CircleCI, most third-party CI)
+is read in full. A repo whose CI is **GitHub Actions** reports as check runs, and
+robbie will see *nothing reporting at all* — it reviews as if the build had not
+started, and `ci_outcome` stays `waiting` rather than going green. A classic token
+is the only way to see check runs, and it costs the read-only split below.
+
+Three more that cost an afternoon each:
+
+**Resource owner is not the same as repository access.** For a repo owned by an
+org, *Resource owner* must be that org, or its repos never appear in the picker.
+The token then sits **pending approval** until an org owner approves it, and it
+returns 404s that look like a wrong slug until they do. Adding a permission later
+can send it back to pending.
+
+**One resource owner per token.** A fine-grained token cannot span an org repo and
+a personal one. Two repos under different owners in the same `repos[]` cannot be
+served by one `GH_TOKEN` — move them under one owner, because robbie has a single
+token for every repo it watches.
+
+**Classic tokens cannot do the read-only half.** `repo` is the only scope that
+reaches a private repo, and it is read *and* write, so `GH_TOKEN_REVIEWER` would
+hand the model the same power as `GH_TOKEN` and there would be no point splitting
+them. If fine-grained is not an option, give a second account **Read** access to
+the repo and put its classic token in `GH_TOKEN_REVIEWER`: the scope asks for
+write, the repository permission does not grant it.
+
+`docker compose exec robbie robbie --dry-run poll --once` exercises every read a
+token needs and writes nothing, so a missing permission shows up there rather than
+halfway through a paid review.
 
 ## Commands
 

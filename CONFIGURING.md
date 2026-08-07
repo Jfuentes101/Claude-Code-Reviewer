@@ -22,9 +22,13 @@ The queue is *PRs with the label whose review is requested from this account*, s
 this is the identity everything hangs off.
 
 1. `repos[].reviewer_login` — the login.
-2. `GH_TOKEN` — must belong to it (scope `repo`); reviews are posted **as** this account.
+2. `GH_TOKEN` — must belong to it; reviews are posted **as** this account.
 3. `GH_TOKEN_REVIEWER` — read-only, for the container. Not the same token.
 4. `docker compose up -d`.
+
+Which permissions each token needs, and the three ways generating them goes wrong,
+is [The two GitHub tokens](README.md#the-two-github-tokens). `compose up` does not
+re-read `.env` on `restart` — recreate, or the daemon keeps the old token.
 
 Two things do not move with it: reviews already published stay under the old
 account, and the reply sweep only sees threads opened by the *current*
