@@ -233,12 +233,24 @@ class Db:
         )
 
     def approved_and_green(self, since_ms: int) -> list[sqlite3.Row]:
-        """What a human could pick up: robbie approved it and the build went green."""
+        """What a human could pick up: robbie approved it and the build went green.
+
+        The newest pass per PR and no other. A push while a review request is open
+        keeps `requested_at` and only moves `head_sha`, so a busy PR collects one
+        row per commit — listing them all repeats the PR once per commit that no
+        longer exists, and an `ok` two commits back keeps claiming the PR is
+        approved after a later pass said needs-work. Rank first, judge after: a PR
+        whose latest pass is not an `ok` has to fall out, which it cannot do if the
+        verdict is part of what picks the row.
+        """
         return list(
             self.conn.execute(
                 "SELECT repo, pr, head_sha, model, verdict, ci_state, ci_seen_at, created_at "
-                "FROM reviews WHERE verdict='ok' AND state='published' "
-                "AND ci_state IN ('green','waiting','red') AND created_at >= ? "
+                "FROM (SELECT *, ROW_NUMBER() OVER "
+                # id breaks the tie: two passes can land in the same millisecond
+                "             (PARTITION BY repo, pr ORDER BY created_at DESC, id DESC) newest "
+                "      FROM reviews WHERE state='published' AND created_at >= ?) "
+                "WHERE newest = 1 AND verdict='ok' AND ci_state IN ('green','waiting','red') "
                 "ORDER BY ci_state='green' DESC, created_at DESC",
                 (since_ms,),
             )

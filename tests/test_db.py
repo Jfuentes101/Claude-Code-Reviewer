@@ -53,6 +53,26 @@ def test_settle_done_leaves_other_prs_alone(db):
     assert db.reviewed_prs("acme/app") == [7]
 
 
+def test_the_panel_shows_one_row_per_pr_not_one_per_commit(db):
+    """Pushes during an open request share `requested_at` and differ only by sha."""
+    for sha in ("abc123", "def456", "ghi789"):
+        key = f"acme/app:7:{sha}:2026-01-01T00:00:00Z"
+        start(db, key=key, sha=sha)
+        db.finish_review(key, state="published", verdict="ok", ci_state="green")
+    rows = db.approved_and_green(0)
+    assert [(r["pr"], r["head_sha"]) for r in rows] == [(7, "ghi789")]
+
+
+def test_a_later_verdict_retires_the_earlier_approval(db):
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok", ci_state="green")
+    assert len(db.approved_and_green(0)) == 1
+    later = "acme/app:7:def456:2026-01-01T00:00:00Z"
+    start(db, key=later, sha="def456")
+    db.finish_review(later, state="published", verdict="needs-work")
+    assert db.approved_and_green(0) == [], "the newest pass says the PR is not ready"
+
+
 def test_a_recorded_hold_counts_as_judged(db):
     db.record_hold(key=KEY, repo="acme/app", pr=7, head_sha="abc123",
                    requested_at="2026-01-01T00:00:00Z", reason="changes no files")
