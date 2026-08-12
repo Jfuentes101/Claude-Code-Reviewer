@@ -185,6 +185,15 @@ signature, no hidden marker — because whatever listens for it may be matching 
 whole comment. It is posted at most once per head sha, so forcing a re-review of
 an approved commit cannot buy a second build.
 
+Nor does it ask when the commit already has one. The author is usually waiting on
+the same build and starts it themselves, and the once-per-sha guard only knows
+what robbie asked for. So an approval re-reads the head first — the meta the review
+ran on is as old as the review — and asks only if nothing is reporting. What counts
+as "reporting" is `ignore_checks`: a reviewer bot ticks every push, and counting it
+would mean never asking for a build again. Every uncertain answer asks anyway: a
+duplicate build costs minutes of CI, while a build nobody asked for leaves the
+approval without a verdict until someone notices.
+
 ## Setup
 
 ### On a fresh Ubuntu server
@@ -568,7 +577,9 @@ Three things follow, and each closes a failure mode:
 
 Checks that gate 6 ignores (`ignore_checks`, CodeRabbit by default) still appear
 as failing, since the model should know a reviewer bot is unhappy even though it
-isn't a broken build.
+isn't a broken build. Everywhere else that list means the same thing — not part of
+the build — so an ignored check on its own is neither a green build nor evidence
+that one has started.
 
 **If you do want local linting** for a repo, the escape hatch needs no config:
 put the toolchain in a child image, point that repo's `image:` at it, and say so

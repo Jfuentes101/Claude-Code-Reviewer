@@ -60,7 +60,7 @@ repos:
     review_command: .claude/commands/code-review.md
     slack_channel: C0…
     ci_phrase: run-ci                     # posted verbatim on an `ok`
-    ignore_checks: ["CodeRabbit"]         # never counted as a red build
+    ignore_checks: ["CodeRabbit"]         # not part of the build, red or green
 ```
 
 Then `./scripts/mirror-sync owner/name` and `docker compose up -d`. `label` and

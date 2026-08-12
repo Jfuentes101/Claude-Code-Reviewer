@@ -35,6 +35,7 @@ from robbie.github import (
     GhError,
     PrMeta,
     Thread,
+    ci_started,
     last_review_request,
     my_threads,
     pr_meta,
@@ -556,7 +557,13 @@ class Orchestrator:
 
     async def _request_ci(self, repo: RepoConfig, meta: PrMeta) -> str:
         """Trigger a build for an approved commit, at most once per commit: CI does
-        not run on push, so a build is something robbie spends rather than sees."""
+        not run on push, so a build is something robbie spends rather than sees.
+
+        Unless the author already paid for one. `once_per` only knows what robbie
+        itself asked for, and a build somebody else started is just as good.
+        """
+        if (started := await self._ci_already_started(repo, meta)) is not None:
+            return started
         key = f"run-ci:{repo.slug}:{meta.number}:{meta.head_sha}"
         try:
             result = await publish.once_per(
@@ -574,6 +581,28 @@ class Orchestrator:
         if result is None:
             return f"CI already asked for {meta.head_sha[:8]}"
         return result.detail
+
+    async def _ci_already_started(self, repo: RepoConfig, meta: PrMeta) -> str | None:
+        """The build the author asked for while the review was still running, if any.
+
+        Read fresh: the meta this review ran on was fetched before the container
+        started, which for a long review is half an hour of someone else's clicks.
+
+        Every uncertain answer asks anyway. A duplicate build costs minutes of CI;
+        a build nobody asked for costs the approval its verdict, and the author
+        finds out when the PR has sat green-less for a day.
+        """
+        try:
+            # not under `_gate_sem`, like the rest of the publish path: a read taken
+            # after a container has finished must not queue the next tick's gates
+            fresh = await pr_meta(repo.slug, meta.number)
+        except GhError as ex:
+            logger.warning("%s#%s: could not check for a running build: %s",
+                           repo.slug, meta.number, ex)
+            return None
+        if fresh.head_sha != meta.head_sha or not ci_started(fresh, ignore=repo.ignore_checks):
+            return None
+        return f"CI already running for {meta.head_sha[:8]}"
 
     async def _token_login(self) -> str | None:
         if self._self_login is None:

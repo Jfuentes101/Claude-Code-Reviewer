@@ -241,6 +241,9 @@ def stub_gates(monkeypatch, gates: Gates) -> None:
     monkeypatch.setattr(orch_mod, "pr_meta", gates.meta)
     monkeypatch.setattr(orch_mod, "last_review_request", _async("2026-01-01T00:00:00Z"))
     monkeypatch.setattr(orch_mod, "my_threads", _async(PrThreads()))
+    # an approval reads the head commit again to see whether a build is already
+    # running. It goes through the same call, and it is not a gate check
+    monkeypatch.setattr(Orchestrator, "_ci_already_started", _async(None))
 
 
 async def test_the_gate_phase_has_its_own_cap(orch, monkeypatch):

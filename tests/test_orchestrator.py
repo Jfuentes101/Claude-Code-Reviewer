@@ -415,7 +415,13 @@ async def test_a_verdict_with_no_summary_body_posts_nothing_either(orch, repo, m
 # ----- verdicts ------------------------------------------------------------
 
 
+def _build(monkeypatch, *checks) -> None:
+    """What a fresh read of the PR finds on the head commit, if anything."""
+    monkeypatch.setattr(orch_mod, "pr_meta", _async(pr(checks=checks)))
+
+
 async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypatch):
+    _build(monkeypatch)
     cleared, ci = [], []
     monkeypatch.setattr(
         publish_mod, "clear_needs_work",
@@ -442,6 +448,7 @@ async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypat
 
 async def test_ci_is_asked_for_once_per_commit(orch, repo, monkeypatch):
     """A build costs money now, and a forced re-review must not buy a second one."""
+    _build(monkeypatch)
     ci = []
     monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
     monkeypatch.setattr(
@@ -462,6 +469,7 @@ async def test_a_ci_request_that_failed_is_asked_for_again(orch, repo, monkeypat
     Otherwise an approval nobody builds can never be recovered from: every later
     pass on that commit reads "already asked" and stays silent.
     """
+    _build(monkeypatch)
     monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
     stub_run(monkeypatch, ok_run("ok"))
 
@@ -479,6 +487,61 @@ async def test_a_ci_request_that_failed_is_asked_for_again(orch, repo, monkeypat
     )
     second = await orch._review(repo, pr(), "forced-again", REQ)
     assert len(ci) == 1 and "asked" in second.detail
+
+
+async def test_a_build_the_author_already_started_is_not_asked_for_again(
+    orch, repo, monkeypatch
+):
+    """`once_per` only knows what robbie asked for. The author asking first is the
+    common case: the review takes half an hour and they are waiting on the same
+    build."""
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(
+        publish_mod, "request_ci", lambda *a, **k: pytest.fail("asked for a second build"),
+    )
+    _build(monkeypatch, {"context": "ci/circleci: build", "state": "PENDING"})
+    stub_run(monkeypatch, ok_run("ok"))
+
+    outcome = await orch._review(repo, pr(), KEY, REQ)
+
+    assert "CI already running" in outcome.detail
+    assert orch.db.get_review(KEY).verdict == "ok"
+    row = orch.db.approved_and_green(0)[0]
+    assert row["ci_state"] == "waiting", "the watch has to report on somebody else's build"
+
+
+async def test_a_review_bot_ticking_the_commit_is_not_a_build(orch, repo, monkeypatch):
+    """It posts a status on every push, so counting it would mean never asking."""
+    ci = []
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(
+        publish_mod, "request_ci", lambda *a, **k: _mark(ci, PublishResult(True, "asked")),
+    )
+    _build(monkeypatch, {"context": "CodeRabbit", "state": "SUCCESS"})
+    stub_run(monkeypatch, ok_run("ok"))
+
+    await orch._review(repo, pr(), KEY, REQ)
+
+    assert len(ci) == 1
+
+
+async def test_a_read_that_fails_asks_for_the_build_anyway(orch, repo, monkeypatch):
+    """A duplicate build costs minutes; a missing one costs the approval its verdict."""
+    ci = []
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(
+        publish_mod, "request_ci", lambda *a, **k: _mark(ci, PublishResult(True, "asked")),
+    )
+
+    async def boom(*a, **kw):
+        raise GhError("502 from github")
+
+    monkeypatch.setattr(orch_mod, "pr_meta", boom)
+    stub_run(monkeypatch, ok_run("ok"))
+
+    await orch._review(repo, pr(), KEY, REQ)
+
+    assert len(ci) == 1
 
 
 async def test_the_ci_trigger_comment_is_the_bare_phrase(repo, monkeypatch):

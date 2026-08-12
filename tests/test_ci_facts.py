@@ -7,7 +7,7 @@ review happen, and a linter missing from the image is never reported as a gap.
 from __future__ import annotations
 
 from robbie.contract import preamble
-from robbie.github import CheckSummary, PrMeta, ci_outcome, summarize_checks
+from robbie.github import CheckSummary, PrMeta, ci_outcome, ci_started, summarize_checks
 
 
 def pr(*checks) -> PrMeta:
@@ -187,3 +187,36 @@ def test_an_ignored_check_cannot_make_it_red():
         {"context": "ci/build", "state": "SUCCESS"},
         {"context": "CodeRabbit", "state": "FAILURE"},
     )) == "green"
+
+
+def test_an_ignored_check_cannot_make_it_green_either():
+    """It ticks every push, so on its own it is a commit with no build at all."""
+    assert _outcome(({"context": "CodeRabbit", "state": "SUCCESS"},)) == "waiting"
+
+
+def test_an_ignored_check_running_does_not_hold_a_green_build_back():
+    assert _outcome((
+        {"context": "ci/build", "state": "SUCCESS"},
+        {"context": "CodeRabbit", "status": "IN_PROGRESS"},
+    )) == "green"
+
+
+# ----- whether a build exists at all ----------------------------------------
+
+
+def _started(checks, ignore=("CodeRabbit",)):
+    return ci_started(pr(*checks), ignore=ignore)
+
+
+def test_a_commit_with_no_checks_has_no_build():
+    assert not _started(())
+
+
+def test_only_the_review_bot_is_still_no_build():
+    assert not _started(({"context": "CodeRabbit", "state": "SUCCESS"},))
+
+
+def test_a_build_counts_whatever_it_is_reporting():
+    """Queued, running, passed or failed: all of them mean nobody owes it a trigger."""
+    for state in ({"state": "PENDING"}, {"status": "QUEUED"}, {"conclusion": "FAILURE"}):
+        assert _started(({"context": "ci/build", **state},))

@@ -359,6 +359,10 @@ def _one_line(name: str) -> str:
     return flat if len(flat) <= CHECK_NAME_CAP else flat[:CHECK_NAME_CAP] + "…"
 
 
+def _check_name(check: dict[str, Any]) -> str:
+    return _one_line(check.get("context") or check.get("name") or "check")
+
+
 def summarize_checks(meta: PrMeta) -> CheckSummary:
     """Bucket every check on the head commit, including the ones gate 6 ignores.
 
@@ -366,7 +370,7 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
     """
     passing, failing, running, other = [], [], [], []
     for check in meta.checks:
-        name = _one_line(check.get("context") or check.get("name") or "check")
+        name = _check_name(check)
         state = (check.get("state") or check.get("conclusion") or "").upper()
         status = (check.get("status") or "").upper()
         if state == "SUCCESS":
@@ -385,16 +389,27 @@ def summarize_checks(meta: PrMeta) -> CheckSummary:
     )
 
 
+def ci_started(meta: PrMeta, *, ignore: tuple[str, ...]) -> bool:
+    """Whether a build exists for this commit at all, however it got asked for.
+
+    `ignore` is what makes the question answerable: a review bot posts a status on
+    every push, so "this commit has a check" is not "this commit has a build".
+    """
+    return any(_check_name(check) not in ignore for check in meta.checks)
+
+
 def ci_outcome(meta: PrMeta, *, ignore: tuple[str, ...]) -> str:
     """`green`, `red` or `waiting` for a commit robbie already approved.
 
     Nothing reporting yet is `waiting`, never green: the build may not have started,
-    and an approval is not evidence about a test.
+    and an approval is not evidence about a test. An ignored check is not a build
+    either, so a bot's green tick on its own is still `waiting`.
     """
     summary = summarize_checks(meta)
-    if [name for name in summary.failing if name not in ignore]:
+    kept = lambda names: [name for name in names if name not in ignore]  # noqa: E731
+    if kept(summary.failing):
         return "red"
-    if summary.running or not summary.passing:
+    if kept(summary.running) or not kept(summary.passing):
         return "waiting"
     return "green"
 
