@@ -8,6 +8,64 @@ line, you are guessing — drop it or move it to the summary.
 
 ---
 
+## 0. Recon: situate the change before judging it
+
+This section is preparation, not judgment — §1 still decides what becomes a
+finding. But a review that skips it can only see one file at a time, and the
+defects that reach production live between files.
+
+**Name the shape of the change first.** Third-party integration, form or CRUD
+path, background job, migration, money calculation, report, UI pack. The shape
+predicts where the bugs are and, more usefully, **which files should have been
+touched and were not**.
+
+**Every shape already has siblings in this repo. Find two and read them.** The
+question is almost never "is this correct on its own" — it is "does this agree
+with the three places that already do this". A vendor client, a form, a
+calculator: whichever the diff adds, the repo has precedents, and they carry the
+conventions that no linter enforces — where config lives, what a service returns,
+which layer owns validation, where constants and copy go, what gets a decorator.
+A new file that invents its own answer is a finding even when it works.
+
+**Map the data flow end to end before reading for defects.** Where the value
+enters, every layer it crosses, where it is persisted, where it is read back, who
+reads it later. Write the chain down. Two failures that a per-file read cannot
+see, both observed:
+
+- **Siblings that disagree.** Two calculators for the same quantity, one
+  tax-inclusive and one tax-exclusive. Each is self-consistent; the pair is a
+  bug waiting for a config flip. When a diff touches one member of a family,
+  read the whole family.
+- **Deferred work with a gap.** A callback schedules a job minutes out; the state
+  it depends on can change in the gap and the cancel path no-ops. Whenever the
+  change defers, enumerate what can happen in between — cancel, refund, expire,
+  a second attempt.
+
+**Grep callers of everything whose behavior or signature the diff changes; the
+callers it did not touch are the risk zone.** List them by `file:line`. A return
+value changed from `self` to `nil` on one branch is invisible in its own file and
+crashes at a call site three files away, outside the handler that was supposed to
+catch it. Same for a renamed key, a narrowed scope, a new nullable column.
+
+**Values crossing a boundary need a bound and a failure path.** Anything arriving
+from a vendor, a webhook or a client — amounts, ids, dates, quantities — and
+anything leaving toward one. An unbounded amount handed straight to a refund is
+Critical however clean the code around it reads. Check what the repo's other
+integrations do at the same boundary; usually one of them already has the guard.
+
+**Concept defined twice.** Before relying on a helper, scope or predicate, grep
+for the other definitions of the same idea. Preferring the wrong one of two
+similarly-named scopes silently widens access.
+
+**Then judge the complexity** — §3. Recon feeds it: a change is only provably
+more complex than it needs to be once you have seen how the repo already solves
+the same problem.
+
+One consequence worth stating plainly: **a large diff that produces zero findings
+is evidence the recon did not happen, not evidence the code is clean.** Say what
+you traced. If the budget ran out before the flow was mapped, hold the review and
+say so — that is a useful answer. A silent approval is not.
+
 ## 1. Reachability comes before everything else
 
 **A mechanism existing is not a bug. A finding is real only once a live code path
