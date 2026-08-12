@@ -178,6 +178,76 @@ async def test_a_done_label_retires_the_pr_from_the_panel_and_the_sweep(
     assert orch.db.approved_and_green(0) == [], "and it leaves the dashboard"
 
 
+# ----- a PR that left the label behind -------------------------------------
+
+
+def _labeled(monkeypatch, prs, boom=False):
+    async def read(slug, *, label, reviewer=None):
+        if boom:
+            raise GhError("gh exploded")
+        assert reviewer is None, "the panel's read must not filter by review request"
+        return list(prs)
+
+    monkeypatch.setattr(orch_mod, "queue", read)
+
+
+def _approved(db, pr_number=7):
+    key = dedup_key("acme/app", pr_number, "abc1234567", REQ)
+    db.start_review(
+        key=key, repo="acme/app", pr=pr_number, head_sha="abc1234567", requested_at=REQ
+    )
+    db.finish_review(key, state="published", verdict="ok", ci_state="green")
+
+
+async def test_a_pr_without_the_label_leaves_the_panel(orch, cfg, monkeypatch):
+    """Merged, closed, or the label taken off — none of them reach the gates."""
+    _approved(orch.db)
+    _labeled(monkeypatch, [])
+
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert orch.db.approved_and_green(0) == []
+    assert orch.db.reviewed_prs("acme/app") == [7], "but the reply sweep keeps it"
+
+
+async def test_a_pr_still_carrying_the_label_stays(orch, cfg, monkeypatch):
+    _approved(orch.db)
+    _labeled(monkeypatch, [7])
+
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert [r["pr"] for r in orch.db.approved_and_green(0)] == [7]
+
+
+async def test_a_failed_label_read_retires_nothing(orch, cfg, monkeypatch):
+    """Every PR looks unlabelled when the read is what broke."""
+    _approved(orch.db)
+    _labeled(monkeypatch, [], boom=True)
+
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert [r["pr"] for r in orch.db.approved_and_green(0)] == [7]
+
+
+async def test_a_truncated_label_read_retires_nothing(orch, cfg, monkeypatch):
+    _approved(orch.db, pr_number=99_999)
+    _labeled(monkeypatch, range(1, orch_mod.QUEUE_LIMIT + 1))
+
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert [r["pr"] for r in orch.db.approved_and_green(0)] == [99_999]
+
+
+async def test_a_dry_run_retires_nothing(orch, cfg, monkeypatch):
+    _approved(orch.db)
+    _labeled(monkeypatch, [])
+    orch.dry_run = True
+
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert [r["pr"] for r in orch.db.approved_and_green(0)] == [7]
+
+
 async def test_a_dry_run_marks_nothing(orch, cfg, monkeypatch):
     repo = _taken(cfg, monkeypatch, ("Code Review", "Ready for Prod"))
     orch.dry_run = True

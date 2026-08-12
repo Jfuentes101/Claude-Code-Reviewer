@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     should_fix   INTEGER,
     inline       INTEGER,                   -- of those, anchored to a diff line
     summary_findings INTEGER,               -- indexed in the summary instead
-    ci_state     TEXT,                     -- waiting|green|red|stale|gone|done
+    ci_state     TEXT,                     -- waiting|green|red|stale|gone|done|unlabeled
     ci_seen_at   INTEGER,
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
@@ -266,6 +267,25 @@ class Db:
             "UPDATE reviews SET ci_state='done' WHERE repo=? AND pr=? "
             "AND COALESCE(ci_state,'') != 'done'",
             (repo, pr),
+        )
+        return cur.rowcount or 0
+
+    def settle_unlabeled(self, repo: str, labeled: Collection[int]) -> int:
+        """Retire from the panel every PR of this repo outside `labeled`.
+
+        Merged, closed, or the label taken off — all three read the same way here,
+        and none of them can reach `settle_done`: that gate only sees PRs the queue
+        still returns. Unlike 'done' this leaves the reply sweep alone. An author
+        answering findings on a PR that lost the label still deserves an answer;
+        it just is not something a human can pick up any more.
+        """
+        holes = ",".join("?" * len(labeled))
+        # an empty list is a repo with nothing under the label, not a no-op
+        keep = f" AND pr NOT IN ({holes})" if labeled else ""
+        cur = self.conn.execute(
+            f"UPDATE reviews SET ci_state='unlabeled' WHERE repo=?{keep} "
+            "AND COALESCE(ci_state,'') NOT IN ('done','unlabeled')",
+            (repo, *labeled),
         )
         return cur.rowcount or 0
 

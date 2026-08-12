@@ -90,15 +90,18 @@ async def whoami() -> str:
 QUEUE_LIMIT = 200
 
 
-async def queue(repo: str, *, label: str, reviewer: str) -> list[int]:
+async def queue(repo: str, *, label: str, reviewer: str | None = None) -> list[int]:
     """PRs carrying the label AND pending this reviewer — gates 1 and 2.
 
     A changes-requested review clears the request, so those drop out until the
     author re-requests; `digest` nags the ones that never do.
+
+    Without a reviewer it answers the wider question the panel needs — everything
+    still open under the label, whoever it is waiting on.
     """
     rows = await gh_json(
         "search", "prs", "--repo", repo,
-        f"--review-requested={reviewer}", "--label", label,
+        *([f"--review-requested={reviewer}"] if reviewer else []), "--label", label,
         "--state", "open", "--limit", str(QUEUE_LIMIT), "--json", "number",
     )
     prs = [int(r["number"]) for r in rows or []]

@@ -31,6 +31,7 @@ from robbie.contract import Blocks, preamble, threads_block
 from robbie.db import Db
 from robbie.gates import Decision, already_judged, dedup_key, done_label, evaluate, label_hold
 from robbie.github import (
+    QUEUE_LIMIT,
     GhError,
     PrMeta,
     Thread,
@@ -143,6 +144,7 @@ class Orchestrator:
                     await self._seed(repo, prs)
                     continue
 
+                await self._retire_unlabeled(repo)
                 for pr in prs:
                     jobs.append(tg.create_task(self._handle(repo, pr)))
         return answered + [job.result() for job in jobs]
@@ -617,6 +619,32 @@ class Orchestrator:
         )
 
     # ----- cold start ----------------------------------------------------
+
+    async def _retire_unlabeled(self, repo: RepoConfig) -> None:
+        """Drop from the panel whatever no longer carries the review label.
+
+        The per-PR gates cannot do this: a merged PR, a closed one, or one whose
+        label a human removed is not in the queue any more, so nothing walks past
+        it again. This is the only read that sees the label without the review
+        request attached, which is why it is a second search and not `prs` above.
+        """
+        try:
+            labeled = await queue(repo.slug, label=repo.label)
+        except GhError as ex:
+            logger.warning("could not read %s's labelled PRs: %s", repo.slug, ex)
+            return
+        if len(labeled) == QUEUE_LIMIT:
+            # a truncated page would read as "these PRs lost the label" and retire
+            # every row past it
+            logger.warning("%s: labelled read filled its page; not retiring", repo.slug)
+            return
+        if self.dry_run:
+            logger.info("DRY would retire %s rows outside %d labelled PR(s)",
+                        repo.slug, len(labeled))
+            return
+        if retired := self.db.settle_unlabeled(repo.slug, labeled):
+            logger.info("%s: retired %d row(s) whose PR no longer carries the label",
+                        repo.slug, retired)
 
     async def _seed(self, repo: RepoConfig, prs: list[int]) -> None:
         """Record the current backlog instead of reviewing it.
