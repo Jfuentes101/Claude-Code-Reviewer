@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS spend (
 );
 CREATE INDEX IF NOT EXISTS idx_spend_created ON spend(created_at DESC);
 
+-- what a provider last said about its own limits. One poller writes it and
+-- every process reads it, so the request rate is the poll interval and not
+-- "once per gate, times however many robbie processes are up"
+CREATE TABLE IF NOT EXISTS meters (
+    name     TEXT PRIMARY KEY,   -- plan | endpoint
+    pct      REAL,
+    note     TEXT,
+    read_at  INTEGER,            -- of the last SUCCESSFUL read; null = never
+    error    TEXT,               -- the last failed one, cleared by a success
+    error_at INTEGER
+);
+
 -- cold start: the first poll of a repo records its backlog instead of
 -- reviewing it, so enabling robbie can't trigger a review storm
 CREATE TABLE IF NOT EXISTS seeded (
@@ -396,6 +408,28 @@ class Db:
             (since_ms, *exclude_models, since_ms),
         ).fetchone()
         return float(row["usd"])
+
+    # ----- meters ---------------------------------------------------------
+
+    def read_meter(self, name: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM meters WHERE name=?", (name,)).fetchone()
+
+    def write_meter(self, name: str, *, pct: float, note: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meters (name, pct, note, read_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET pct=excluded.pct, note=excluded.note, "
+            "read_at=excluded.read_at, error=NULL, error_at=NULL",
+            (name, pct, note, now_ms()),
+        )
+
+    def meter_failed(self, name: str, error: str) -> None:
+        """A failed read is not a reading: `pct` and `read_at` survive it, and how
+        old they are is what decides whether the gate may still use them."""
+        self.conn.execute(
+            "INSERT INTO meters (name, error, error_at) VALUES (?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET error=excluded.error, error_at=excluded.error_at",
+            (name, error, now_ms()),
+        )
 
     # ----- notices / seeding --------------------------------------------
 

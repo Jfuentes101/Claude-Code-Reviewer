@@ -1,8 +1,9 @@
 """A read-only panel over the state robbie already writes. Off unless asked for.
 
 stdlib `http.server` on purpose: one page, no JavaScript, no framework, nothing new
-in the image. It reads the same SQLite and the same meters the daemon reads, so it
-runs beside the daemon or on its own without coordinating with it.
+in the image. Everything it shows comes out of the same SQLite the daemon writes —
+including the usage meters, which it reads rather than polls, so a browser left
+open cannot spend the rate limit the gate depends on.
 
 There is no auth, so it binds to localhost unless told otherwise and the compose
 service publishes it on 127.0.0.1 only. Everything it shows — diffs quoted in
@@ -22,7 +23,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from robbie import budget
-from robbie.config import Config, Secrets
+from robbie.config import Config
 from robbie.db import SCHEMA_VERSION, Db
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ def _ago(ms: int | None) -> str:
     return "just now"
 
 
-def render(cfg: Config, secrets: Secrets | None, db: Db) -> str:
+def render(cfg: Config, db: Db) -> str:
     parts = [
         f"<h1>robbie</h1><p class='sub'>{_esc(cfg.backend)} backend · "
         f"{len(cfg.repos)} repo(s) · {cfg.max_concurrent_reviews} concurrent · "
@@ -120,7 +121,7 @@ def render(cfg: Config, secrets: Secrets | None, db: Db) -> str:
         f"{datetime.now(UTC):%H:%M:%S} UTC</p>",
         _ready(cfg, db),
         _system(cfg, db),
-        _meters(cfg, secrets, db),
+        _meters(cfg, db),
         _arms(cfg, db),
         _queue(db),
         _reviews(db),
@@ -180,17 +181,17 @@ def _system(cfg: Config, db: Db) -> str:
     ]) + "</div>"
 
 
-def _meters(cfg: Config, secrets: Secrets | None, db: Db) -> str:
-    if secrets is None:
-        return "<h2>usage</h2><p class='sub'>no secrets in this process; meters unread</p>"
+def _meters(cfg: Config, db: Db) -> str:
+    """What the daemon's meter poll last stored. A page that refreshes itself must
+    never ask a provider: the meters rate-limit, and the gate needs them more."""
     rows = []
     for label, kwargs in (
         ("account", {}),
         ("endpoint", {"via_endpoint": True}),
     ):
-        if label == "endpoint" and not secrets.review_base_url:
+        if label == "endpoint" and not cfg.endpoint_models:
             continue
-        verdict = budget.check(cfg, secrets, db, **kwargs)  # cached ~60s
+        verdict = budget.check(cfg, db, **kwargs)
         tone = "ok" if verdict.allowed else "bad"
         rows.append([
             _esc(label),
@@ -298,9 +299,9 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "robbie"
 
     def __init__(
-        self, cfg: Config, secrets: Secrets | None, *args: Any, **kwargs: Any
+        self, cfg: Config, *args: Any, **kwargs: Any
     ) -> None:
-        self.cfg, self.secrets = cfg, secrets
+        self.cfg = cfg
         super().__init__(*args, **kwargs)
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -326,7 +327,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             if url.path == "/":
-                self._send(render(self.cfg, self.secrets, db))
+                self._send(render(self.cfg, db))
             elif url.path == "/transcript":
                 name = (parse_qs(url.query).get("name") or [""])[0]
                 body = _transcript_body(self.cfg, name)
@@ -347,8 +348,8 @@ class _Handler(BaseHTTPRequestHandler):
             db.close()
 
 
-def serve(cfg: Config, secrets: Secrets | None, *, host: str, port: int) -> None:
-    httpd = ThreadingHTTPServer((host, port), partial(_Handler, cfg, secrets))
+def serve(cfg: Config, *, host: str, port: int) -> None:
+    httpd = ThreadingHTTPServer((host, port), partial(_Handler, cfg))
     logger.info("dashboard on http://%s:%d (no auth; keep it local)", host, port)
     try:
         httpd.serve_forever()

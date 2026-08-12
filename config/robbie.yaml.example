@@ -72,6 +72,11 @@ budget:
   # finished spending. Without it a free slot starts on a stale reading.
   reserve_pct: 8.0      # backend=oauth
   reserve_usd: 5.0      # backend=api
+  # How often the daemon asks a provider what has been spent, and the only thing
+  # that sets that request rate: the gate and the panel read the stored number
+  # instead of asking for their own. A reading survives 15 minutes, so the meter
+  # only goes blind after that many polls in a row have failed.
+  usage_poll_s: 120
 
 slack:
   owner_id: U01234567           # gets holds, failures and operator warnings

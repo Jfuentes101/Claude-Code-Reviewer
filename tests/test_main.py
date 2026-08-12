@@ -5,8 +5,16 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from robbie.config import Config, RepoConfig, ReviewModel, Secrets, SlackConfig
-from robbie.main import _loop, why_no_model
+from robbie import budget
+from robbie.config import (
+    BudgetConfig,
+    Config,
+    RepoConfig,
+    ReviewModel,
+    Secrets,
+    SlackConfig,
+)
+from robbie.main import _meters, _ticks, why_no_model
 from robbie.outcome import Outcome
 
 
@@ -37,15 +45,9 @@ class _Orch:
 
 
 async def _one_tick(cfg, orch, monkeypatch, *, quiet: bool = False) -> int:
-    """Let _loop build its own Event, keep a handle on it, run exactly one tick."""
-    real = asyncio.Event
-
-    def capture() -> asyncio.Event:
-        orch.stop = real()
-        return orch.stop
-
-    monkeypatch.setattr(asyncio, "Event", capture)
-    return await _loop(cfg, orch, quiet=quiet)
+    """The tick loop on its own: `_loop` also runs the meter poll beside it."""
+    orch.stop = asyncio.Event()
+    return await _ticks(cfg, orch, orch.stop, quiet=quiet)
 
 
 async def test_a_tick_slower_than_the_interval_says_so(tmp_path, monkeypatch, caplog):
@@ -180,3 +182,28 @@ async def test_a_drained_queue_stops_going_round(tmp_path, monkeypatch):
     orch = _Ticker([[_reviewed()], [_reviewed()], []])
     await _one_tick(_cfg(tmp_path, poll_interval_s=600), orch, monkeypatch)
     assert (orch.ticks, waited) == (3, [600])
+
+
+async def test_the_meters_are_polled_on_a_clock_of_their_own(tmp_path, monkeypatch):
+    """Not once per tick and not once per PR: a tick lasts as long as its slowest
+    review, and the account's usage endpoint 429s a burst it would have served.
+
+    The wait comes first — startup has already taken the reading this loop keeps
+    current, and two requests a second apart is the burst itself.
+    """
+    stop = asyncio.Event()
+    polled: list[int] = []
+
+    def poll(cfg, secrets, db) -> None:
+        polled.append(1)
+        if len(polled) == 2:
+            stop.set()
+
+    monkeypatch.setattr(budget, "poll", poll)
+    waited = _count_waits(monkeypatch)
+
+    cfg = _cfg(tmp_path, poll_interval_s=600, budget=BudgetConfig(usage_poll_s=0))
+    await _meters(cfg, None, None, stop)
+
+    assert len(polled) == 2
+    assert waited == [0, 0], "its own interval, nothing to do with the tick's 600s"

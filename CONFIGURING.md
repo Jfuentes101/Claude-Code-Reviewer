@@ -142,6 +142,11 @@ cannot be trusted, so it is not gated in dollars.
 Raising the reserve lowers how many reviews can run at once; the budget can cap the
 fleet below `max_concurrent_reviews`, and that is the intended behaviour.
 
+`budget.usage_poll_s` (default 120) is how often the daemon reads those meters, and
+the only thing that decides how often a provider is asked — every other reader
+takes the stored number. Lower it and the account's usage endpoint starts answering
+429; a reading is trusted for 15 minutes either way.
+
 ## Change the pace
 
 | | |

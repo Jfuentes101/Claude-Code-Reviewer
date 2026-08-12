@@ -76,9 +76,9 @@ class Orchestrator:
         self._inflight = 0  # containers spending right now, which no gate can see
         self._sem = asyncio.Semaphore(cfg.max_concurrent_reviews)
         self._gate_sem = asyncio.Semaphore(cfg.max_concurrent_checks)
-        # Reading a meter suspends, so deciding and reserving happen under one
-        # lock: without it every waiting review reads the same pre-reserve number
-        # and admits itself, the stampede the reserves exist to prevent.
+        # Deciding and reserving under one lock: anything that suspends between
+        # them lets every waiting review read the same pre-reserve number and
+        # admit itself, the stampede the reserves exist to prevent.
         self._admit_lock = asyncio.Lock()
 
     # Built per call rather than held: both are frozen views over this object's
@@ -127,7 +127,7 @@ class Orchestrator:
         if not self.dry_run:  # housekeeping, so it belongs to a real tick only
             prune_transcripts(self.cfg)
         answered: list[Outcome] = []
-        if (await self._meter()).allowed:
+        if self._meter().allowed:
             answered = await self.answer_threads()  # a container, so the same spend gate
         answered += await self.ci.watch()  # gh reads only, so no gate of its own
         jobs: list[asyncio.Task[Outcome]] = []
@@ -312,7 +312,7 @@ class Orchestrator:
             async with self._admit_lock:
                 choice, gate = (
                     await self._admit(key) if key is not None
-                    else (Choice(), await self._meter())
+                    else (Choice(), self._meter())
                 )
                 if gate.allowed:
                     self._inflight += 1
@@ -342,13 +342,9 @@ class Orchestrator:
                 gate.notice_key, f"I can't read the spend budget: {gate.detail}"
             )
 
-    async def _meter(self, *, via_endpoint: bool = False) -> budget.Verdict:
-        """The spend gate, read off the event loop: both meters are blocking HTTP,
-        and asked inline a hung one stalls the whole tick."""
-        return await asyncio.to_thread(
-            budget.check, self.cfg, self.secrets, self.db, self._inflight,
-            via_endpoint=via_endpoint,
-        )
+    def _meter(self, *, via_endpoint: bool = False) -> budget.Verdict:
+        """The spend gate. A SQLite read now that the poller owns the HTTP."""
+        return budget.check(self.cfg, self.db, self._inflight, via_endpoint=via_endpoint)
 
     async def _admit(self, key: str) -> tuple[Choice, budget.Verdict]:
         """The arm that will review this key, and whether its meter allows it.
@@ -357,13 +353,13 @@ class Orchestrator:
         named on the CLI is never substituted — that was a request.
         """
         first = self._choice(key)
-        verdict = await self._meter(via_endpoint=first.via_endpoint)
+        verdict = self._meter(via_endpoint=first.via_endpoint)
         if verdict.allowed or self.model:
             return first, verdict
         other = self.cfg.fallback_for(first)
         if other is None:
             return first, verdict
-        spare = await self._meter(via_endpoint=other.via_endpoint)
+        spare = self._meter(via_endpoint=other.via_endpoint)
         if not spare.allowed:
             return first, verdict
         logger.info(

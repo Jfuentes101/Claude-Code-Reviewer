@@ -643,6 +643,14 @@ you have a reason.
 An unreadable budget is never treated as unlimited: robbie warns once and keeps
 going, so a broken endpoint degrades loudly.
 
+One process asks the providers, on a clock of its own (`budget.usage_poll_s`), and
+leaves the numbers in SQLite; the gate and the panel read that row. Nothing else
+works: the account's usage endpoint rate-limits, and asked once per reviewable PR
+by the daemon and once a minute by a dashboard nobody closed, it answers 429 to
+both — and a meter that answers 429 is a fleet of reviews running unmeasured. A
+stored reading is good for 15 minutes, so the gate only goes blind after that many
+consecutive polls have failed, not after one.
+
 Either backend can only read what has already been **spent**, and a container
 halfway through a review has spent nothing yet. So the gate is asked again right
 before a container starts rather than only in the gate phase minutes earlier, and

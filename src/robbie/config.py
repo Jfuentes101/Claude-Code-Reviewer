@@ -104,6 +104,9 @@ class BudgetConfig(_Strict):
     # the review endpoint's own session/weekly allowance, in percent of it
     endpoint_stop_pct: int = 80
     endpoint_reserve_pct: float = 5.0
+    # how often the daemon asks a provider what has been spent. The only thing
+    # that decides the request rate: every other reader takes the stored number.
+    usage_poll_s: int = 120
 
 
 class SlackConfig(_Strict):

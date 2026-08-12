@@ -4,6 +4,9 @@ Both backends can only read what has already been *spent*. A container halfway
 through a review has spent nothing yet, so a gate that reads the raw number lets
 every free slot start at the same safe reading and blow through the cutoff
 together. Each review in flight, plus the one asking, holds back a reserve.
+
+`poll` is the only thing here that talks to a provider. The gate reads what it
+stored, which is why these tests poll first and then ask.
 """
 
 from __future__ import annotations
@@ -34,17 +37,12 @@ def db(tmp_path) -> Db:
     return Db(tmp_path / "robbie.db")
 
 
-@pytest.fixture(autouse=True)
-def _no_reading_carried_between_tests(monkeypatch):
-    monkeypatch.setattr(budget, "_plan", budget._Window())
-    monkeypatch.setattr(budget, "_endpoint", budget._Window())
-
-
 def secrets(tmp_path: Path) -> Secrets:
     creds = tmp_path / "creds.json"
     creds.write_text(json.dumps({"claudeAiOauth": {"accessToken": "t"}}))
     return Secrets(
-        gh_token="w", slack_bot_token="s", reviewer_gh_token="r", claude_credentials=creds
+        gh_token="w", slack_bot_token="s", reviewer_gh_token="r", claude_credentials=creds,
+        review_base_url="https://endpoint.example", review_api_token="k",
     )
 
 
@@ -59,7 +57,7 @@ class FakeResponse:
         return self._payload
 
 
-def usage(monkeypatch, pct: float, *, session: float = 0.0, weekly: float = 0.0) -> None:
+def answers(monkeypatch, pct: float, *, session: float = 0.0, weekly: float = 0.0) -> None:
     """Both meters answer, dispatched on the URL like the real ones are."""
     plan = {"five_hour": {"utilization": pct, "resets_at": "2026-08-04T19:10:00Z"}}
     endpoint = {"limits": {"session": {"usage": session}, "weekly": {"usage": weekly}}}
@@ -67,6 +65,12 @@ def usage(monkeypatch, pct: float, *, session: float = 0.0, weekly: float = 0.0)
         budget.httpx, "get",
         lambda url, **k: FakeResponse(endpoint if "/api/usage" in url else plan),
     )
+
+
+def meter(monkeypatch, conf, db, tmp_path, pct: float, **kw) -> None:
+    """What the daemon's meter loop would have left in the database."""
+    answers(monkeypatch, pct, **kw)
+    budget.poll(conf, secrets(tmp_path), db)
 
 
 def endpoint_cfg(tmp_path, **kw):
@@ -78,6 +82,53 @@ def endpoint_cfg(tmp_path, **kw):
     return conf
 
 
+# ----- one poller, many readers ------------------------------------------
+
+
+def test_the_gate_never_calls_a_provider(tmp_path, db, monkeypatch):
+    """The panel refreshes itself every 30s in its own container, the daemon asks
+    once per reviewable PR, and the account's meter answers a burst with a 429 —
+    after which nothing is measuring the reviews that keep starting."""
+    conf = cfg(tmp_path)
+    meter(monkeypatch, conf, db, tmp_path, 10)
+
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: pytest.fail("asked a provider"))
+    for _ in range(6):
+        assert budget.check(conf, db).allowed
+
+
+def test_a_meter_nobody_has_polled_runs_unguarded_and_says_so(tmp_path, db):
+    v = budget.check(cfg(tmp_path), db)
+    assert v.allowed
+    assert "not polled yet" in v.detail
+
+
+def test_a_failed_poll_keeps_the_last_number(tmp_path, db, monkeypatch):
+    conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
+    meter(monkeypatch, conf, db, tmp_path, 85)
+    assert not budget.check(conf, db).allowed
+
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
+    budget.poll(conf, secrets(tmp_path), db)
+
+    v = budget.check(conf, db)
+    assert not v.allowed, "85% is still the best thing known about the window"
+    assert not v.notice_key.startswith("budget:unreadable")
+
+
+def test_the_api_backend_polls_no_plan_meter(tmp_path, db, monkeypatch):
+    """Its budget is the dollars in SQLite; asking the account would be a request
+    spent on a number nothing reads."""
+    asked = []
+    monkeypatch.setattr(
+        budget.httpx, "get",
+        lambda url, **k: asked.append(url) or FakeResponse({"limits": {}}),
+    )
+    budget.poll(cfg(tmp_path, backend="api"), secrets(tmp_path), db)
+    assert budget.USAGE_URL not in asked
+    assert db.read_meter(budget.PLAN) is None
+
+
 # ----- oauth: percent of the five-hour window ----------------------------
 
 
@@ -86,44 +137,47 @@ def test_the_token_never_reaches_a_command_line(tmp_path, db, monkeypatch):
     seen: dict = {}
 
     def fake_get(url, **kw):
-        seen.update(url=url, headers=kw.get("headers", {}))
+        if url == budget.USAGE_URL:
+            seen.update(url=url, headers=kw.get("headers", {}))
         return FakeResponse({"five_hour": {"utilization": 10, "resets_at": "x"}})
 
     monkeypatch.setattr(budget.httpx, "get", fake_get)
-    assert budget.check(cfg(tmp_path), secrets(tmp_path), db).allowed
+    budget.poll(cfg(tmp_path), secrets(tmp_path), db)
+    assert budget.check(cfg(tmp_path), db).allowed
     assert seen["url"] == budget.USAGE_URL
     assert seen["headers"]["Authorization"] == "Bearer t"
 
 
 def test_room_for_one_review_is_room_enough(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 70)
-    v = budget.check(cfg(tmp_path, stop_pct=90, reserve_pct=8), secrets(tmp_path), db)
-    assert v.allowed
+    conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
+    meter(monkeypatch, conf, db, tmp_path, 70)
+    assert budget.check(conf, db).allowed
 
 
 def test_a_reading_under_the_cutoff_still_refuses_without_room_to_finish(
     tmp_path, db, monkeypatch
 ):
     """85% passes the old test and lands at 93%. That is the bug the reserve fixes."""
-    usage(monkeypatch, 85)
-    v = budget.check(cfg(tmp_path, stop_pct=90, reserve_pct=8), secrets(tmp_path), db)
+    conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
+    meter(monkeypatch, conf, db, tmp_path, 85)
+    v = budget.check(conf, db)
     assert not v.allowed
     assert "+8% held" in v.detail
 
 
 def test_each_running_review_holds_back_its_own_share(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 70)
     conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
-    ask = lambda n: budget.check(conf, secrets(tmp_path), db, inflight=n).allowed  # noqa: E731
+    meter(monkeypatch, conf, db, tmp_path, 70)
+    ask = lambda n: budget.check(conf, db, inflight=n).allowed  # noqa: E731
     assert ask(1), "one running plus this one is 16%, and 86% clears the cutoff"
     assert not ask(2), "two running plus this one is 24%, and 94% does not"
 
 
 def test_five_agents_cannot_all_start_on_the_same_safe_reading(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 50)
     conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
+    meter(monkeypatch, conf, db, tmp_path, 50)
     admitted = 0
-    while budget.check(conf, secrets(tmp_path), db, inflight=admitted).allowed:
+    while budget.check(conf, db, inflight=admitted).allowed:
         admitted += 1
     assert admitted == 5, "50% + 5 reviews at 8% each is the whole cutoff"
 
@@ -136,89 +190,24 @@ def test_an_unreadable_window_still_runs_but_says_so(tmp_path, db, monkeypatch):
     silent one runs without a spend guard at all.
     """
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
-    v = budget.check(cfg(tmp_path), secrets(tmp_path), db)
+    budget.poll(cfg(tmp_path), secrets(tmp_path), db)
+    v = budget.check(cfg(tmp_path), db)
     assert v.allowed
     assert v.notice_key == f"budget:unreadable:{datetime.now(UTC):%Y-%m-%d}"
-
-
-def test_the_window_is_read_once_for_a_whole_tick(tmp_path, db, monkeypatch):
-    """The gate is asked once per reviewable PR, and the endpoint 429s on a burst.
-
-    Six reads two seconds apart earned one on the real endpoint, and the fallback
-    for an unreadable window is to run without the guard at all.
-    """
-    reads = []
-    payload = {"five_hour": {"utilization": 10, "resets_at": "x"}}
-
-    def counting(*a, **k):
-        reads.append(1)
-        return FakeResponse(payload)
-
-    monkeypatch.setattr(budget.httpx, "get", counting)
-    conf = cfg(tmp_path)
-    for _ in range(6):
-        assert budget.check(conf, secrets(tmp_path), db).allowed
-    assert len(reads) == 1
-
-
-def test_a_rate_limited_endpoint_is_not_asked_again_for_every_pr(tmp_path, db, monkeypatch):
-    """Retrying a 429 once per reviewable PR is how it stays a 429.
-
-    Observed live: seven requests in one tick, every one of them rate-limited, and
-    every one of them logged as running without the guard.
-    """
-    reads = []
-
-    def boom(*a, **k):
-        reads.append(1)
-        raise RuntimeError("429 Too Many Requests")
-
-    monkeypatch.setattr(budget.httpx, "get", boom)
-    conf = cfg(tmp_path)
-    for _ in range(6):
-        assert budget.check(conf, secrets(tmp_path), db).notice_key.startswith(
-            "budget:unreadable"
-        )
-    assert len(reads) == 1
-
-
-def test_a_failed_read_holds_to_the_last_number_rather_than_unguarding(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 85)
-    conf = cfg(tmp_path, stop_pct=90, reserve_pct=8)
-    assert not budget.check(conf, secrets(tmp_path), db).allowed
-
-    monkeypatch.setattr(budget, "USAGE_TTL_S", 0)  # force a fresh read, which now fails
-    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
-    v = budget.check(conf, secrets(tmp_path), db)
-    assert not v.allowed, "85% is still the best thing known about the window"
-    assert not v.notice_key.startswith("budget:unreadable")
-
-
-def test_a_host_in_its_first_minute_of_uptime_still_reads_the_meter(monkeypatch):
-    """`at` of 0 means never read, not read at monotonic 0 — and monotonic counts
-    from boot. Without the distinction a machine that just came up reads its own
-    empty reading as fresh, never fetches, and runs the whole first minute of
-    reviews unmeasured. This is what CI kept catching: a runner is always young."""
-    monkeypatch.setattr(budget.time, "monotonic", lambda: 30.0)
-    window = budget._Window()
-    reads: list[int] = []
-
-    window.refresh(lambda: (reads.append(1), (10.0, "x"))[1])
-
-    assert reads == [1], "a meter that has never been read is not a fresh reading"
-    assert window.now.usable
+    assert "ZeroDivisionError" in v.detail or "division" in v.detail
 
 
 def test_a_reading_too_old_to_trust_gives_up_on_it(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 85)
-    assert not budget.check(cfg(tmp_path, stop_pct=90), secrets(tmp_path), db).allowed
+    """A poller that has been failing for long enough is a poller that is down, and
+    an old number is not a reading. Seven failed polls at the default interval."""
+    conf = cfg(tmp_path, stop_pct=90)
+    meter(monkeypatch, conf, db, tmp_path, 85)
+    assert not budget.check(conf, db).allowed
 
-    monkeypatch.setattr(budget, "USAGE_TTL_S", 0)
     monkeypatch.setattr(budget, "USAGE_STALE_S", 0)
-    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
-    assert budget.check(
-        cfg(tmp_path), secrets(tmp_path), db
-    ).notice_key.startswith("budget:unreadable")
+    v = budget.check(conf, db)
+    assert v.allowed and v.notice_key.startswith("budget:unreadable")
+    assert "old" in v.detail
 
 
 # ----- the review endpoint's own limits ----------------------------------
@@ -230,41 +219,59 @@ def test_the_endpoint_arm_is_not_held_against_the_account_window(tmp_path, db, m
     The account window sat at 65% with a 70% cutoff, so the gate said no — to a run
     that was about to be billed by a third party and would not touch the plan.
     """
-    usage(monkeypatch, 100, session=0.01)
     conf = endpoint_cfg(tmp_path, stop_pct=70)
-    assert not budget.check(conf, secrets(tmp_path), db).allowed, "the account is full"
-    assert budget.check(conf, secrets(tmp_path), db, via_endpoint=True).allowed
+    meter(monkeypatch, conf, db, tmp_path, 100, session=0.01)
+    assert not budget.check(conf, db).allowed, "the account is full"
+    assert budget.check(conf, db, via_endpoint=True).allowed
 
 
 def test_the_endpoint_arm_stops_on_its_own_limit(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 0, session=0.90)
     conf = endpoint_cfg(tmp_path, endpoint_stop_pct=80)
-    v = budget.check(conf, secrets(tmp_path), db, via_endpoint=True)
+    meter(monkeypatch, conf, db, tmp_path, 0, session=0.90)
+    v = budget.check(conf, db, via_endpoint=True)
     assert not v.allowed
     assert "session 90.0%" in v.detail
 
 
 def test_the_worse_of_session_and_weekly_is_what_stops_it(tmp_path, db, monkeypatch):
     """Either one running out stops reviews, so the gate cannot read only one."""
-    usage(monkeypatch, 0, session=0.10, weekly=0.95)
     conf = endpoint_cfg(tmp_path, endpoint_stop_pct=80)
-    assert not budget.check(conf, secrets(tmp_path), db, via_endpoint=True).allowed
+    meter(monkeypatch, conf, db, tmp_path, 0, session=0.10, weekly=0.95)
+    assert not budget.check(conf, db, via_endpoint=True).allowed
 
 
 def test_each_endpoint_review_in_flight_holds_back_its_share(tmp_path, db, monkeypatch):
-    usage(monkeypatch, 0, session=0.70)
     conf = endpoint_cfg(tmp_path, endpoint_stop_pct=80, endpoint_reserve_pct=5)
-    ask = lambda n: budget.check(  # noqa: E731
-        conf, secrets(tmp_path), db, inflight=n, via_endpoint=True
-    ).allowed
+    meter(monkeypatch, conf, db, tmp_path, 0, session=0.70)
+    ask = lambda n: budget.check(conf, db, inflight=n, via_endpoint=True).allowed  # noqa: E731
     assert ask(1), "70 + 10 held is exactly the cutoff"
     assert not ask(2), "70 + 15 is past it"
 
 
 def test_an_unreadable_endpoint_says_so_rather_than_guessing(tmp_path, db, monkeypatch):
+    conf = endpoint_cfg(tmp_path)
     monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: 1 / 0)
-    v = budget.check(endpoint_cfg(tmp_path), secrets(tmp_path), db, via_endpoint=True)
+    budget.poll(conf, secrets(tmp_path), db)
+    v = budget.check(conf, db, via_endpoint=True)
     assert v.allowed and v.notice_key.startswith("budget:endpoint-unreadable")
+
+
+def test_one_meter_failing_does_not_cost_the_other_its_reading(tmp_path, db, monkeypatch):
+    """They are different providers; the account's is the one that rate-limits."""
+    conf = endpoint_cfg(tmp_path, stop_pct=90, endpoint_stop_pct=80)
+    plan = {"five_hour": {"utilization": 10, "resets_at": "x"}}
+
+    def half_broken(url, **kw):
+        if "/api/usage" in url:
+            raise RuntimeError("429 Too Many Requests")
+        return FakeResponse(plan)
+
+    monkeypatch.setattr(budget.httpx, "get", half_broken)
+    budget.poll(conf, secrets(tmp_path), db)
+
+    assert budget.check(conf, db).allowed
+    assert "10%" in budget.check(conf, db).detail
+    assert "429" in budget.check(conf, db, via_endpoint=True).detail
 
 
 # ----- api: dollars ------------------------------------------------------
@@ -282,10 +289,10 @@ def test_a_third_party_run_is_not_charged_to_the_daily_dollars(tmp_path, db):
         db.finish_review(key, state="published", cost_usd=cost, model=model)
     assert db.spend_since(0) == pytest.approx(19.0), "everything, for the record"
     assert db.spend_since(0, conf.endpoint_models) == pytest.approx(1.0)
-    assert budget.check(conf, secrets(tmp_path), db).allowed, "$1 of $20 is spent, not $19"
+    assert budget.check(conf, db).allowed, "$1 of $20 is spent, not $19"
 
 
 def test_dollars_reserve_the_same_way(tmp_path, db):
     conf = cfg(tmp_path, backend="api", daily_usd=20.0, reserve_usd=5.0)
-    assert budget.check(conf, secrets(tmp_path), db, inflight=3).allowed, "$20 covers four"
-    assert not budget.check(conf, secrets(tmp_path), db, inflight=4).allowed, "not five"
+    assert budget.check(conf, db, inflight=3).allowed, "$20 covers four"
+    assert not budget.check(conf, db, inflight=4).allowed, "not five"

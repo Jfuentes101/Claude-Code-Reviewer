@@ -9,6 +9,11 @@ Two backends, one question ("may I start another review?"):
 
 An unreadable budget is never treated as "unlimited": it warns once and keeps
 going, so a broken metrics endpoint degrades loudly instead of silently.
+
+Nothing here calls a provider except `poll`. It runs on its own clock in the
+daemon and leaves the numbers in SQLite; the gate, the panel and any second
+process read that row. The meters rate-limit, and robbie is more than one
+process, so how often they are asked cannot be left to how often they are read.
 """
 
 from __future__ import annotations
@@ -16,75 +21,67 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
 
 from robbie.config import Config, Secrets
-from robbie.db import Db
+from robbie.db import Db, now_ms
 
 logger = logging.getLogger(__name__)
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # in the notice key of any verdict that was allowed without a meter behind it
 UNREADABLE = "unreadable"
-USAGE_TTL_S = 60  # a tick asks once per reviewable PR, and the endpoint rate-limits
-USAGE_STALE_S = 900  # how old a reading may be before a failed read gives up on it
+USAGE_STALE_S = 900  # how old the poller's number may be before the gate drops it
+
+PLAN = "plan"  # the account's five-hour window, backend=oauth
+ENDPOINT = "endpoint"  # REVIEW_BASE_URL's own limits
 
 
-@dataclass(frozen=True)
-class _Reading:
-    at: float = 0.0  # monotonic; 0 means never read
-    pct: float = 0.0
-    note: str = ""
-    quiet_until: float = 0.0
-    why: str = "not read yet"
+def poll(cfg: Config, secrets: Secrets, db: Db) -> None:
+    """Read every meter this deployment has and store what came back.
 
-    @property
-    def usable(self) -> bool:
-        """On the reading, not the window: re-deriving it after taking one could
-        pair a stale verdict with a fresh number."""
-        return bool(self.at) and time.monotonic() - self.at < USAGE_STALE_S
+    The only caller of a provider in the whole process tree. Blocking, so async
+    callers hand it to a thread.
 
-
-class _Window:
-    """The last thing known about one meter, kept across calls.
-
-    The gate is asked once per reviewable PR, and a fetch per ask earns a 429 —
-    after which the meter is unreadable and reviews run unguarded. So a reading is
-    held briefly, a failure is held the same way, and a failed read keeps using the
-    last number while it is worth anything.
-
-    Rebound in one assignment, never mutated field by field: the dashboard asks
-    from several threads, and a torn read pairs a fresh percentage with a stale
-    reset time.
+    A failure keeps the last number: `USAGE_STALE_S` over the poll interval is how
+    many consecutive failures the gate tolerates before it says it is blind. That
+    matters most for the account's meter, which rate-limits and answers 429 to a
+    burst it would have served one at a time.
     """
-
-    def __init__(self) -> None:
-        self.now = _Reading()
-
-    def refresh(self, fetch: Callable[[], tuple[float, str]]) -> None:
-        was = self.now
-        now = time.monotonic()
-        # `was.at` of 0 means never read, not read at monotonic 0 — and monotonic
-        # counts from boot, so on a host in its first minute of uptime dropping
-        # this guard reads "fresh enough", never fetches, and leaves every review
-        # in that window unmeasured.
-        if (was.at and now - was.at < USAGE_TTL_S) or now < was.quiet_until:
-            return
+    for name, fetch in (
+        (PLAN, lambda: _fetch_plan(secrets)),
+        (ENDPOINT, lambda: _fetch_endpoint(secrets)),
+    ):
+        if not _wanted(name, cfg, secrets):
+            continue
         try:
             pct, note = fetch()
         except Exception as ex:  # noqa: BLE001 — any failure is "unknown", handled below
-            self.now = replace(was, quiet_until=now + USAGE_TTL_S, why=str(ex))
-            logger.warning("usage unreadable: %s", ex)
-            return
-        self.now = _Reading(at=now, pct=pct, note=note)
+            db.meter_failed(name, str(ex))
+            logger.warning("%s usage unreadable: %s", name, ex)
+        else:
+            db.write_meter(name, pct=pct, note=note)
+            logger.debug("%s meter at %.1f%% (%s)", name, pct, note)
 
 
-_plan = _Window()  # the account's five-hour window, backend=oauth
-_endpoint = _Window()  # REVIEW_BASE_URL's own limits
+def _wanted(name: str, cfg: Config, secrets: Secrets) -> bool:
+    if name == PLAN:
+        return cfg.backend == "oauth" and secrets.claude_credentials is not None
+    return bool(secrets.review_base_url)
+
+
+def _stored(db: Db, name: str) -> tuple[float, str] | str:
+    """The poller's number for `name`, or a sentence saying why there isn't one."""
+    row = db.read_meter(name)
+    if row is None or not row["read_at"]:
+        return (row["error"] if row and row["error"] else "not polled yet")
+    age_s = (now_ms() - int(row["read_at"])) / 1000
+    if age_s > USAGE_STALE_S:
+        return row["error"] or f"last reading is {age_s / 60:.0f}m old"
+    return float(row["pct"]), str(row["note"])
 
 
 @dataclass(frozen=True)
@@ -95,22 +92,21 @@ class Verdict:
     notice_key: str | None = None
 
 
-def check(
-    cfg: Config, secrets: Secrets, db: Db, inflight: int = 0, *, via_endpoint: bool = False
-) -> Verdict:
+def check(cfg: Config, db: Db, inflight: int = 0, *, via_endpoint: bool = False) -> Verdict:
     """May another review start, given `inflight` of them already running?
 
     Every meter reads what has already been *spent*, and a container halfway through
     a review has spent nothing yet and will spend plenty — so each one in flight,
     plus the one asking, holds back a reserve.
 
-    Which meter follows where the run will be billed, not `backend`.
+    Which meter follows where the run will be billed, not `backend`. No credentials
+    and no network: whatever `poll` last stored is the answer.
     """
     if via_endpoint:
-        return _check_endpoint(cfg, secrets, inflight)
+        return _check_endpoint(cfg, db, inflight)
     if cfg.backend == "api":
         return _check_api(cfg, db, inflight)
-    return _check_oauth(cfg, secrets, inflight)
+    return _check_oauth(cfg, db, inflight)
 
 
 def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
@@ -127,55 +123,51 @@ def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
     )
 
 
-def _check_oauth(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
+def _check_oauth(cfg: Config, db: Db, inflight: int) -> Verdict:
     """ponytail: undocumented endpoint, so it can change under us. A read failure
     must be reported as unknown, never as "plenty left".
-
-    The read blocks, which is why every async caller runs `check` in a thread.
     """
-    _plan.refresh(lambda: _fetch_plan(secrets))
-    reading = _plan.now
-    if not reading.usable:
+    reading = _stored(db, PLAN)
+    if isinstance(reading, str):
         return Verdict(
             True,
-            f"usage unreadable ({reading.why}); running unguarded",
+            f"usage unreadable ({reading}); running unguarded",
             # dated, like every other pause key: a constant one is announced once
             # in the life of the database and every later outage is silent
             notice_key=f"budget:unreadable:{datetime.now(UTC):%Y-%m-%d}",
         )
-    pct, held = reading.pct, (inflight + 1) * cfg.budget.reserve_pct
+    (pct, resets_at), held = reading, (inflight + 1) * cfg.budget.reserve_pct
     if pct + held <= cfg.budget.stop_pct:
         return Verdict(True, f"5h window at {pct:.0f}% (+{held:.0f}% held back)")
     return Verdict(
         False,
         f"5h window at {pct:.0f}% +{held:.0f}% held for {inflight} running + 1 "
-        f"(cutoff {cfg.budget.stop_pct}%); resumes around {reading.note}",
+        f"(cutoff {cfg.budget.stop_pct}%); resumes around {resets_at}",
         # resets_at jitters by ~1s between calls, so key on the rounded minute
-        notice_key=f"budget:{_minute_key(reading.note)}",
+        notice_key=f"budget:{_minute_key(resets_at)}",
     )
 
 
-def _check_endpoint(cfg: Config, secrets: Secrets, inflight: int) -> Verdict:
+def _check_endpoint(cfg: Config, db: Db, inflight: int) -> Verdict:
     """The review endpoint's own limits, which the account's meters know nothing of.
 
     Gated on `limits.*.usage` and not on `activity.cost`, which only fills in after
     a review has been paid for. The worse of session and weekly wins.
     """
-    _endpoint.refresh(lambda: _fetch_endpoint(secrets))
-    reading = _endpoint.now
-    if not reading.usable:
+    reading = _stored(db, ENDPOINT)
+    if isinstance(reading, str):
         return Verdict(
             True,
-            f"endpoint usage unreadable ({reading.why}); running unguarded",
+            f"endpoint usage unreadable ({reading}); running unguarded",
             notice_key=f"budget:endpoint-unreadable:{datetime.now(UTC):%Y-%m-%d}",
         )
-    pct, held = reading.pct, (inflight + 1) * cfg.budget.endpoint_reserve_pct
+    (pct, note), held = reading, (inflight + 1) * cfg.budget.endpoint_reserve_pct
     if pct + held <= cfg.budget.endpoint_stop_pct:
-        return Verdict(True, f"endpoint at {pct:.1f}% ({reading.note}, +{held:.0f}% held)")
+        return Verdict(True, f"endpoint at {pct:.1f}% ({note}, +{held:.0f}% held)")
     return Verdict(
         False,
         f"endpoint limit reached: {pct:.1f}% +{held:.0f}% held for {inflight} running + 1 "
-        f"(cutoff {cfg.budget.endpoint_stop_pct}%; {reading.note})",
+        f"(cutoff {cfg.budget.endpoint_stop_pct}%; {note})",
         notice_key=f"budget:endpoint:{datetime.now(UTC):%Y-%m-%dT%H}",
     )
 

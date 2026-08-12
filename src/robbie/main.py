@@ -24,8 +24,8 @@ import signal
 import sys
 import time
 
+from robbie import budget, dashboard
 from robbie import config as configmod
-from robbie import dashboard
 from robbie.db import Db
 from robbie.digest import post_digest
 from robbie.orchestrator import Orchestrator
@@ -126,7 +126,7 @@ async def _run(args: argparse.Namespace) -> int:
     # opening a writable one here would migrate the schema and hold it open for
     # the life of a process that serves forever
     if args.command == "dashboard":
-        dashboard.serve(cfg, secrets, host=args.host, port=args.port)
+        dashboard.serve(cfg, host=args.host, port=args.port)
         return 0
 
     db = Db(cfg.db_path)
@@ -144,6 +144,10 @@ async def _run(args: argparse.Namespace) -> int:
         # only the commands that spawn one; `status` and `digest` stay usable
         # precisely when something is down
         await check_model_proxy(cfg, secrets)
+        # Before anything asks the gate. The daemon keeps them current on a clock
+        # of its own after this, but its first tick starts immediately, and a gate
+        # with nothing to read runs the reviews unmeasured and wakes the operator.
+        await asyncio.to_thread(budget.poll, cfg, secrets, db)
     orch = Orchestrator(
         cfg, secrets, db, slack, dry_run=args.dry_run, no_publish=args.no_publish,
         model=model,
@@ -199,6 +203,25 @@ async def _run(args: argparse.Namespace) -> int:
         db.close()
 
 
+async def _meters(
+    cfg: configmod.Config, secrets: configmod.Secrets, db: Db, stop: asyncio.Event
+) -> None:
+    """Ask the providers on a clock of its own, and store what they said.
+
+    Not part of the tick: a tick lasts as long as its slowest review, so its pace
+    is no basis for a rate limit. Everything that needs a number reads the row this
+    leaves behind.
+
+    Waits before its first read: startup has already taken one, and two requests a
+    second apart is the burst the interval exists to avoid.
+    """
+    while not stop.is_set():
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=cfg.budget.usage_poll_s)
+        if not stop.is_set():
+            await asyncio.to_thread(budget.poll, cfg, secrets, db)
+
+
 async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = False) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -207,9 +230,24 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = Fals
             loop.add_signal_handler(sig, stop.set)
 
     logger.info(
-        "robbie up: %d repo(s), backend=%s, %d concurrent review(s), tick %ds",
+        "robbie up: %d repo(s), backend=%s, %d concurrent review(s), tick %ds, "
+        "meters every %ds",
         len(cfg.repos), cfg.backend, cfg.max_concurrent_reviews, cfg.poll_interval_s,
+        cfg.budget.usage_poll_s,
     )
+    meters = asyncio.create_task(_meters(cfg, orch.secrets, orch.db, stop))
+    try:
+        return await _ticks(cfg, orch, stop, quiet=quiet)
+    finally:
+        stop.set()
+        meters.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await meters
+
+
+async def _ticks(
+    cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event, *, quiet: bool
+) -> int:
     while not stop.is_set():
         started = time.monotonic()
         reviewed = 0

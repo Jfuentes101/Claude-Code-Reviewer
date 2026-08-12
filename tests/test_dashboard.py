@@ -10,6 +10,7 @@ from http.server import ThreadingHTTPServer
 import httpx
 import pytest
 
+from robbie import budget
 from robbie.config import Config, RepoConfig, ReviewModel, SlackConfig
 from robbie.dashboard import _Handler, _transcript_body, render
 from robbie.db import Db
@@ -38,7 +39,7 @@ def db(cfg) -> Db:
 
 
 def test_an_empty_state_still_renders(cfg, db):
-    page = render(cfg, None, db)
+    page = render(cfg, db)
     for section in ("system", "usage", "models", "reviews", "transcripts"):
         assert f">{section}</h2>" in page
     assert "nothing recorded yet" in page
@@ -51,7 +52,7 @@ def test_a_recorded_review_shows_up(cfg, db):
         findings=4, blocking=2, should_fix=1, inline=3, summary_findings=7, duration_s=121.0,
         tokens_out=10853,
     )
-    page = render(cfg, None, db)
+    page = render(cfg, db)
     assert "acme/app#7" in page
     assert "glm-5.2:cloud" in page
     assert "needs-work" in page
@@ -59,7 +60,7 @@ def test_a_recorded_review_shows_up(cfg, db):
 
 
 def test_the_arms_show_their_configured_share(cfg, db):
-    page = render(cfg, None, db)
+    page = render(cfg, db)
     assert "67%" in page and "33%" in page, "two-to-one is what the weights say"
 
 
@@ -67,7 +68,7 @@ def test_a_title_from_github_cannot_inject_markup(cfg, db):
     """Everything on this page came from a PR, a model or a filename."""
     db.start_review(key="k", repo="acme/app", pr=7, head_sha="abc", requested_at="t")
     db.finish_review("k", state="held", hold_reason="<script>alert(1)</script>")
-    page = render(cfg, None, db)
+    page = render(cfg, db)
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;" in page
 
@@ -92,14 +93,19 @@ def test_only_transcript_suffixes_are_served(cfg):
     assert _transcript_body(cfg, "robbie.db") is None
 
 
-def test_the_secrets_are_optional_so_the_panel_runs_without_them(cfg, db):
-    assert "meters unread" in render(cfg, None, db)
+def test_the_panel_shows_the_stored_meter_without_asking_the_provider(cfg, db, monkeypatch):
+    """A page that refreshes every 30s used to fetch on render, in its own process
+    with its own cache, and spent the rate limit the daemon's gate depends on."""
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: pytest.fail("asked a provider"))
+    cfg.backend = "oauth"
+    db.write_meter(budget.PLAN, pct=42.0, note="2026-08-04T19:10:00Z")
+
+    assert "5h window at 42%" in render(cfg, db)
 
 
 def test_it_answers_over_http(cfg, db):
     """One pass through the real handler: routing, 404s and the response headers."""
-    secrets = None
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), partial(_Handler, cfg, secrets))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), partial(_Handler, cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
@@ -120,7 +126,7 @@ def test_it_answers_over_http(cfg, db):
 def test_the_pr_cells_link_to_github(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=10389, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok", model="sonnet")
-    page = render(cfg, None, db)
+    page = render(cfg, db)
     assert '<a href="https://github.com/acme/app/pull/10389"' in page
     assert ">acme/app#10389</a>" in page
 
@@ -128,7 +134,7 @@ def test_the_pr_cells_link_to_github(cfg, db):
 def test_a_held_pr_links_too(cfg, db):
     db.record_hold(key="h", repo="acme/app", pr=42, head_sha="abc",
                    requested_at="t", reason="nothing new pushed")
-    assert 'href="https://github.com/acme/app/pull/42"' in render(cfg, None, db)
+    assert 'href="https://github.com/acme/app/pull/42"' in render(cfg, db)
 
 
 def test_an_approval_shows_who_made_it_and_what_ci_said(cfg, db):
@@ -138,7 +144,7 @@ def test_an_approval_shows_who_made_it_and_what_ci_said(cfg, db):
         key = f"k{pr_num}"
         db.start_review(key=key, repo="acme/app", pr=pr_num, head_sha="abc", requested_at="t")
         db.finish_review(key, state="published", verdict="ok", model=model, ci_state=state)
-    page = render(cfg, None, db)
+    page = render(cfg, db)
     assert "ready for a human" in page
     assert "waiting on the build" in page and "build went red" in page
     assert "glm-5.2:cloud" in page and "sonnet" in page
@@ -149,13 +155,13 @@ def test_a_third_party_approval_is_marked_as_such(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok",
                      model="glm-5.2:cloud", ci_state="green")
-    assert "3rd-party" in render(cfg, None, db)
+    assert "3rd-party" in render(cfg, db)
 
 
 def test_an_account_approval_is_not_marked(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok", model="sonnet", ci_state="green")
-    assert "3rd-party" not in render(cfg, None, db)
+    assert "3rd-party" not in render(cfg, db)
 
 
 async def test_the_panel_process_never_opens_a_writable_connection(tmp_path, monkeypatch):
