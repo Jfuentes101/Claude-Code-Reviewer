@@ -5,7 +5,11 @@ backend: api            # api = ANTHROPIC_API_KEY | oauth = CLAUDE_CREDENTIALS
 poll_interval_s: 600
 max_concurrent_reviews: 3
 state_dir: /var/lib/robbie
-review_effort: high     # the interactive default is richer than a review loop needs
+# The interactive default is richer than a review loop needs. Account arms only:
+# the CLI sends this as `output_config.effort`, which ollama's /v1/messages drops
+# (its own reasoning_effort works on the OpenAI path the CLI does not speak), so a
+# `via: endpoint` arm reasons at whatever depth the model defaults to.
+review_effort: high
 stale_review_days: 7    # `robbie digest` threshold
 
 # HOST path to robbie's cross-repo review standards. Mounted read-only into every
