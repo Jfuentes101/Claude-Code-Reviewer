@@ -128,6 +128,13 @@ def account_bearer(path: Path) -> str:
     it is how that arrives, which also means one process touches it instead of N
     containers. On a host where nobody runs `claude` interactively it goes stale
     within hours and every review fails loudly; that is the day this needs one.
+
+    Re-reading only arrives if the path resolves to the *live* file. The CLI renews
+    by renaming a new one over the old, so a container given a bind mount of the
+    file itself is pinned to the replaced inode and re-reads a corpse forever —
+    mount the directory. An expired token whose file the host has already unlinked
+    is exactly that, and worth saying out loud: it looks identical to a host nobody
+    has logged into, and the cure is the opposite one.
     """
     try:
         oauth = json.loads(path.read_text())["claudeAiOauth"]
@@ -137,9 +144,23 @@ def account_bearer(path: Path) -> str:
     if left <= 0:
         raise Denied(
             f"the account's access token expired {-left / 60:.0f} min ago and this "
-            "proxy does not refresh it; run `claude` on the host to renew it", 502
+            f"proxy does not refresh it; {_stale_hint(path)}", 502
         )
     return str(oauth["accessToken"])
+
+
+def _stale_hint(path: Path) -> str:
+    """Whether this container is holding a file the host has already replaced."""
+    try:
+        replaced = path.stat().st_nlink == 0
+    except OSError:
+        replaced = False
+    if replaced:
+        return (
+            f"the host has already replaced {path} and this container still has the "
+            "old one — bind-mount the directory, not the file, and restart"
+        )
+    return "run `claude` on the host to renew it"
 
 
 def merge_beta(existing: str, wanted: str) -> str:

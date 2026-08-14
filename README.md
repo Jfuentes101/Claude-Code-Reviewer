@@ -346,6 +346,14 @@ those same paths inside the orchestrator so both sides agree. Change one, change
 the other. A path that only exists inside the orchestrator gets silently created
 on the host as an empty directory when a reviewer spawns.
 
+**The credentials *directory*, on `backend=oauth`.** `CLAUDE_CREDENTIALS_DIR` is
+what the three long-lived services mount, and it is not a convenience: the CLI
+renews the token by renaming a new file over the old one, and a bind mount of the
+file hands the container an inode that renaming replaces. It would keep reading
+the file it booted with — a corpse — and every review would start failing some
+hours in, on a host whose token is perfectly current. Everything in that directory
+is readable by those containers, so give the file its own.
+
 **The reviewer's uid, on `backend=oauth`.** The credentials file is mounted mode
 600 and the CLI refreshes it in place, so the container's user has to be the host
 user that owns it: set `ROBBIE_UID`/`ROBBIE_GID` to `id -u`/`id -g` before

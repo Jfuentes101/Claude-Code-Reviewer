@@ -35,9 +35,12 @@ services:
       # same host-path rule as the mirrors: the orchestrator hands this to the
       # host daemon when it spawns a reviewer
       - ${ROBBIE_POLICY:-/opt/robbie/policy}:${ROBBIE_POLICY:-/opt/robbie/policy}:ro
-      # and again for backend=oauth. /dev/null when unset, which is every
-      # backend=api deployment
-      - ${CLAUDE_CREDENTIALS:-/dev/null}:${CLAUDE_CREDENTIALS:-/dev/null}
+      # and again for backend=oauth: the DIRECTORY, not the file. The CLI renews
+      # the token by renaming a new file over the old one, and a file bind mount
+      # holds the inode it was given at boot — so a long-lived container that
+      # mounts the file reads a corpse from the moment the host next refreshes.
+      # /dev/null when unset, which is every backend=api deployment.
+      - ${CLAUDE_CREDENTIALS_DIR:-/dev/null}:${CLAUDE_CREDENTIALS_DIR:-/dev/null}:ro
     depends_on:
       reviewer-image:
         condition: service_completed_successfully
@@ -90,9 +93,8 @@ services:
       # process, so this one has to see the same host paths the config names
       - ${ROBBIE_MIRRORS:-/srv/robbie/repos}:${ROBBIE_MIRRORS:-/srv/robbie/repos}:ro
       - ${ROBBIE_POLICY:-/opt/robbie/policy}:${ROBBIE_POLICY:-/opt/robbie/policy}:ro
-      # :ro, unlike the daemon's — the panel reads the plan meter with this token
-      # and never refreshes it
-      - ${CLAUDE_CREDENTIALS:-/dev/null}:${CLAUDE_CREDENTIALS:-/dev/null}:ro
+      # the directory, for the same reason as the daemon's
+      - ${CLAUDE_CREDENTIALS_DIR:-/dev/null}:${CLAUDE_CREDENTIALS_DIR:-/dev/null}:ro
     depends_on: [robbie]
 
   # ---- model credential proxy (opt in) ------------------------------------
@@ -132,9 +134,9 @@ services:
       - REVIEW_BASE_URL
       - REVIEW_API_TOKEN
     volumes:
-      # :ro, unlike the reviewers' old mount — this only reads the access token.
-      # It does not refresh, so whoever owns the host keeps that file current.
-      - ${CLAUDE_CREDENTIALS:-/dev/null}:${CLAUDE_CREDENTIALS:-/dev/null}:ro
+      # the directory, for the same reason as the daemon's. :ro — this only reads
+      # the access token, and whoever owns the host keeps that file current.
+      - ${CLAUDE_CREDENTIALS_DIR:-/dev/null}:${CLAUDE_CREDENTIALS_DIR:-/dev/null}:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
