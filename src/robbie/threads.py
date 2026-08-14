@@ -139,10 +139,12 @@ class Sweeper:
                 done["unanswered"] += 1
                 self._settled(repo, pr, thread)
                 continue
+            # GitHub collapses a reply on an outdated thread, so nobody would read it
+            action = "leave" if verdict.action == "reply" and thread.outdated else verdict.action
             try:
-                if verdict.action == "resolve":
+                if action == "resolve":
                     await publish.resolve_thread(thread.node_id, dry_run=self.no_publish)
-                elif verdict.action == "reply":
+                elif action == "reply":
                     await publish.reply_to_thread(
                         repo, pr, cid, verdict.body, dry_run=self.no_publish
                     )
@@ -152,11 +154,13 @@ class Sweeper:
                 # this run is already paid for: one thread GitHub will not take must
                 # not throw away the decisions made about all the others
                 logger.warning(
-                    "%s#%s thread %s: could not %s: %s", repo.slug, pr, cid, verdict.action, ex
+                    "%s#%s thread %s: could not %s: %s", repo.slug, pr, cid, action, ex
                 )
                 done["failed"] += 1
+                # a refusal nothing records is judged again next tick, at a container each
+                self._settled(repo, pr, thread)
                 continue
-            done[verdict.action] += 1
+            done[action] += 1
 
         detail = ", ".join(f"{n} {k}" for k, n in done.items() if n)
         if done["reply"]:

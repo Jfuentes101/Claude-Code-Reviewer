@@ -334,6 +334,43 @@ async def test_an_outdated_thread_is_still_ours_to_close(orch, monkeypatch, acte
     assert acted["resolved"] == ["PRRT_555"]
 
 
+async def test_a_reply_on_an_outdated_thread_is_left_instead_of_posted(
+    orch, monkeypatch, acted
+):
+    """GitHub collapses it, so the preamble does not offer it — and the code that
+    acts on the verdict has to hold that line, not just ask for it."""
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
+        thread(555, outdated=True, replies=(("dev", "fixed in abc123"),))
+    ]))
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nreply\nthe orphan still reaches it\n<<<END>>>")
+    out = await orch.answer_threads()
+    assert acted["replied"] == [], "nobody would have seen it"
+    assert "1 leave" in out[0].detail
+
+
+async def test_a_write_github_refuses_is_not_bought_again_next_tick(
+    orch, monkeypatch, acted
+):
+    """A container costs real money, and a token that cannot resolve says so every
+    time: judging the same reply each tick spends it forever, and the run that
+    finally answers `reply` instead posts into a conversation settled days ago."""
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
+        thread(555, replies=(("dev", "fixed in abc123"),))
+    ]))
+
+    async def refuse(node_id, *, dry_run=False):
+        raise GhError("Resource not accessible by personal access token")
+
+    monkeypatch.setattr(publish_mod, "resolve_thread", refuse)
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    assert "1 failed" in (await orch.answer_threads())[0].detail
+
+    ran = []
+    monkeypatch.setattr(threads_mod, "run_review", lambda *a, **k: ran.append(1))
+    assert await orch.answer_threads() == []
+    assert ran == [], "the same refusal must not cost a second container"
+
+
 def test_an_outdated_thread_says_a_reply_would_be_invisible():
     text = thread_preamble(author="dev", url="https://x/7", threads=[
         thread(555, outdated=True, replies=(("dev", "fixed"),))
