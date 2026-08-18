@@ -52,6 +52,17 @@ class RepoConfig(_Strict):
     ci_phrase: str = "run-ci"
 
     @property
+    def brake_labels(self) -> tuple[str, ...]:
+        """The labels that mean "not ready for anyone yet".
+
+        One definition, two readers: gate 3 holds the next pass on them, and the
+        panel drops the PR off the board. A row saying "ready for a human" that
+        opens onto a needs-work label is the worst kind of noise, so the two must
+        not be able to disagree.
+        """
+        return (self.needs_work_label, *self.hold_labels)
+
+    @property
     def owner(self) -> str:
         return self.slug.split("/", 1)[0]
 

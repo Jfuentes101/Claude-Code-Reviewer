@@ -17,7 +17,7 @@ import logging
 import os
 import signal
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +421,65 @@ def failing_checks(meta: PrMeta, *, ignore: tuple[str, ...]) -> list[str]:
     contradict the gate that let it run. Still-running is not red.
     """
     return [name for name in summarize_checks(meta).failing if name not in ignore]
+
+
+class LabeledPr(NamedTuple):
+    head: str
+    labels: tuple[str, ...]
+
+
+async def labeled_heads(repo: str, *, label: str) -> dict[int, LabeledPr]:
+    """Every open PR under the label, with its head sha and its labels.
+
+    `queue` cannot answer this: `gh search prs` has no headRefOid, and the sha is
+    the whole point. `gh pr list` filters on the label just as well, so the sweep
+    pays the same one call it was already paying — and the labels ride along for
+    free, which is what tells the panel a PR is no longer ready.
+    """
+    rows = await gh_json(
+        "pr", "list", "--repo", repo, "--label", label, "--state", "open",
+        "--limit", str(QUEUE_LIMIT), "--json", "number,headRefOid,labels",
+    )
+    return {
+        int(r["number"]): LabeledPr(
+            head=r.get("headRefOid") or "",
+            labels=tuple((lb.get("name") or "") for lb in r.get("labels") or []),
+        )
+        for r in rows or []
+    }
+
+
+async def standing_rejection(repo: str, pr: int, reviewer: str) -> str | None:
+    """The node id of `reviewer`'s standing changes-requested review, or None.
+
+    `latestOpinionatedReviews` is the field that answers "what still counts": it
+    keeps one review per person, drops the COMMENTED ones a later pass leaves
+    behind, and omits anything already dismissed. Reading `reviews` instead finds
+    a rejection GitHub no longer applies.
+    """
+    query = """
+      query($n: Int!, $owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) { pullRequest(number: $n) {
+          latestOpinionatedReviews(first: 20) {
+            nodes { id state author { login } }
+          }
+        } }
+      }
+    """
+    owner, name = repo.split("/", 1)
+    data = await gh_json(
+        "api", "graphql", "-F", f"n={pr}", "-f", f"owner={owner}", "-f", f"name={name}",
+        "-f", f"query={query}",
+    )
+    pull = (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+    for node in (pull.get("latestOpinionatedReviews") or {}).get("nodes") or []:
+        if (
+            node
+            and node.get("state") == "CHANGES_REQUESTED"
+            and ((node.get("author") or {}).get("login") or "") == reviewer
+        ):
+            return str(node.get("id") or "") or None
+    return None
 
 
 async def stale_changes_requested(

@@ -59,13 +59,77 @@ def test_the_panel_shows_one_row_per_pr_not_one_per_commit(db):
         key = f"acme/app:7:{sha}:2026-01-01T00:00:00Z"
         start(db, key=key, sha=sha)
         db.finish_review(key, state="published", verdict="ok", ci_state="green")
+    db.set_requested("acme/app", [7])
     rows = db.approved_and_green(0)
     assert [(r["pr"], r["head_sha"]) for r in rows] == [(7, "ghi789")]
+
+
+def test_the_panel_skips_an_approval_nobody_is_waiting_on(db):
+    """A changes-requested consumes the request; an author who never asks again
+    leaves an approval that is true and that nobody is blocked on."""
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok", ci_state="green")
+    assert db.approved_and_green(0) == [], "no queue read has seen this PR"
+    db.set_requested("acme/app", [7])
+    assert [r["pr"] for r in db.approved_and_green(0)] == [7]
+    db.set_requested("acme/app", [])
+    assert db.approved_and_green(0) == [], "the request went away, so did the row"
+
+
+def test_a_brake_label_is_reversible_but_a_moved_head_is_not(db):
+    """The two ways off the board differ on purpose. Taking a needs-work label off
+    puts the PR back with the approval it already had; a new commit must not — that
+    code has not been reviewed, so it waits for a pass."""
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok", ci_state="green")
+    db.set_requested("acme/app", [7])
+    assert len(db.approved_and_green(0)) == 1
+
+    assert db.unrequest("acme/app", [7]) == 1, "a brake label went on"
+    assert db.approved_and_green(0) == []
+    db.set_requested("acme/app", [7])  # next tick, label gone, head unchanged
+    assert [r["pr"] for r in db.approved_and_green(0)] == [7], "same commit, still approved"
+
+    db.settle_stale("acme/app", {7: "def456"})  # they pushed
+    db.set_requested("acme/app", [7])
+    assert db.approved_and_green(0) == [], "new code needs a pass before the board"
+
+    later = "acme/app:7:def456:2026-01-01T00:00:00Z"
+    start(db, key=later, sha="def456")
+    db.finish_review(later, state="published", verdict="ok", ci_state="green")
+    approved = [r["head_sha"] for r in db.approved_and_green(0)]
+    assert approved == ["def456"], "the pass brings it back"
+
+
+def test_unrequest_leaves_other_prs_and_repos_alone(db):
+    for pr_num in (7, 8):
+        key = f"acme/app:{pr_num}:abc123:t"
+        db.start_review(key=key, repo="acme/app", pr=pr_num, head_sha="abc123",
+                        requested_at="t")
+        db.finish_review(key, state="published", verdict="ok", ci_state="green")
+    db.set_requested("acme/app", [7, 8])
+    db.set_requested("other/repo", [7])
+    assert db.unrequest("acme/app", [7]) == 1
+    assert [r["pr"] for r in db.approved_and_green(0)] == [8]
+    assert db.unrequest("acme/app", []) == 0, "an empty list is a no-op, not a wipe"
+
+
+def test_settle_stale_drops_approvals_of_a_commit_that_moved(db):
+    """`ci_watch` stops looking once a build reports, so the sweep is what notices."""
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok", ci_state="green")
+    db.set_requested("acme/app", [7])
+    assert db.settle_stale("acme/app", {7: "abc123"}) == 0, "still the head"
+    assert len(db.approved_and_green(0)) == 1
+    assert db.settle_stale("acme/app", {7: "def456"}) == 1
+    assert db.approved_and_green(0) == []
+    assert db.settle_stale("acme/app", {7: "def456"}) == 0, "a no-op the second time"
 
 
 def test_a_later_verdict_retires_the_earlier_approval(db):
     start(db)
     db.finish_review(KEY, state="published", verdict="ok", ci_state="green")
+    db.set_requested("acme/app", [7])
     assert len(db.approved_and_green(0)) == 1
     later = "acme/app:7:def456:2026-01-01T00:00:00Z"
     start(db, key=later, sha="def456")

@@ -81,6 +81,16 @@ CREATE TABLE IF NOT EXISTS meters (
     error_at INTEGER
 );
 
+-- what the last queue read saw still asking for our review. The panel joins
+-- against it: a PR nobody has asked about is not something a human is waiting on,
+-- and an author who never re-requests is `digest`'s problem, not the board's.
+CREATE TABLE IF NOT EXISTS requested (
+    repo    TEXT    NOT NULL,
+    pr      INTEGER NOT NULL,
+    seen_at INTEGER NOT NULL,
+    PRIMARY KEY (repo, pr)
+);
+
 -- cold start: the first poll of a repo records its backlog instead of
 -- reviewing it, so enabling robbie can't trigger a review storm
 CREATE TABLE IF NOT EXISTS seeded (
@@ -246,7 +256,8 @@ class Db:
         )
 
     def approved_and_green(self, since_ms: int) -> list[sqlite3.Row]:
-        """What a human could pick up: robbie approved it and the build went green.
+        """What a human could pick up: robbie approved it, the build went green, and
+        somebody is still asking for the review.
 
         The newest pass per PR and no other. A push while a review request is open
         keeps `requested_at` and only moves `head_sha`, so a busy PR collects one
@@ -255,6 +266,11 @@ class Db:
         approved after a later pass said needs-work. Rank first, judge after: a PR
         whose latest pass is not an `ok` has to fall out, which it cannot do if the
         verdict is part of what picks the row.
+
+        The `requested` join is the other half of "ready for a human". A
+        changes-requested review consumes the request, and an author who never asks
+        again leaves an approval nobody is waiting on — true, and not a board row.
+        Until the first tick of a repo fills the table, that repo shows nothing.
         """
         return list(
             self.conn.execute(
@@ -262,12 +278,87 @@ class Db:
                 "FROM (SELECT *, ROW_NUMBER() OVER "
                 # id breaks the tie: two passes can land in the same millisecond
                 "             (PARTITION BY repo, pr ORDER BY created_at DESC, id DESC) newest "
-                "      FROM reviews WHERE state='published' AND created_at >= ?) "
+                "      FROM reviews WHERE state='published' AND created_at >= ?) r "
                 "WHERE newest = 1 AND verdict='ok' AND ci_state IN ('green','waiting','red') "
+                "  AND EXISTS (SELECT 1 FROM requested q "
+                "              WHERE q.repo = r.repo AND q.pr = r.pr) "
                 "ORDER BY ci_state='green' DESC, created_at DESC",
                 (since_ms,),
             )
         )
+
+    def set_requested(self, repo: str, prs: Collection[int]) -> None:
+        """Replace what this repo's queue read saw asking for our review.
+
+        One transaction: the panel reads this concurrently, and a reader landing
+        between the delete and the inserts would show an empty board.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("DELETE FROM requested WHERE repo=?", (repo,))
+            self.conn.executemany(
+                "INSERT INTO requested (repo, pr, seen_at) VALUES (?,?,?)",
+                [(repo, int(pr), now_ms()) for pr in prs],
+            )
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        self.conn.execute("COMMIT")
+
+    def approved_prs(self, repo: str) -> list[int]:
+        """PRs whose newest judged pass is an `ok`, whatever the build said after.
+
+        Same rank-first-judge-after shape as the panel, and deliberately without
+        its `ci_state` and `requested` conditions: this answers "did we end up
+        approving this", which is what decides whether a standing rejection of ours
+        still means anything. No window — the caller's PR set is already bounded by
+        what is open under the label.
+        """
+        return [
+            int(r["pr"]) for r in self.conn.execute(
+                "SELECT pr FROM (SELECT pr, verdict, ROW_NUMBER() OVER "
+                "             (PARTITION BY pr ORDER BY created_at DESC, id DESC) newest "
+                "      FROM reviews WHERE repo=? AND state='published') "
+                "WHERE newest = 1 AND verdict='ok' ORDER BY pr",
+                (repo,),
+            )
+        ]
+
+    def unrequest(self, repo: str, prs: Collection[int]) -> int:
+        """Take these PRs off the board without settling anything.
+
+        Deliberately not a `ci_state`: a brake label comes off as easily as it goes
+        on, and a settled row never comes back — it would need a fresh pass to
+        return, which gate 4 refuses when the commit has not moved. Dropping the
+        row here instead means the next tick's queue read puts the PR back on the
+        board the moment the label is gone.
+        """
+        holes = ",".join("?" * len(prs))
+        if not prs:
+            return 0
+        cur = self.conn.execute(
+            f"DELETE FROM requested WHERE repo=? AND pr IN ({holes})",
+            (repo, *(int(pr) for pr in prs)),
+        )
+        return cur.rowcount or 0
+
+    def settle_stale(self, repo: str, heads: dict[int, str]) -> int:
+        """Retire approvals whose commit is no longer the PR's head.
+
+        `ci_watch` only revisits rows still waiting on a build, so an approval that
+        already went green is never looked at again — a push after it leaves the
+        board claiming a commit that no longer exists. This is the sweep that
+        notices, from a read the tick was making anyway.
+        """
+        settled = 0
+        for pr, head in heads.items():
+            cur = self.conn.execute(
+                "UPDATE reviews SET ci_state='stale' WHERE repo=? AND pr=? AND head_sha != ? "
+                "AND ci_state IN ('green','waiting','red')",
+                (repo, int(pr), head),
+            )
+            settled += cur.rowcount or 0
+        return settled
 
     def settle_done(self, repo: str, pr: int) -> int:
         """A human has taken this PR; retire it from the panel and the sweep.

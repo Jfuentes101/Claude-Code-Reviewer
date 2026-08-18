@@ -27,7 +27,8 @@ class Outcome:
     repo: str
     pr: int
     action: Literal[
-        "review", "skip", "hold", "ci-note", "threads", "failed", "budget", "ready"
+        "review", "skip", "hold", "ci-note", "threads", "failed", "budget", "ready",
+        "retract",
     ]
     detail: str = ""
 

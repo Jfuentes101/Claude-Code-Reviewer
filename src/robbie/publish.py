@@ -170,6 +170,34 @@ async def publish_review(
     )
 
 
+DISMISS_MESSAGE = (
+    "Superseded by a later pass on a newer commit that found nothing blocking. "
+    "Retracting this so it stops holding the PR; the approval itself is not mine to give."
+)
+
+
+async def dismiss_own_rejection(node_id: str, *, dry_run: bool = False) -> PublishResult:
+    """Retract our own changes-requested review.
+
+    An `ok` clears the label but leaves the earlier REQUEST_CHANGES standing, so
+    GitHub keeps reporting `reviewDecision: CHANGES_REQUESTED` and every consumer
+    reads the PR as blocked by us — long after we said it was fine. A dismissal
+    retracts the veto without approving anything, which is the distinction that
+    matters: robbie is not the human sign-off.
+    """
+    if not node_id:
+        return PublishResult(False, "no standing rejection of ours")
+    if dry_run:
+        return PublishResult(False, f"dry run: would dismiss {node_id}")
+    await gh(
+        "api", "graphql", "-f",
+        "query=mutation($id:ID!,$m:String!){dismissPullRequestReview("
+        "input:{pullRequestReviewId:$id,message:$m}){clientMutationId}}",
+        "-f", f"id={node_id}", "-f", f"m={DISMISS_MESSAGE}",
+    )
+    return PublishResult(True, "dismissed my own changes-requested")
+
+
 async def resolve_thread(node_id: str, *, dry_run: bool = False) -> PublishResult:
     """Close a thread the reviewer conceded. No text: the concession is the act."""
     if not node_id:

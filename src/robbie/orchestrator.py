@@ -36,10 +36,13 @@ from robbie.github import (
     PrMeta,
     Thread,
     ci_started,
+    labeled_heads,
     last_review_request,
     my_threads,
     pr_meta,
     queue,
+    stale_changes_requested,
+    standing_rejection,
     summarize_checks,
     whoami,
 )
@@ -140,6 +143,9 @@ class Orchestrator:
                     logger.warning("could not fetch the queue for %s: %s", repo.slug, ex)
                     continue
                 logger.info("%s: %d PR(s) in queue", repo.slug, len(prs))
+                # the panel's other half: what a human is actually still waiting on
+                if not self.dry_run:
+                    self.db.set_requested(repo.slug, prs)
 
                 if not self.db.is_seeded(repo.slug):
                     await self._seed(repo, prs)
@@ -476,6 +482,7 @@ class Orchestrator:
 
         if verdict == "ok":
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
+            await self._retract_rejection(repo, meta)
             ci = await self._request_ci(repo, meta)
             self.db.finish_review(
                 key, verdict="ok", **self._pass_state("published"),
@@ -554,6 +561,82 @@ class Orchestrator:
             for r in rows
         )
         return f"This is pass {len(rows) + 1} on this PR. Earlier passes: {past}.\n"
+
+    async def _dismiss_if_vetoed(self, repo: RepoConfig, pr: int) -> str | None:
+        """Retract our own standing changes-requested on this PR. None if there is none."""
+        node_id = await standing_rejection(repo.slug, pr, repo.reviewer_login)
+        if node_id is None:
+            return None
+        result = await publish.dismiss_own_rejection(
+            node_id, dry_run=self.dry_run or self.no_publish
+        )
+        return result.detail
+
+    async def retract_stale_rejections(
+        self, repo: RepoConfig, *, only: tuple[int, ...] = ()
+    ) -> list[Outcome]:
+        """Dismiss rejections of ours that a later `ok` already contradicted.
+
+        The ok path retracts as it goes; this is the one-shot for the approvals that
+        landed before it did. One search names every PR still carrying a standing
+        changes-requested of ours; the database says which of those we went on to
+        approve. A PR whose newest pass is still a needs-work keeps its veto — that
+        one is true.
+
+        `only` is the escape hatch for a PR whose `ok` is not evidence: an eval PR
+        collects verdicts from arms picked to be wrong, so its approval must not be
+        allowed to retract a rejection that was right.
+        """
+        try:
+            vetoed = {
+                int(node["number"])
+                for node in await stale_changes_requested(
+                    repo.slug, repo.reviewer_login, label=repo.label
+                )
+            }
+        except GhError as ex:
+            logger.warning("could not read %s's standing rejections: %s", repo.slug, ex)
+            return []
+        contradicted = sorted(vetoed & set(self.db.approved_prs(repo.slug)))
+        if only:
+            contradicted = [pr for pr in contradicted if pr in only]
+        logger.info(
+            "%s: %d PR(s) carry a rejection of mine, %d of them contradicted by a later ok",
+            repo.slug, len(vetoed), len(contradicted),
+        )
+        out: list[Outcome] = []
+        for pr in contradicted:
+            try:
+                detail = await self._dismiss_if_vetoed(repo, pr)
+            except GhError as ex:
+                logger.warning("%s#%s: could not dismiss: %s", repo.slug, pr, ex)
+                out.append(Outcome(repo.slug, pr, "failed", str(ex)[:120]))
+                continue
+            out.append(Outcome(repo.slug, pr, "retract", detail or "nothing of mine standing"))
+        return out
+
+    async def _retract_rejection(self, repo: RepoConfig, meta: PrMeta) -> None:
+        """Take back an earlier changes-requested of ours, now that this pass is an ok.
+
+        Best-effort: the approval and the CI request matter more than the tidy-up,
+        and a token that cannot dismiss must not cost the PR its build.
+        """
+        try:
+            detail = await self._dismiss_if_vetoed(repo, meta.number)
+        except GhError as ex:
+            logger.warning(
+                "%s#%s: could not dismiss my own changes-requested: %s",
+                repo.slug, meta.number, ex,
+            )
+            await self._dm_owner_once(
+                f"dismiss:{repo.slug}:{meta.number}",
+                f"I approved *{meta.title}* ({meta.url}) but couldn't retract my earlier "
+                f"changes-requested review, so GitHub still reads the PR as blocked by "
+                f"me: {ex}",
+            )
+            return
+        if detail:
+            logger.info("%s#%s: %s", repo.slug, meta.number, detail)
 
     async def _request_ci(self, repo: RepoConfig, meta: PrMeta) -> str:
         """Trigger a build for an approved commit, at most once per commit: CI does
@@ -646,30 +729,47 @@ class Orchestrator:
     # ----- cold start ----------------------------------------------------
 
     async def _retire_unlabeled(self, repo: RepoConfig) -> None:
-        """Drop from the panel whatever no longer carries the review label.
+        """Drop from the panel whatever no longer carries the review label, and
+        whatever has moved past the commit robbie judged.
 
-        The per-PR gates cannot do this: a merged PR, a closed one, or one whose
+        The per-PR gates cannot do either: a merged PR, a closed one, or one whose
         label a human removed is not in the queue any more, so nothing walks past
-        it again. This is the only read that sees the label without the review
-        request attached, which is why it is a second search and not `prs` above.
+        it again — and `ci_watch` stops revisiting an approval once its build
+        reports, so a later push goes unnoticed. This is the only read that sees
+        the label without the review request attached, which is why it is a second
+        search and not `prs` above; it carries the head shas for the same call.
         """
         try:
-            labeled = await queue(repo.slug, label=repo.label)
+            heads = await labeled_heads(repo.slug, label=repo.label)
         except GhError as ex:
             logger.warning("could not read %s's labelled PRs: %s", repo.slug, ex)
             return
-        if len(labeled) == QUEUE_LIMIT:
+        if len(heads) == QUEUE_LIMIT:
             # a truncated page would read as "these PRs lost the label" and retire
             # every row past it
             logger.warning("%s: labelled read filled its page; not retiring", repo.slug)
             return
         if self.dry_run:
             logger.info("DRY would retire %s rows outside %d labelled PR(s)",
-                        repo.slug, len(labeled))
+                        repo.slug, len(heads))
             return
-        if retired := self.db.settle_unlabeled(repo.slug, labeled):
+        if retired := self.db.settle_unlabeled(repo.slug, list(heads)):
             logger.info("%s: retired %d row(s) whose PR no longer carries the label",
                         repo.slug, retired)
+        if stale := self.db.settle_stale(
+            repo.slug, {pr: row.head for pr, row in heads.items()}
+        ):
+            logger.info("%s: retired %d approval(s) whose commit is no longer the head",
+                        repo.slug, stale)
+        # after set_requested above, and reversible on purpose: the label coming off
+        # puts the PR back on the board next tick, with no new pass needed
+        braked = [
+            pr for pr, row in heads.items()
+            if any(name in repo.brake_labels for name in row.labels)
+        ]
+        if dropped := self.db.unrequest(repo.slug, braked):
+            logger.info("%s: took %d PR(s) off the board — a brake label is on",
+                        repo.slug, dropped)
 
     async def _seed(self, repo: RepoConfig, prs: list[int]) -> None:
         """Record the current backlog instead of reviewing it.

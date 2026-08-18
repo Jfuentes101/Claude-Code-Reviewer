@@ -445,9 +445,29 @@ docker compose exec robbie robbie once --repo o/r --pr 123      # force one revi
 docker compose exec robbie robbie poll --once                   # a single tick
 docker compose exec robbie robbie digest --days 7               # stuck-in-review digest
 docker compose exec robbie robbie threads --pr 123              # just the replies half
+docker compose exec robbie robbie retract                       # drop vetoes a later ok undid
 docker compose exec robbie robbie --dry-run poll --once         # decide, write nothing
 docker compose exec robbie robbie --no-publish poll --once      # review for real, post nothing
 ```
+
+### retract
+
+A `needs-work` posts a REQUEST_CHANGES review, and GitHub keeps that standing until
+somebody takes it back. An `ok` on a later commit does not: it clears the label and
+asks for a build, so the PR reads as approved to robbie and as *blocked by robbie* to
+GitHub — and to everything downstream of `reviewDecision`, branch protection
+included. The ok path now dismisses its own earlier rejection, which leaves only the
+ones from before it did.
+
+`robbie retract` is that one-shot. One search names every PR still carrying a
+rejection of ours; the database says which of them we went on to approve; the
+intersection gets dismissed. A PR whose newest pass is still a `needs-work` keeps
+its veto — that one is true. Dismissing retracts the veto without approving
+anything: the sign-off stays a human's.
+
+Check it with `--dry-run` first, and use `--pr` to hold one back. An **eval PR is the
+case that needs it**: it collects verdicts from arms picked to be wrong, so its `ok`
+is not evidence and must not retract a rejection that was right.
 
 The two quiet modes differ in what they cost. `--dry-run` decides and stops, so it
 starts no container and spends nothing. `--no-publish` runs the review for real and
@@ -479,6 +499,22 @@ meters with their live readings, the model arms with their configured share and
 what each has actually found, the PRs held or failed with the reason, the recent
 reviews with findings and timings, and the transcripts, which are the closest thing
 to a log of a review — each one readable in the browser.
+
+The board at the top — *approved by robbie* — answers one question: what could a
+human pick up right now. A row earns its place by being approved on the commit that
+is still the head, with a build that reported, **and** with somebody still asking for
+the review. That last one is not a detail: a changes-requested consumes the review
+request, so an author who never asks again leaves an approval that is true and that
+nobody is waiting on.
+
+Rows leave the board three ways, and they differ on purpose. A brake label
+(`needs_work_label` or any `hold_labels`) drops the PR while it is on and puts it
+back the moment it comes off — the approval it already had still stands for that
+commit. A **new commit** is not reversible: that code has not been reviewed, so the
+PR waits for a pass before it returns. And a `done_labels` label retires it for
+good, because a human has taken it. Gate 3 and the board read the same
+`brake_labels`, so a row promising "ready for a human" cannot open onto a
+needs-work label.
 
 Two things it deliberately does not do. It never shows a per-review dollar figure
 for a third-party model, because the CLI prices those off its own table and that is

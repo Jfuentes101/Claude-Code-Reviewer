@@ -5,6 +5,7 @@
     robbie once --repo R --pr N     force one review, ignoring queue and gates
     robbie status                   what's reviewed, held, or waiting
     robbie digest [--days 7]        post the stuck-in-review digest
+    robbie retract [--repo R]       dismiss my rejections a later ok contradicts
     robbie dashboard [--port 4020]  read-only metrics panel, off unless asked for
 
 SIGTERM finishes the tick in flight rather than killing a review halfway
@@ -93,6 +94,15 @@ def _parser() -> argparse.ArgumentParser:
     dig = sub.add_parser("digest", help="post the stuck-in-review digest")
     dig.add_argument("--days", type=int, default=None)
 
+    ret = sub.add_parser(
+        "retract",
+        help="dismiss standing changes-requested reviews of mine that a later ok "
+             "contradicts (the ok path does this going forward; this is the backlog)",
+    )
+    ret.add_argument("--repo", default=None, help="only this repo")
+    # an eval PR carries deliberately wrong verdicts, so its `ok` is not evidence
+    ret.add_argument("--pr", type=int, nargs="+", default=[], help="only these PRs")
+
     dash = sub.add_parser("dashboard", help="serve the read-only metrics panel")
     dash.add_argument("--port", type=int, default=4020)
     # localhost by default: the panel has no auth and shows diffs, titles and spend
@@ -171,6 +181,20 @@ async def _run(args: argparse.Namespace) -> int:
             for row in await orch.status():
                 print(row)
             return 0
+
+        if args.command == "retract":
+            repos = [r for r in cfg.repos if args.repo in (None, r.slug)]
+            if not repos:
+                raise SystemExit(f"{args.repo} is not a configured repo")
+            outcomes = [
+                o for r in repos
+                for o in await orch.retract_stale_rejections(r, only=tuple(args.pr))
+            ]
+            for outcome in outcomes:
+                logger.info("%s", outcome)
+            if not outcomes:
+                logger.info("no rejection of mine is contradicted by a later ok")
+            return 1 if any(o.action == "failed" for o in outcomes) else 0
 
         if args.command == "once":
             forced = await asyncio.gather(

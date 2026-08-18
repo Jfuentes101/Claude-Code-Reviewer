@@ -50,7 +50,7 @@ def label_hold(meta: PrMeta, repo: RepoConfig) -> Decision | None:
     Silent and unrecorded, both for this and for `hold_labels`: it is the normal
     state of a blocked PR, and removing the label is all it takes to come back.
     """
-    for name in (repo.needs_work_label, *repo.hold_labels):
+    for name in repo.brake_labels:
         if meta.has_label(name):
             return Decision("hold", f"{name} still on", record=False)
     return None

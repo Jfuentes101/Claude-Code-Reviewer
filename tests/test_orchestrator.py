@@ -20,7 +20,7 @@ from robbie.config import Config, DockerConfig, RepoConfig, ReviewModel, Secrets
 from robbie.contract import Blocks
 from robbie.db import Db
 from robbie.gates import Decision, already_judged, dedup_key
-from robbie.github import GhError, PrMeta, PrThreads, Thread
+from robbie.github import GhError, LabeledPr, PrMeta, PrThreads, Thread
 from robbie.orchestrator import Orchestrator
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
@@ -78,7 +78,9 @@ def orch(cfg, tmp_path, monkeypatch):
         gh_token="w", slack_bot_token="s", reviewer_gh_token="r", anthropic_api_key="sk"
     )
     o = Orchestrator(cfg, secrets, db, slack)  # type: ignore[arg-type]
-    # nothing in these tests may reach GitHub
+    # nothing in these tests may reach GitHub; the ok path looks for a rejection
+    # of ours to retract, and having none is the ordinary case
+    monkeypatch.setattr(orch_mod, "standing_rejection", _async(None))
     yield o
     db.close()
 
@@ -86,6 +88,12 @@ def orch(cfg, tmp_path, monkeypatch):
 def _async(value):
     async def _call(*a, **kw):
         return value
+    return _call
+
+
+def _boom(error):
+    async def _call(*a, **kw):
+        raise error
     return _call
 
 
@@ -181,14 +189,15 @@ async def test_a_done_label_retires_the_pr_from_the_panel_and_the_sweep(
 # ----- a PR that left the label behind -------------------------------------
 
 
-def _labeled(monkeypatch, prs, boom=False):
-    async def read(slug, *, label, reviewer=None):
+def _labeled(monkeypatch, prs, boom=False, head="abc1234567", labels=()):
+    async def read(slug, *, label):
         if boom:
             raise GhError("gh exploded")
-        assert reviewer is None, "the panel's read must not filter by review request"
-        return list(prs)
+        return {
+            int(pr): LabeledPr(head=head, labels=("Code Review", *labels)) for pr in prs
+        }
 
-    monkeypatch.setattr(orch_mod, "queue", read)
+    monkeypatch.setattr(orch_mod, "labeled_heads", read)
 
 
 def _approved(db, pr_number=7):
@@ -197,6 +206,8 @@ def _approved(db, pr_number=7):
         key=key, repo="acme/app", pr=pr_number, head_sha="abc1234567", requested_at=REQ
     )
     db.finish_review(key, state="published", verdict="ok", ci_state="green")
+    # the panel's second condition: somebody is still asking for the review
+    db.set_requested("acme/app", [pr_number])
 
 
 async def test_a_pr_without_the_label_leaves_the_panel(orch, cfg, monkeypatch):
@@ -217,6 +228,52 @@ async def test_a_pr_still_carrying_the_label_stays(orch, cfg, monkeypatch):
     await orch._retire_unlabeled(cfg.repos[0])
 
     assert [r["pr"] for r in orch.db.approved_and_green(0)] == [7]
+
+
+async def test_a_brake_label_takes_the_pr_off_the_board(orch, cfg, monkeypatch):
+    """The complaint this fixes: a row saying "ready for a human" that opens onto a
+    needs-work label."""
+    _approved(orch.db)
+    _labeled(monkeypatch, [7], labels=("❌ NEEDS WORK! ❌",))
+
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert orch.db.approved_and_green(0) == []
+
+
+async def test_the_label_coming_off_puts_it_back_without_a_new_pass(orch, cfg, monkeypatch):
+    _approved(orch.db)
+    _labeled(monkeypatch, [7], labels=("❌ NEEDS WORK! ❌",))
+    await orch._retire_unlabeled(cfg.repos[0])
+    assert orch.db.approved_and_green(0) == []
+
+    # next tick: the queue read repopulates, and the label is gone
+    orch.db.set_requested("acme/app", [7])
+    _labeled(monkeypatch, [7])
+    await orch._retire_unlabeled(cfg.repos[0])
+
+    assert [r["pr"] for r in orch.db.approved_and_green(0)] == [7]
+
+
+async def test_a_moved_head_stays_off_even_with_no_brake_label(orch, cfg, monkeypatch):
+    """The other half of the rule: new code waits for a pass, label or no label."""
+    _approved(orch.db)
+    _labeled(monkeypatch, [7], head="9999999999")
+
+    await orch._retire_unlabeled(cfg.repos[0])
+    orch.db.set_requested("acme/app", [7])
+
+    assert orch.db.approved_and_green(0) == [], "reviewed at abc1234567, head is 9999999999"
+
+
+async def test_a_hold_label_counts_as_a_brake(orch, cfg, monkeypatch):
+    repo = cfg.repos[0].model_copy(update={"hold_labels": ("Blocked",)})
+    _approved(orch.db)
+    _labeled(monkeypatch, [7], labels=("Blocked",))
+
+    await orch._retire_unlabeled(repo)
+
+    assert orch.db.approved_and_green(0) == []
 
 
 async def test_a_failed_label_read_retires_nothing(orch, cfg, monkeypatch):
@@ -420,6 +477,92 @@ def _build(monkeypatch, *checks) -> None:
     monkeypatch.setattr(orch_mod, "pr_meta", _async(pr(checks=checks)))
 
 
+async def test_retract_only_touches_prs_a_later_ok_contradicted(orch, cfg, monkeypatch):
+    """A PR whose newest pass is still a needs-work keeps its veto: that one is true."""
+    for pr_num, verdict in ((7, "ok"), (8, "needs-work"), (9, "ok")):
+        key = dedup_key("acme/app", pr_num, "abc1234567", REQ)
+        orch.db.start_review(key=key, repo="acme/app", pr=pr_num,
+                             head_sha="abc1234567", requested_at=REQ)
+        orch.db.finish_review(key, state="published", verdict=verdict)
+    # 9 was approved but carries no rejection; 10 was never reviewed here
+    monkeypatch.setattr(
+        orch_mod, "stale_changes_requested",
+        _async([{"number": 7}, {"number": 8}, {"number": 10}]),
+    )
+    dismissed = []
+
+    async def rejection(slug, pr, reviewer):
+        return f"PRR_{pr}"
+
+    monkeypatch.setattr(orch_mod, "standing_rejection", rejection)
+    monkeypatch.setattr(
+        publish_mod, "dismiss_own_rejection",
+        lambda node_id, **k: _mark(dismissed, PublishResult(True, f"dismissed {node_id}")),
+    )
+
+    outcomes = await orch.retract_stale_rejections(cfg.repos[0])
+
+    assert [o.pr for o in outcomes] == [7], "8 is still rejected, 10 we never approved"
+    assert len(dismissed) == 1
+
+
+async def test_retract_reports_a_denial_instead_of_dying(orch, cfg, monkeypatch):
+    key = dedup_key("acme/app", 7, "abc1234567", REQ)
+    orch.db.start_review(key=key, repo="acme/app", pr=7,
+                         head_sha="abc1234567", requested_at=REQ)
+    orch.db.finish_review(key, state="published", verdict="ok")
+    monkeypatch.setattr(orch_mod, "stale_changes_requested", _async([{"number": 7}]))
+    monkeypatch.setattr(orch_mod, "standing_rejection", _async("PRR_7"))
+    monkeypatch.setattr(
+        publish_mod, "dismiss_own_rejection", _boom(GhError("HTTP 403: not accessible")),
+    )
+
+    outcomes = await orch.retract_stale_rejections(cfg.repos[0])
+
+    assert [(o.pr, o.action) for o in outcomes] == [(7, "failed")]
+
+
+async def test_ok_retracts_an_earlier_rejection_of_ours(orch, repo, monkeypatch):
+    """Otherwise GitHub keeps reporting the PR as blocked by us after we said it
+    was fine, and every consumer of `reviewDecision` believes it."""
+    _build(monkeypatch)
+    dismissed = []
+    monkeypatch.setattr(orch_mod, "standing_rejection", _async("PRR_node1"))
+    monkeypatch.setattr(
+        publish_mod, "dismiss_own_rejection",
+        lambda node_id, **k: _mark(dismissed, PublishResult(True, f"dismissed {node_id}")),
+    )
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(True, "ci")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+    await orch._review(repo, pr(), KEY, REQ)
+    assert dismissed, "an ok has to take back our own changes-requested"
+
+
+async def test_a_token_that_cannot_dismiss_still_gets_the_build(orch, repo, monkeypatch):
+    """The tidy-up is best-effort; the approval and the build are the point."""
+    _build(monkeypatch)
+    ci = []
+    monkeypatch.setattr(orch_mod, "standing_rejection", _async("PRR_node1"))
+    monkeypatch.setattr(
+        publish_mod, "dismiss_own_rejection",
+        _boom(GhError("HTTP 403: Resource not accessible by personal access token")),
+    )
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(
+        publish_mod, "request_ci",
+        lambda *a, **k: _mark(ci, PublishResult(True, "asked CI to run (run-ci)")),
+    )
+    stub_run(monkeypatch, ok_run("ok"))
+
+    outcome = await orch._review(repo, pr(), KEY, REQ)
+    assert ci, "a token that cannot dismiss must not cost the PR its build"
+    assert orch.db.get_review(KEY).verdict == "ok"
+    assert outcome.action == "review"
+    assert any("blocked by" in text for text in orch.slack.owner), "the operator hears it"
+
+
 async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypatch):
     _build(monkeypatch)
     cleared, ci = [], []
@@ -506,6 +649,7 @@ async def test_a_build_the_author_already_started_is_not_asked_for_again(
 
     assert "CI already running" in outcome.detail
     assert orch.db.get_review(KEY).verdict == "ok"
+    orch.db.set_requested("acme/app", [7])  # the panel's other condition
     row = orch.db.approved_and_green(0)[0]
     assert row["ci_state"] == "waiting", "the watch has to report on somebody else's build"
 

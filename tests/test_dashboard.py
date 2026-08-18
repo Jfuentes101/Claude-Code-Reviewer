@@ -144,6 +144,7 @@ def test_an_approval_shows_who_made_it_and_what_ci_said(cfg, db):
         key = f"k{pr_num}"
         db.start_review(key=key, repo="acme/app", pr=pr_num, head_sha="abc", requested_at="t")
         db.finish_review(key, state="published", verdict="ok", model=model, ci_state=state)
+    db.set_requested("acme/app", (1, 2, 3))
     page = render(cfg, db)
     assert "ready for a human" in page
     assert "waiting on the build" in page and "build went red" in page
@@ -155,6 +156,7 @@ def test_a_third_party_approval_is_marked_as_such(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok",
                      model="glm-5.2:cloud", ci_state="green")
+    db.set_requested("acme/app", [1])
     assert "3rd-party" in render(cfg, db)
 
 
