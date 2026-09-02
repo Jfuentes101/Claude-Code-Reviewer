@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from robbie import budget
+from robbie import branding, budget
 from robbie.config import Config
 from robbie.db import SCHEMA_VERSION, Db
 
@@ -171,7 +171,7 @@ def _ready(cfg: Config, db: Db) -> str:
             _esc(_ago(r["ci_seen_at"] or r["created_at"])),
         ])
     return (
-        "<h2>approved by robbie</h2>"
+        "<h2>approved by " + branding.name() + "</h2>"
         "<p class='sub'>an `ok` asks CI to run; this is what came back</p>"
         + _table(["pr", "state", "approved by", "commit", "last seen"], rows, numeric={4})
     )

@@ -16,6 +16,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from robbie import branding
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,6 +131,10 @@ class SlackConfig(_Strict):
 
 
 class Config(_Strict):
+    # the byline on everything a human reads (signatures, dashboard); the
+    # engine and its machine markers stay robbie. Two instances of this code
+    # can sign differently.
+    bot_name: str = Field(default="robbie", pattern=r'^[^"\n]+$')
     slack: SlackConfig
     repos: list[RepoConfig] = Field(min_length=1)
     backend: Literal["api", "oauth"] = "api"
@@ -241,6 +247,7 @@ def load(path: str | Path | None = None) -> Config:
     if not p.is_file():
         raise SystemExit(f"config not found: {p} (set ROBBIE_CONFIG or pass --config)")
     cfg = Config.model_validate(_read_yaml(p))
+    branding.set_name(cfg.bot_name)
     try:
         cfg.transcript_dir.mkdir(parents=True, exist_ok=True)
     except OSError as ex:

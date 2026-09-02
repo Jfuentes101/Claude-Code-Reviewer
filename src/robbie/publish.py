@@ -22,7 +22,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from robbie.anchor import SIGNATURE as anchor_signature
+from robbie import branding
 from robbie.anchor import Anchored, anchor, commentable
 from robbie.config import RepoConfig
 from robbie.db import Db
@@ -31,7 +31,6 @@ from robbie.github import GhError, PrMeta, gh, gh_json
 logger = logging.getLogger(__name__)
 
 MAX_BYTES = 60_000  # GitHub caps comment bodies at 65536
-SIGNATURE = "🤖 **Automated pre-review by robbie**"
 
 
 def posted_key(kind: str, repo: RepoConfig, meta: PrMeta) -> str:
@@ -218,7 +217,7 @@ async def reply_to_thread(
 ) -> PublishResult:
     if not body.strip():
         return PublishResult(False, "empty reply")
-    full = f"{body.rstrip()}\n\n{anchor_signature}"
+    full = f"{body.rstrip()}\n\n{branding.signature_sub()}"
     if dry_run:
         logger.info("DRY reply on %s#%s thread %s:\n%s", repo.slug, pr, comment_id, full)
         return PublishResult(False, "dry run")
@@ -252,7 +251,7 @@ async def post_ci_note(
     if checks:
         what += " (`" + "`, `".join(checks) + "`)"
     body = (
-        f"{marker}\n{SIGNATURE}\n\n{what}, so I'm holding my review — too much of what "
+        f"{marker}\n{branding.signature()}\n\n{what}, so I'm holding my review — too much of what "
         "I'd say tends to change once the build is green. Push a fix and I'll pick it up "
         "on my next pass; no need to re-request the review."
     )
@@ -274,7 +273,7 @@ async def report_red_build(
     marker = f"<!-- robbie-approved-red sha={meta.head_sha} -->"
     what = "`" + "`, `".join(checks) + "`" if checks else "CI"
     body = (
-        f"{marker}\n{SIGNATURE}\n\nI read this as ready and asked for a build, and "
+        f"{marker}\n{branding.signature()}\n\nI read this as ready and asked for a build, and "
         f"{what} came back red on {meta.head_sha[:8]}. Nothing I found is blocking, so "
         "this is the build's news rather than mine — worth a look before a human "
         "spends time on it. Push a fix and the next pass picks it up; no need to "
@@ -314,7 +313,7 @@ async def request_ci(
 def _assemble(marker: str, label: str, body: str, anchored: Anchored) -> str:
     parts = [
         marker,
-        f"{SIGNATURE}\n",
+        f"{branding.signature()}\n",
         # above the body on purpose: the footer is what truncation eats first
         f"_Once the fixes are in, take the `{label}` label off and I'll take another "
         "pass — no need to re-request the review._\n",
