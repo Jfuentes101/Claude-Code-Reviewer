@@ -54,7 +54,7 @@ done
 [[ $copied -eq 1 ]] && note "fill those in before running this again"
 
 # not fatal: without it an author gets no DM and the owner is told once, per author
-users_file="$(grep -oP '^\s*users_file:\s*\K\S+' config/robbie.yaml 2>/dev/null || true)"
+users_file="$(sed -n 's/^[[:space:]]*users_file:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml 2>/dev/null | head -1 || true)"
 users_file="${users_file:-config/slack-users.tsv}"
 if [[ -f "$users_file" ]]; then
   ok "$users_file"
@@ -63,8 +63,8 @@ else
   note "  cp config/slack-users.tsv.example $users_file"
 fi
 
-if [[ -f .env ]] && [[ "$(stat -c '%a' .env)" != "600" ]]; then
-  note "note: .env is mode $(stat -c '%a' .env); it holds every token (chmod 600 .env)"
+if [[ -f .env ]] && [[ "$(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env)" != "600" ]]; then
+  note "note: .env is mode $(stat -f '%Lp' .env 2>/dev/null || stat -c '%a' .env); it holds every token (chmod 600 .env)"
 fi
 
 # ponytail: greps the config instead of parsing YAML. The boot check is the real
@@ -72,8 +72,8 @@ fi
 if [[ -f config/robbie.yaml ]]; then
   echo
   echo "mirrors:"
-  mapfile -t slugs < <(grep -oP '^\s*-?\s*slug:\s*\K\S+' config/robbie.yaml || true)
-  mapfile -t bares < <(grep -oP '^\s*bare:\s*\K\S+' config/robbie.yaml || true)
+  mapfile -t slugs < <(sed -n 's/^[[:space:]]*-\{0,1\}[[:space:]]*slug:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
+  mapfile -t bares < <(sed -n 's/^[[:space:]]*bare:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
   if [[ ${#bares[@]} -eq 0 ]]; then
     bad "no repos[].bare in config/robbie.yaml"
   fi
@@ -99,9 +99,9 @@ fi
 if [[ -f config/robbie.yaml ]]; then
   echo
   echo "sidecars the config asks for:"
-  enabled="$(grep -oP '^\s*COMPOSE_PROFILES=\K.*' .env 2>/dev/null || true)"
+  enabled="$(sed -n 's/^[[:space:]]*COMPOSE_PROFILES=\(.*\)/\1/p' .env 2>/dev/null | head -1 || true)"
   sidecar() {  # <config pattern> <profile> <what breaks without it>
-    grep -qP "$1" config/robbie.yaml || return 0
+    grep -qE "$1" config/robbie.yaml || return 0
     if grep -qw "$2" <<<"${enabled//,/ }"; then
       ok "$2"
     else
@@ -110,7 +110,7 @@ if [[ -f config/robbie.yaml ]]; then
       note "add it: COMPOSE_PROFILES=$(printf '%s' "${enabled:+$enabled,}")$2"
     fi
   }
-  sidecar '^\s*model_proxy:\s*http' proxy \
+  sidecar '^[[:space:]]*model_proxy:[[:space:]]*http' proxy \
     "robbie exits at boot when the proxy is unreachable — no review would run"
   sidecar '^\s*review_mcp:.*mcp-sentry' sentry \
     "every review would fail its MCP connection to a name that does not resolve"
