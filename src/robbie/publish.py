@@ -21,6 +21,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from robbie import branding
 from robbie.anchor import Anchored, anchor, commentable
@@ -333,5 +334,18 @@ def _truncate(text: str) -> str:
 
 
 async def _set_label(repo: RepoConfig, pr: int, *, add: bool) -> None:
-    flag = "--add-label" if add else "--remove-label"
-    await gh("pr", "edit", str(pr), "--repo", repo.slug, flag, repo.needs_work_label)
+    # REST on purpose: `gh pr edit` resolves labels over GraphQL, and GraphQL
+    # enforcement pools user-wide across every fine-grained PAT — this was the
+    # publish path's only non-REST call, and the one that died under quota
+    # pressure while everything else landed (2026-09-04). All-REST publishes
+    # ride the same bucket as the rest of the sequence.
+    if add:
+        await gh(
+            "api", f"repos/{repo.slug}/issues/{pr}/labels",
+            "--input", "-", stdin=json.dumps({"labels": [repo.needs_work_label]}),
+        )
+    else:
+        await gh(
+            "api", "-X", "DELETE",
+            f"repos/{repo.slug}/issues/{pr}/labels/{quote(repo.needs_work_label, safe='')}",
+        )

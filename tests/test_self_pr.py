@@ -105,7 +105,7 @@ async def test_the_needs_work_label_still_goes_on(repo, calls):
         "needs-work", repo, pr(author="me"), body="summary", findings=[FINDING],
         self_login="me",
     )
-    assert any("--add-label" in e for e in endpoints(calls)), (
+    assert any("/labels" in e for e in endpoints(calls)), (
         "the label is what actually holds the next pass"
     )
 
