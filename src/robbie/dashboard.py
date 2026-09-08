@@ -132,7 +132,12 @@ def render(cfg: Config, db: Db) -> str:
         f"<!-- robbie dashboard --><meta charset='utf-8'>"
         f"<meta http-equiv='refresh' content='{REFRESH_S}'>"
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>robbie</title><style>{CSS}</style>" + "".join(parts)
+        f"<title>{branding.name()}</title>"
+        "<link rel='icon' href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'"
+        " viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317181c'/%3E"
+        "%3Ctext x='12' y='17.5' font-size='13' text-anchor='middle'%3E%F0%9F%A7%A0%3C/text%3E"
+        "%3C/svg%3E\">"
+        f"<style>{CSS}</style>" + "".join(parts)
     )
 
 
