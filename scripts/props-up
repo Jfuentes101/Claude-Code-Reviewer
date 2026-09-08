@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Start the PR Ops reviewer for the day (macOS).
+#   props-up              daemon + proxy + dashboard (autonomous + directed)
+#   props-up --no-daemon  proxy + dashboard only (directed /review runs only)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+docker info >/dev/null 2>&1 || { echo "props-up: Docker Desktop isn't running"; exit 1; }
+./scripts/creds-sync
+
+# hourly keychain->file sync while logged in, so long days survive token expiry
+PLIST="$HOME/Library/LaunchAgents/com.props.creds-sync.plist"
+if [ ! -f "$PLIST" ]; then
+  cat > "$PLIST" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.props.creds-sync</string>
+  <key>ProgramArguments</key><array><string>$(pwd)/scripts/creds-sync</string></array>
+  <key>StartInterval</key><integer>3000</integer>
+</dict></plist>
+XML
+  launchctl load "$PLIST" 2>/dev/null || true
+  echo "installed hourly creds-sync (launchd)"
+fi
+
+if [[ "${1:-}" == "--no-daemon" ]]; then
+  docker compose up -d model-proxy dashboard
+  echo
+  echo "PR Ops reviewer: DIRECTED mode only (no poller) — /review drives it"
+else
+  docker compose up -d
+  echo
+  echo "PR Ops reviewer: UP — polling PRs that request your review + your own"
+  echo "labeled PRs every 10 min, capped at 70% of the 5h window"
+fi
+echo "panel: http://127.0.0.1:4020"
+docker compose ps --format '  {{.Name}}  {{.Status}}'

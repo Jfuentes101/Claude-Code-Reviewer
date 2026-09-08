@@ -42,6 +42,10 @@ class RepoConfig(_Strict):
     # A human already reviewed and approved it. Excluding, whatever else the PR
     # carries: `label` and one of these together means not reviewed.
     done_labels: tuple[str, ...] = ()
+    # also review PRs AUTHORED by reviewer_login that carry `label` — the
+    # self-queue (a review request cannot name the author, so these are
+    # otherwise invisible to the daemon). Off by default.
+    self_review: bool = False
     review_command: str = ".claude/commands/code-review.md"
     # Where `review_command` is read from. Not the PR's base branch: the PR picks
     # that, and the rules it is judged by are not its to choose.

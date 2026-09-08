@@ -32,6 +32,7 @@ from robbie.db import Db
 from robbie.gates import Decision, already_judged, dedup_key, done_label, evaluate, label_hold
 from robbie.github import (
     QUEUE_LIMIT,
+    authored,
     GhError,
     PrMeta,
     Thread,
@@ -52,6 +53,16 @@ from robbie.slack import Slack
 from robbie.threads import Sweeper
 
 logger = logging.getLogger(__name__)
+
+
+async def candidates(repo: RepoConfig) -> list[int]:
+    """The daemon's per-repo candidate set: pending review requests, plus (when
+    self_review) the reviewer's own labeled PRs — order-preserving union."""
+    prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
+    if repo.self_review:
+        own = await authored(repo.slug, label=repo.label, author=repo.reviewer_login)
+        prs += [p for p in own if p not in prs]
+    return prs
 
 
 class Orchestrator:
@@ -138,7 +149,7 @@ class Orchestrator:
         async with asyncio.TaskGroup() as tg:
             for repo in self.cfg.repos:
                 try:
-                    prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
+                    prs = await candidates(repo)
                 except GhError as ex:
                     logger.warning("could not fetch the queue for %s: %s", repo.slug, ex)
                     continue
@@ -170,7 +181,7 @@ class Orchestrator:
     async def status(self) -> list[str]:
         rows: list[str] = []
         for repo in self.cfg.repos:
-            prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
+            prs = await candidates(repo)
             rows += await asyncio.gather(*(self._status_row(repo, pr) for pr in prs))
         return rows
 

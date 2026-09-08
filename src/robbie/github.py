@@ -115,6 +115,22 @@ async def queue(repo: str, *, label: str, reviewer: str | None = None) -> list[i
     return prs
 
 
+async def authored(repo: str, *, label: str, author: str) -> list[int]:
+    """PRs the reviewer AUTHORED that carry the label — the self-queue.
+
+    GitHub cannot request your review on your own PR, so the request queue
+    structurally never contains them. The label alone is the author's trigger:
+    label your PR, your own instance clears it before a human's is asked.
+    Same page-limit caveat as `queue`.
+    """
+    rows = await gh_json(
+        "search", "prs", "--repo", repo,
+        f"--author={author}", "--label", label,
+        "--state", "open", "--limit", str(QUEUE_LIMIT), "--json", "number",
+    )
+    return [int(r["number"]) for r in rows or []]
+
+
 PR_FIELDS = (
     "number,title,url,author,headRefOid,changedFiles,labels,"
     "statusCheckRollup,baseRefName,state"

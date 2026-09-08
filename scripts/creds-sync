@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# macOS: the Claude CLI refreshes OAuth tokens in the KEYCHAIN; robbie's
+# model-proxy reads a FILE. Sync keychain -> file so a running stack never
+# starves on a stale token (learned 2026-09-04: reviews died mid-day on a
+# token the host CLI had long since renewed). Safe under launchd: writes via
+# a temp file and refuses to clobber a good file with garbage.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+CREDS="$(sed -n 's/^CLAUDE_CREDENTIALS=//p' .env | head -1)"
+[ -n "$CREDS" ] || { echo "creds-sync: no CLAUDE_CREDENTIALS in .env" >&2; exit 1; }
+
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+security find-generic-password -s "Claude Code-credentials" -w > "$TMP"
+head -c1 "$TMP" | grep -q '{' || { echo "creds-sync: keychain gave non-JSON; keeping existing file" >&2; exit 1; }
+chmod 600 "$TMP"
+mv -f "$TMP" "$CREDS"
+trap - EXIT
