@@ -17,7 +17,7 @@ if [ ! -f "$PLIST" ]; then
 <plist version="1.0"><dict>
   <key>Label</key><string>com.props.creds-sync</string>
   <key>ProgramArguments</key><array><string>$(pwd)/scripts/creds-sync</string></array>
-  <key>StartInterval</key><integer>3000</integer>
+  <key>StartInterval</key><integer>900</integer>
   <key>RunAtLoad</key><true/>
 </dict></plist>
 XML
