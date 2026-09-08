@@ -18,6 +18,7 @@ if [ ! -f "$PLIST" ]; then
   <key>Label</key><string>com.props.creds-sync</string>
   <key>ProgramArguments</key><array><string>$(pwd)/scripts/creds-sync</string></array>
   <key>StartInterval</key><integer>3000</integer>
+  <key>RunAtLoad</key><true/>
 </dict></plist>
 XML
   launchctl load "$PLIST" 2>/dev/null || true
