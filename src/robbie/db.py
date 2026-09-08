@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     should_fix   INTEGER,
     inline       INTEGER,                   -- of those, anchored to a diff line
     summary_findings INTEGER,               -- indexed in the summary instead
-    ci_state     TEXT,                     -- waiting|green|red|stale|gone|done|unlabeled
+    ci_state     TEXT,             -- waiting|green|red|stale|gone|done|unlabeled|expired
     ci_seen_at   INTEGER,
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
@@ -238,6 +238,19 @@ class Db:
             "VALUES (?,?,?,?,?, 'held', ?, ?, ?)",
             (key, repo, pr, head_sha, requested_at, reason, now_ms(), now_ms()),
         )
+
+    def expire_ci_watch(self, before_ms: int) -> int:
+        """Settle approvals whose watch window passed while still waiting —
+        without this they freeze on the panel forever, unsweepable and
+        unsettled (a daemon that slept through the window leaves them so)."""
+        cur = self.conn.execute(
+            "UPDATE reviews SET ci_state='expired' "
+            "WHERE verdict='ok' AND state='published' AND ci_state='waiting' "
+            "AND created_at < ?",
+            (before_ms,),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def watching_ci(self, since_ms: int) -> list[sqlite3.Row]:
         """Approvals still waiting on the build robbie asked for."""

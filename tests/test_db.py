@@ -263,3 +263,14 @@ def test_seeding_is_per_repo(db):
     db.mark_seeded("acme/app")
     assert db.is_seeded("acme/app")
     assert not db.is_seeded("acme/other")
+
+
+def test_expired_ci_watch_settles_instead_of_freezing(db):
+    """A daemon that slept through the watch window must not leave the
+    approval 'waiting' forever — unsweepable and unsettled on the panel."""
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    assert [r["key"] for r in db.watching_ci(0)] == [KEY]
+    assert db.expire_ci_watch(now_ms() + 1) == 1
+    assert db.watching_ci(0) == [], "expired rows leave the sweep"
+    assert db.expire_ci_watch(now_ms() + 1) == 0, "settling is terminal, not repeated"
