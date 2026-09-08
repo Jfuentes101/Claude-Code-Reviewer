@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-docker info >/dev/null 2>&1 || { echo "props-up: Docker Desktop isn't running"; exit 1; }
+docker info >/dev/null 2>&1 || { echo "props-up: docker daemon unreachable — colima start (or: brew services start colima)"; exit 1; }
 ./scripts/creds-sync
 
 # hourly keychain->file sync while logged in, so long days survive token expiry
