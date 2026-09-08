@@ -3,7 +3,7 @@
 #   props-up              daemon + proxy + dashboard (autonomous + directed)
 #   props-up --no-daemon  proxy + dashboard only (directed /review runs only)
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$(readlink -f "$0")")/.."  # resolve the ~/.local/bin symlink
 
 docker info >/dev/null 2>&1 || { echo "props-up: docker daemon unreachable — colima start (or: brew services start colima)"; exit 1; }
 ./scripts/creds-sync
