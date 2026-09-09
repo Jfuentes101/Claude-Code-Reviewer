@@ -8,7 +8,8 @@ cd "$(dirname "$(readlink -f "$0")")/.."  # resolve the ~/.local/bin symlink
 docker info >/dev/null 2>&1 || { echo "props-up: docker daemon unreachable — colima start (or: brew services start colima)"; exit 1; }
 ./scripts/creds-sync
 
-# hourly keychain->file sync while logged in, so long days survive token expiry
+# keychain->file sync every 2 min: a rotation kills the old token instantly, and
+# every minute the file lags is a minute of dead reads (401s, unguarded meter)
 PLIST="$HOME/Library/LaunchAgents/com.props.creds-sync.plist"
 if [ ! -f "$PLIST" ]; then
   cat > "$PLIST" <<XML
@@ -17,12 +18,12 @@ if [ ! -f "$PLIST" ]; then
 <plist version="1.0"><dict>
   <key>Label</key><string>com.props.creds-sync</string>
   <key>ProgramArguments</key><array><string>$(pwd)/scripts/creds-sync</string></array>
-  <key>StartInterval</key><integer>900</integer>
+  <key>StartInterval</key><integer>120</integer>
   <key>RunAtLoad</key><true/>
 </dict></plist>
 XML
   launchctl load "$PLIST" 2>/dev/null || true
-  echo "installed hourly creds-sync (launchd)"
+  echo "installed creds-sync every 2 min (launchd)"
 fi
 
 if [[ "${1:-}" == "--no-daemon" ]]; then

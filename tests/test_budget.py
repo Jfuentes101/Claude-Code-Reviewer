@@ -12,9 +12,11 @@ stored, which is why these tests poll first and then ask.
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 
 from robbie import budget
@@ -296,3 +298,58 @@ def test_dollars_reserve_the_same_way(tmp_path, db):
     conf = cfg(tmp_path, backend="api", daily_usd=20.0, reserve_usd=5.0)
     assert budget.check(conf, db, inflight=3).allowed, "$20 covers four"
     assert not budget.check(conf, db, inflight=4).allowed, "not five"
+
+
+# ----- TOKEN ROTATION (the poller's read, `_fetch_plan`) -----
+def _rotating_creds(tmp_path: Path, expires_in_min: float = 60.0) -> Secrets:
+    creds = tmp_path / "creds.json"
+    creds.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "old",
+                    "expiresAt": (time.time() + expires_in_min * 60) * 1000,
+                }
+            }
+        )
+    )
+    return Secrets(
+        gh_token="w", slack_bot_token="s", reviewer_gh_token="r", claude_credentials=creds
+    )
+
+
+def _unauthorized() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", budget.USAGE_URL)
+    return httpx.HTTPStatusError(
+        "401", request=request, response=httpx.Response(401, request=request)
+    )
+
+
+def test_a_token_rotated_mid_read_is_retried_rather_than_failing(tmp_path, monkeypatch):
+    """The CLI rewrites the file when it rotates a token; the 401 in hand is a
+    race, not a broken meter — re-read once and carry on."""
+    sec = _rotating_creds(tmp_path)
+
+    def fake_get(url, **kw):
+        if kw["headers"]["Authorization"] == "Bearer old":
+            sec.claude_credentials.write_text(
+                json.dumps({"claudeAiOauth": {"accessToken": "new", "expiresAt": 9e12}})
+            )
+            raise _unauthorized()
+        return FakeResponse({"five_hour": {"utilization": 12, "resets_at": "x"}})
+
+    monkeypatch.setattr(budget.httpx, "get", fake_get)
+    pct, _ = budget._fetch_plan(sec)
+    assert pct == 12
+
+
+def test_a_token_that_is_simply_expired_says_so_instead_of_a_401_url(tmp_path, monkeypatch):
+    """A bare httpx 401 names the endpoint and nothing an operator can act on."""
+    sec = _rotating_creds(tmp_path, expires_in_min=-90)
+
+    def fake_get(url, **kw):
+        raise _unauthorized()
+
+    monkeypatch.setattr(budget.httpx, "get", fake_get)
+    with pytest.raises(RuntimeError, match="run `claude` on the host"):
+        budget._fetch_plan(sec)
