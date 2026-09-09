@@ -420,12 +420,18 @@ class Db:
         """PRs reviewed since `since_ms` — where threads of ours can exist.
 
         Windowed because each costs an API read every tick and the list only grows.
-        A PR a human has taken drops out early for the same reason.
+        A PR a human has taken drops out early for the same reason. Threads only
+        exist where a pass anchored comments to the diff, so a PR that never got
+        an inline comment is excluded too: reading it every tick buys nothing, and
+        those reads are what drain the user-wide GraphQL pool.
         """
         return [
             int(r["pr"]) for r in self.conn.execute(
-                "SELECT DISTINCT pr FROM reviews WHERE repo=? AND state='published' "
-                "AND created_at >= ? AND COALESCE(ci_state,'') != 'done' ORDER BY pr DESC",
+                "SELECT DISTINCT pr FROM reviews r WHERE repo=? AND state='published' "
+                "AND created_at >= ? AND COALESCE(ci_state,'') != 'done' "
+                "AND EXISTS (SELECT 1 FROM reviews c WHERE c.repo=r.repo AND c.pr=r.pr "
+                "AND c.state='published' AND COALESCE(c.inline,0) > 0) "
+                "ORDER BY pr DESC",
                 (repo, since_ms),
             )
         ]

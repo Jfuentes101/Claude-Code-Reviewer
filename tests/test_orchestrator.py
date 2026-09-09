@@ -177,7 +177,7 @@ async def test_a_done_label_retires_the_pr_from_the_panel_and_the_sweep(
     orch.db.start_review(
         key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
     )
-    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting", inline=1)
     assert orch.db.reviewed_prs("acme/app") == [7]
 
     await orch._gate(repo, 7)
@@ -311,7 +311,7 @@ async def test_a_dry_run_marks_nothing(orch, cfg, monkeypatch):
     orch.db.start_review(
         key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
     )
-    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting", inline=1)
 
     await orch._gate(repo, 7)
 

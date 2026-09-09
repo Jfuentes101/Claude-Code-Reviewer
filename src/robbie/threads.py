@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 SWEEP_DAYS = 30
 
 
+@dataclass
+class _PoolBreaker:
+    """Trips on the first rate-limited read of a sweep.
+
+    The pool is user-wide, so once one read hits it every sibling read this tick
+    is doomed to the same answer — spending the calls anyway is what keeps the
+    pool empty for the next consumer (the props board refresher shares it).
+    """
+
+    tripped: bool = False
+
+
 # frozen so a flag cannot be flipped on a view instead of on the orchestrator;
 # eq=False because the generated one would compare (and hash) a pydantic Config
 @dataclass(frozen=True, eq=False)
@@ -49,22 +61,25 @@ class Sweeper:
         self, slug: str | None = None, only: tuple[int, ...] = ()
     ) -> list[Outcome]:
         jobs: list[asyncio.Task[Outcome | None]] = []
+        breaker = _PoolBreaker()
         async with asyncio.TaskGroup() as tg:
             for repo in self.cfg.repos:
                 if slug and repo.slug != slug:
                     continue
                 # named PRs override the DB: threads can predate robbie's own passes
                 for pr in only or self.db.reviewed_prs(repo.slug, since_ms=_sweep_from()):
-                    jobs.append(tg.create_task(self._one(repo, pr)))
+                    jobs.append(tg.create_task(self._one(repo, pr, breaker)))
         return [out for job in jobs if (out := job.result()) is not None]
 
-    async def _one(self, repo: RepoConfig, pr: int) -> Outcome | None:
+    async def _one(self, repo: RepoConfig, pr: int, breaker: _PoolBreaker) -> Outcome | None:
         """One PR's replies, concurrent and caught like the queue phase: these reads
         in series are the slowest thing in a tick, and one bad PR must not end it."""
         try:
             if self.db.notice_seen(merged_key(repo.slug, pr)):
                 return None
             async with self.gate_sem:  # a paginated GraphQL read, like the gates
+                if breaker.tripped:
+                    return None
                 read = await my_threads(repo.slug, pr, repo.reviewer_login)
             # this read is the sweep's whole cost, so it is also where the PR is
             # retired: nothing else learns a merge without paying for the answer
@@ -80,7 +95,12 @@ class Sweeper:
                 return None
             return await self._answer(repo, pr, pending)
         except GhError as ex:
-            logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
+            if "rate limit" in str(ex).lower():
+                if not breaker.tripped:
+                    breaker.tripped = True
+                    logger.warning("thread sweep paused for this tick: %s", ex)
+            else:
+                logger.warning("%s#%s: could not read threads: %s", repo.slug, pr, ex)
             return None
         except Exception as ex:  # noqa: BLE001 — inside a TaskGroup it cancels the siblings
             logger.exception("%s#%s: unhandled error answering replies", repo.slug, pr)

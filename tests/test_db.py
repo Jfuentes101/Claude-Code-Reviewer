@@ -48,7 +48,7 @@ def test_settle_done_retires_every_row_for_the_pr(db):
 
 def test_settle_done_leaves_other_prs_alone(db):
     start(db)
-    db.finish_review(KEY, state="published", verdict="ok")
+    db.finish_review(KEY, state="published", verdict="ok", inline=1)
     assert db.settle_done("acme/app", 999) == 0
     assert db.reviewed_prs("acme/app") == [7]
 
@@ -233,7 +233,7 @@ def test_a_database_older_than_the_code_is_stepped_up(tmp_path, start_version):
 def test_the_reviewed_list_is_windowed(db):
     """Every PR in it costs a thread read every tick, and the list only grows."""
     db.start_review(key="k1", repo="acme/app", pr=7, head_sha="abc", requested_at="t")
-    db.finish_review("k1", state="published", verdict="ok")
+    db.finish_review("k1", state="published", verdict="ok", inline=1)
     assert db.reviewed_prs("acme/app") == [7]
     assert db.reviewed_prs("acme/app", since_ms=now_ms() + 1000) == []
 
@@ -274,3 +274,16 @@ def test_expired_ci_watch_settles_instead_of_freezing(db):
     assert db.expire_ci_watch(now_ms() + 1) == 1
     assert db.watching_ci(0) == [], "expired rows leave the sweep"
     assert db.expire_ci_watch(now_ms() + 1) == 0, "settling is terminal, not repeated"
+
+
+def test_threadless_reviews_leave_the_reply_sweep(db):
+    """A pass that anchored nothing opened no threads — sweeping it every tick
+    buys nothing and the reads drain the user-wide GraphQL pool."""
+    start(db)
+    db.finish_review(KEY, state="published", verdict="needs-work")
+    assert db.reviewed_prs("acme/app") == [], "no inline comments, nothing to sweep"
+    key2 = "acme/app:8:def456:2026-01-01T00:00:00Z"
+    db.start_review(key=key2, repo="acme/app", pr=8, head_sha="def456",
+                    requested_at="2026-01-01T00:00:00Z")
+    db.finish_review(key2, state="published", verdict="needs-work", inline=2)
+    assert db.reviewed_prs("acme/app") == [8], "anchored comments earn the sweep"
