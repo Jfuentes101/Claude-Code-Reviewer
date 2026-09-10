@@ -1192,3 +1192,44 @@ async def test_the_red_build_note_goes_out_once_per_commit(orch, repo, monkeypat
     orch.db.set_ci_state(KEY, "waiting")  # as a second row on the same commit would
     await orch.ci.watch()
     assert posted == [1]
+
+
+# ----- the props bridge --------------------------------------------------
+
+
+def _told(monkeypatch):
+    told = []
+
+    async def fake_report(url, pr_num, head, status):
+        told.append(status)
+
+    monkeypatch.setattr(orch_mod.props_bridge, "report", fake_report)
+    return told
+
+
+async def test_the_board_hears_the_review_lifecycle(orch, repo, monkeypatch):
+    told = _told(monkeypatch)
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "did it")))
+    stub_run(monkeypatch, ok_run(
+        "needs-work", inline='[{"path":"a.rb","line":1,"severity":"Must-fix"}]'
+    ))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert told == ["reviewing", "posted"]
+
+
+async def test_a_failed_run_tells_the_board_skipped(orch, repo, monkeypatch):
+    told = _told(monkeypatch)
+    stub_run(monkeypatch, ReviewRun(ok=False, error="container exited 1", duration_s=3.0))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert told == ["reviewing", "skipped"]
+
+
+async def test_a_quiet_run_tells_the_board_nothing(orch, repo, monkeypatch):
+    told = _told(monkeypatch)
+    orch.no_publish = True
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "did it")))
+    stub_run(monkeypatch, ok_run(
+        "needs-work", inline='[{"path":"a.rb","line":1,"severity":"Must-fix"}]'
+    ))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert told == [], "--no-publish posts nothing anywhere, the board included"

@@ -1,0 +1,38 @@
+"""Report the review lifecycle to the props board — best-effort, never load-bearing.
+
+The board lives on the box; the daemon reaches it through the Mac's local tunnel
+(host.docker.internal:4021 → box:8090), so there is no credential to hold. A dead
+tunnel costs nothing but board freshness: every call swallows its failure after a
+debug line, and a review never waits on the board hearing about it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+# what the board's /api/reviewer accepts; anything else it rejects with a 400
+STATUSES = ("requested", "queued", "reviewing", "drafted", "posted", "skipped", "clear")
+
+
+async def report(url: str, pr: int, head: str, status: str) -> None:
+    """One lifecycle event to the board. No URL configured means no bridge."""
+    if not url:
+        return
+    assert status in STATUSES, status  # a caller bug, not a runtime condition
+
+    def _post() -> None:
+        httpx.post(
+            f"{url.rstrip('/')}/api/reviewer",
+            json={"pr": pr, "head": head, "status": status},
+            timeout=5,
+        ).raise_for_status()
+
+    try:
+        await asyncio.to_thread(_post)
+    except Exception as ex:  # noqa: BLE001 — freshness lost, nothing else
+        logger.debug("props bridge: #%s %s not reported: %s", pr, status, ex)

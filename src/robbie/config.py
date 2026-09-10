@@ -159,6 +159,10 @@ class Config(_Strict):
     # Empty (the default) hands each reviewer the real key or the real credentials
     # file, which is what this exists to stop: see src/robbie_proxy.
     model_proxy: str = ""
+    # Where to report the review lifecycle (the props board), e.g.
+    # http://host.docker.internal:4021. Empty = no bridge; a set URL is
+    # best-effort only — see src/robbie/props_bridge.py.
+    props_url: str = ""
     # Empty (the default) runs every review on the account's own model, the only
     # shape the spend gates can price. Listing arms splits reviews by weight.
     review_models: list[ReviewModel] = Field(default_factory=list)

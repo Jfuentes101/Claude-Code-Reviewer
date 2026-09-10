@@ -22,7 +22,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any, NamedTuple
 
-from robbie import budget, publish
+from robbie import budget, props_bridge, publish
 from robbie import slack as slackmod
 from robbie.anchor import parse_findings, severity_count, summary_findings
 from robbie.ci_watch import CiWatch
@@ -423,6 +423,7 @@ class Orchestrator:
                 key=key, repo=repo.slug, pr=meta.number,
                 head_sha=meta.head_sha, requested_at=requested_at,
             )
+            await self._tell_props(meta, "reviewing")
             run = await run_review(
                 self.cfg, self.secrets, repo, meta, prompt=prompt,
                 model=choice.model, via_endpoint=choice.via_endpoint,
@@ -502,6 +503,7 @@ class Orchestrator:
                 **common,
             )
             await self._announce_approval(meta, ci)
+            await self._tell_props(meta, "posted")
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
         # recorded as judged either way: retrying a permanent publish failure
@@ -540,6 +542,7 @@ class Orchestrator:
                 inline=result.inline, **common,
             )
             await self._notify(repo, meta, verdict, findings)
+            await self._tell_props(meta, "posted")
         return Outcome(repo.slug, meta.number, "review", f"{verdict}: {result.detail}")
 
     async def _gave_up(
@@ -550,7 +553,16 @@ class Orchestrator:
         Not `_dm_owner_once`: a second failure on the same PR is news again.
         """
         await self.slack.dm_owner(told)
+        await self._tell_props(meta, "skipped")
         return Outcome(repo.slug, meta.number, "failed", detail)
+
+    async def _tell_props(self, meta: PrMeta, status: str) -> None:
+        """The board hears where this head is in its life. Quiet runs report
+        nothing, like everything else they touch."""
+        if not self._quiet:
+            await props_bridge.report(
+                self.cfg.props_url, meta.number, meta.head_sha, status
+            )
 
     async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list[Thread]:
         """Reuse what the gate fetched; fetch it for a forced run that skipped it."""
