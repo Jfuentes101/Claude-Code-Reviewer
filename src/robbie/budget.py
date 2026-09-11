@@ -79,7 +79,9 @@ def _stored(db: Db, name: str) -> tuple[float, str] | str:
     if row is None or not row["read_at"]:
         return (row["error"] if row and row["error"] else "not polled yet")
     age_s = (now_ms() - int(row["read_at"])) / 1000
-    if age_s > USAGE_STALE_S:
+    # >=, not >: a reading exactly at the limit is not trusted — and the strict
+    # form made the STALE_S=0 test a same-millisecond coin flip
+    if age_s >= USAGE_STALE_S:
         return row["error"] or f"last reading is {age_s / 60:.0f}m old"
     return float(row["pct"]), str(row["note"])
 

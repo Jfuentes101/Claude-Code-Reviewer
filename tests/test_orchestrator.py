@@ -205,7 +205,8 @@ def _approved(db, pr_number=7):
     db.start_review(
         key=key, repo="acme/app", pr=pr_number, head_sha="abc1234567", requested_at=REQ
     )
-    db.finish_review(key, state="published", verdict="ok", ci_state="green")
+    # inline=1: threads of ours can exist, so the reply sweep keeps the PR
+    db.finish_review(key, state="published", verdict="ok", ci_state="green", inline=1)
     # the panel's second condition: somebody is still asking for the review
     db.set_requested("acme/app", [pr_number])
 

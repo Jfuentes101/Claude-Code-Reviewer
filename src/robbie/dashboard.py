@@ -160,7 +160,7 @@ def _ready(cfg: Config, db: Db) -> str:
         # a read-only connection cannot run the CREATE, so a panel that starts
         # before the daemon has booted once sees a table that is not there yet
         return (
-            "<h2>approved by robbie</h2>"
+            "<h2>approved by " + branding.name() + "</h2>"
             "<p class='sub'>waiting for the daemon's first tick</p>"
         )
     rows = []
