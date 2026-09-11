@@ -10,3 +10,6 @@ __pycache__/
 .ruff_cache/
 config/robbie.local.yaml
 docker-compose.override.yml
+
+# repo-specific review contracts, never public
+policy/CLAUDE.local.md

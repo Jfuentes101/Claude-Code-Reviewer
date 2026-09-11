@@ -41,11 +41,29 @@ see, both observed:
   change defers, enumerate what can happen in between — cancel, refund, expire,
   a second attempt.
 
-**Grep callers of everything whose behavior or signature the diff changes; the
-callers it did not touch are the risk zone.** List them by `file:line`. A return
-value changed from `self` to `nil` on one branch is invisible in its own file and
-crashes at a call site three files away, outside the handler that was supposed to
-catch it. Same for a renamed key, a narrowed scope, a new nullable column.
+**Map the callers of everything whose behavior or signature the diff changes; the
+ones it did not touch are the risk zone.** A return value changed from `self` to
+`nil` on one branch is invisible in its own file and crashes at a call site three
+files away, outside the handler that was supposed to catch it.
+
+Enumerate what changed before grepping, or the search has no list to work from:
+every method, scope, predicate, return value, payload key, column, constant and
+enum value the diff touches — renamed, narrowed, or newly nullable.
+
+```bash
+grep -rn "<name>" app/ engines/ lib/ test/
+```
+
+Then triage the hits, because **grep answers "where does this name appear", not
+"who calls this"**: drop the definition itself, comments, strings, and same-named
+methods on unrelated classes. What survives, minus the files the diff already
+changed, is the risk zone — report it by `file:line`. A name too common to grep
+(`call`, `status`, `process`) is a signal in itself: reach for the class, then its
+callers, rather than accepting a hit count you cannot read.
+
+Two call sites deserve the check even when the name did not change: the one that
+rescues an exception this code no longer raises, and the one that branches on a
+truthiness the new return value flips.
 
 **Values crossing a boundary need a bound and a failure path.** Anything arriving
 from a vendor, a webhook or a client — amounts, ids, dates, quantities — and
@@ -95,6 +113,34 @@ Domain context from a human overrides code-shaped inference. If a reviewer tells
 you a flow is impossible in practice, they are describing production and you are
 describing syntax.
 
+## 1.1 Cause, not symptom
+
+A review comment, a Sentry title and a failing test all say **where it hurts**,
+never **why**. Treat each as a hypothesis: reproduce it, map the code that writes
+the state, then judge whether the PR closes the cause or files down one edge of it.
+
+**The alarm that forces a stop: the same method corrected in consecutive rounds,
+each time by a different path.** That is not bad luck, it is the wrong framing. If
+every round adds one more case to a list, the list is the bug. Say so, and ask for
+the map instead of approving the next entry.
+
+Ask, in this order:
+
+- **Who writes this state, and from where?** Two independent webhook families
+  writing mirrors of the same external object, with no guaranteed ordering, is a
+  real shape here — and any state nobody anticipated then reads as the safe one.
+- **What is the safe polarity?** A guard whose false negative is irreversible —
+  charging, cancelling, deleting, sending — must require *proof that it is safe*,
+  not absence of proof that it is dangerous. An allowlist of dangerous cases fails
+  open on every case someone forgets; a denylist of dead cases fails closed, which
+  is noisy and bounded.
+- **Would the new test have caught the previous rounds?** If not, the fix is still
+  a patch. And a test that walks the same constant the code walks pins nothing.
+
+A PR that fixes a symptom is not automatically wrong — sometimes the patch is the
+right size. But say which one it is, and if it is a patch, name the cause it
+leaves standing.
+
 ## 2. Severity
 
 Spend these carefully. Every Must-fix blocks a merge and pulls the author off
@@ -139,6 +185,34 @@ explicit no-op form over whatever silences the warning.
 **A "dead" reference may have been renamed.** Before agreeing that a route,
 endpoint or file can be deleted, grep for the feature under a likely new name.
 Deleting a renamed thing silently drops coverage of something that still exists.
+
+## 3.1 Performance, where it is a correctness question
+
+Most diffs need no performance review. These do: anything that loads a collection,
+anything on a page-render path, anything that grows with a customer's data rather
+than with the code.
+
+**Count rows, not queries.** An N+1 is the familiar finding and the cheap one. The
+expensive ones return the right answer slowly enough to take a worker down:
+
+- **`eager_load` — or a scope that joins — combined with `includes` of a second
+  association on the same table** produces a cartesian product, and every row
+  carries a full copy of the parent's columns. Measured here: 6 records requested,
+  **101,916 rows returned, 17.8 s**, against 31 ms with `preload`. The tell in a
+  log or a heap dump is `SELECT "x"."id" AS t0_r0, …`, with the same long text
+  value repeating across hundreds of rows. `preload` cannot produce a product, so
+  it is the default whenever the association is not filtered or ordered on.
+- **An unbounded collection materialised in memory** — an export, a report, a bulk
+  mailer built with `.to_a` or `.map`. Ask what it looks like for the largest
+  account, never for the fixture. One CSV export moved a worker's heap watermark
+  by 221 MB, and a watermark does not come back down.
+- **Work repeated per row** that could be hoisted: a decorator instantiated inside
+  the loop instead of on the scope, a `Setting` read per iteration, a count re-run
+  per item.
+
+**Say the number or do not raise it.** "This might be slow" is not a finding. Name
+the query, the collection that grows, and roughly what it costs at production
+scale. If you cannot, it is a question for the author, not a Should-fix.
 
 ## 4. Comments in the diff
 
@@ -349,3 +423,12 @@ Skip this section for other stacks.
   text node.
 - **`update_columns` vs `update!`** matters where an `after_commit` broadcasts:
   bulk backfills should skip the callback deliberately, not by accident.
+
+---
+
+Repo-specific contracts — the shapes this codebase has already settled, and the
+process facts that make a correct-looking diff wrong here — go in a local file
+next to this one. It is untracked on purpose: these standards are public, those
+are not. Without it this file still stands on its own.
+
+@CLAUDE.local.md
