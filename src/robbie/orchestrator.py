@@ -32,10 +32,10 @@ from robbie.db import Db
 from robbie.gates import Decision, already_judged, dedup_key, done_label, evaluate, label_hold
 from robbie.github import (
     QUEUE_LIMIT,
-    authored,
     GhError,
     PrMeta,
     Thread,
+    authored,
     ci_started,
     labeled_heads,
     last_review_request,

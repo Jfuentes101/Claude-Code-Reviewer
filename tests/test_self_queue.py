@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from robbie import orchestrator as orch_mod
 from robbie.config import RepoConfig
 
