@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stop the PR Ops reviewer stack. In-flight reviewer containers get a grace
+# stop; state and images stay, so tomorrow's props-up is instant.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.."  # resolve the ~/.local/bin symlink
+docker ps --format '{{.Names}}' | grep '^robbie-' | xargs -r docker stop -t 10 || true
+docker compose down
+echo "PR Ops reviewer: down"

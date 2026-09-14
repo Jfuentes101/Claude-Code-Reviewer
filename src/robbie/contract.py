@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 # the same string, not a copy of it: `_strip` keeps robbie's own signature out of a
 # prompt by matching it, and a second definition is a filter that silently stops
-from robbie.anchor import SIGNATURE as SIG_LINE
+from robbie import branding
 from robbie.github import CheckSummary, Thread
 
 MARKERS = ("VERDICT", "GITHUB", "INLINE")
@@ -176,7 +176,7 @@ def _strip(body: str, cap: int = BODY_CAP) -> str:
     """
     lines = [
         line for line in body.splitlines()
-        if line.strip() and SIG_LINE not in line and not line.startswith("<sub>")
+        if line.strip() and branding.signature_sub() not in line and not line.startswith("<sub>")
     ]
     text = " ".join(lines)
     return text if len(text) <= cap else text[:cap].rsplit(" ", 1)[0] + "…"

@@ -54,7 +54,7 @@ done
 [[ $copied -eq 1 ]] && note "fill those in before running this again"
 
 # not fatal: without it an author gets no DM and the owner is told once, per author
-users_file="$(grep -oP '^\s*users_file:\s*\K\S+' config/robbie.yaml 2>/dev/null || true)"
+users_file="$(sed -n 's/^[[:space:]]*users_file:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml 2>/dev/null | head -1 || true)"
 users_file="${users_file:-config/slack-users.tsv}"
 if [[ -f "$users_file" ]]; then
   ok "$users_file"
@@ -63,8 +63,11 @@ else
   note "  cp config/slack-users.tsv.example $users_file"
 fi
 
-if [[ -f .env ]] && [[ "$(stat -c '%a' .env)" != "600" ]]; then
-  note "note: .env is mode $(stat -c '%a' .env); it holds every token (chmod 600 .env)"
+# GNU first: its -f is --file-system, which prints a filesystem dump and still
+# exits 1, so asking BSD's format first leaves that dump in the answer on Linux
+mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+if [[ -f .env ]] && [[ "$(mode .env)" != "600" ]]; then
+  note "note: .env is mode $(mode .env); it holds every token (chmod 600 .env)"
 fi
 
 # ponytail: greps the config instead of parsing YAML. The boot check is the real
@@ -72,24 +75,27 @@ fi
 if [[ -f config/robbie.yaml ]]; then
   echo
   echo "mirrors:"
-  mapfile -t slugs < <(grep -oP '^\s*-?\s*slug:\s*\K\S+' config/robbie.yaml || true)
-  mapfile -t bares < <(grep -oP '^\s*bare:\s*\K\S+' config/robbie.yaml || true)
-  if [[ ${#bares[@]} -eq 0 ]]; then
+  # read -r, not mapfile: mapfile is bash 4 and the stock macOS bash is 3.2
+  slugs=() bares=()
+  while IFS= read -r line; do slugs+=("$line"); done < <(sed -n 's/^[[:space:]]*-\{0,1\}[[:space:]]*slug:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
+  while IFS= read -r line; do bares+=("$line"); done < <(sed -n 's/^[[:space:]]*bare:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
+  if [[ -z "${bares[*]-}" ]]; then
     bad "no repos[].bare in config/robbie.yaml"
+  else
+    for i in "${!bares[@]}"; do
+      bare="${bares[$i]}" slug="${slugs[$i]:-owner/repo}"
+      if [[ -f "$bare/HEAD" ]]; then
+        ok "$slug → $bare"
+      elif $CHECK_ONLY; then
+        bad "$slug has no mirror at $bare"
+        note "ROBBIE_MIRRORS=$(dirname "$bare") scripts/mirror-sync $slug"
+      else
+        note "$slug has no mirror at $bare — cloning it (this is the whole repo)"
+        ROBBIE_MIRRORS="$(dirname "$bare")" scripts/mirror-sync "$slug"
+        ok "$slug → $bare"
+      fi
+    done
   fi
-  for i in "${!bares[@]}"; do
-    bare="${bares[$i]}" slug="${slugs[$i]:-owner/repo}"
-    if [[ -f "$bare/HEAD" ]]; then
-      ok "$slug → $bare"
-    elif $CHECK_ONLY; then
-      bad "$slug has no mirror at $bare"
-      note "ROBBIE_MIRRORS=$(dirname "$bare") scripts/mirror-sync $slug"
-    else
-      note "$slug has no mirror at $bare — cloning it (this is the whole repo)"
-      ROBBIE_MIRRORS="$(dirname "$bare")" scripts/mirror-sync "$slug"
-      ok "$slug → $bare"
-    fi
-  done
 fi
 
 # Every sidecar sits behind a compose profile, so a plain `up -d` starts none of
@@ -99,9 +105,9 @@ fi
 if [[ -f config/robbie.yaml ]]; then
   echo
   echo "sidecars the config asks for:"
-  enabled="$(grep -oP '^\s*COMPOSE_PROFILES=\K.*' .env 2>/dev/null || true)"
+  enabled="$(sed -n 's/^[[:space:]]*COMPOSE_PROFILES=\(.*\)/\1/p' .env 2>/dev/null | head -1 || true)"
   sidecar() {  # <config pattern> <profile> <what breaks without it>
-    grep -qP "$1" config/robbie.yaml || return 0
+    grep -qE "$1" config/robbie.yaml || return 0
     if grep -qw "$2" <<<"${enabled//,/ }"; then
       ok "$2"
     else
@@ -110,9 +116,9 @@ if [[ -f config/robbie.yaml ]]; then
       note "add it: COMPOSE_PROFILES=$(printf '%s' "${enabled:+$enabled,}")$2"
     fi
   }
-  sidecar '^\s*model_proxy:\s*http' proxy \
+  sidecar '^[[:space:]]*model_proxy:[[:space:]]*http' proxy \
     "robbie exits at boot when the proxy is unreachable — no review would run"
-  sidecar '^\s*review_mcp:.*mcp-sentry' sentry \
+  sidecar '^[[:space:]]*review_mcp:.*mcp-sentry' sentry \
     "every review would fail its MCP connection to a name that does not resolve"
   [[ -z "$enabled" ]] && note "nothing in COMPOSE_PROFILES — only the orchestrator comes up"
 fi

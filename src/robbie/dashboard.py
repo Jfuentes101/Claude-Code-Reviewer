@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from robbie import budget
+from robbie import branding, budget
 from robbie.config import Config
 from robbie.db import SCHEMA_VERSION, Db
 
@@ -132,7 +132,12 @@ def render(cfg: Config, db: Db) -> str:
         f"<!-- robbie dashboard --><meta charset='utf-8'>"
         f"<meta http-equiv='refresh' content='{REFRESH_S}'>"
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>robbie</title><style>{CSS}</style>" + "".join(parts)
+        f"<title>{branding.name()}</title>"
+        "<link rel='icon' href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'"
+        " viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317181c'/%3E"
+        "%3Ctext x='12' y='17.5' font-size='13' text-anchor='middle'%3E%F0%9F%A7%A0%3C/text%3E"
+        "%3C/svg%3E\">"
+        f"<style>{CSS}</style>" + "".join(parts)
     )
 
 
@@ -155,7 +160,7 @@ def _ready(cfg: Config, db: Db) -> str:
         # a read-only connection cannot run the CREATE, so a panel that starts
         # before the daemon has booted once sees a table that is not there yet
         return (
-            "<h2>approved by robbie</h2>"
+            "<h2>approved by " + branding.name() + "</h2>"
             "<p class='sub'>waiting for the daemon's first tick</p>"
         )
     rows = []
@@ -171,7 +176,7 @@ def _ready(cfg: Config, db: Db) -> str:
             _esc(_ago(r["ci_seen_at"] or r["created_at"])),
         ])
     return (
-        "<h2>approved by robbie</h2>"
+        "<h2>approved by " + branding.name() + "</h2>"
         "<p class='sub'>an `ok` asks CI to run; this is what came back</p>"
         + _table(["pr", "state", "approved by", "commit", "last seen"], rows, numeric={4})
     )

@@ -38,9 +38,14 @@ class CiWatch:
 
     async def watch(self) -> list[Outcome]:
         """Every approval still waiting on the build it paid for."""
+        cutoff = now_ms() - CI_WATCH_HOURS * 3_600_000
+        if not (self.dry_run or self.no_publish):
+            expired = self.db.expire_ci_watch(cutoff)
+            if expired:
+                logger.info("retired %d approval(s) whose watch window passed unseen", expired)
         jobs: list[asyncio.Task[Outcome | None]] = []
         async with asyncio.TaskGroup() as tg:
-            for row in self.db.watching_ci(now_ms() - CI_WATCH_HOURS * 3_600_000):
+            for row in self.db.watching_ci(cutoff):
                 try:
                     repo = self.cfg.repo(row["repo"])
                 except KeyError:

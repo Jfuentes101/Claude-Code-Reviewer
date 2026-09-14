@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     should_fix   INTEGER,
     inline       INTEGER,                   -- of those, anchored to a diff line
     summary_findings INTEGER,               -- indexed in the summary instead
-    ci_state     TEXT,                     -- waiting|green|red|stale|gone|done|unlabeled
+    ci_state     TEXT,             -- waiting|green|red|stale|gone|done|unlabeled|expired
     ci_seen_at   INTEGER,
     created_at   INTEGER NOT NULL,
     finished_at  INTEGER
@@ -239,6 +239,19 @@ class Db:
             (key, repo, pr, head_sha, requested_at, reason, now_ms(), now_ms()),
         )
 
+    def expire_ci_watch(self, before_ms: int) -> int:
+        """Settle approvals whose watch window passed while still waiting —
+        without this they freeze on the panel forever, unsweepable and
+        unsettled (a daemon that slept through the window leaves them so)."""
+        cur = self.conn.execute(
+            "UPDATE reviews SET ci_state='expired' "
+            "WHERE verdict='ok' AND state='published' AND ci_state='waiting' "
+            "AND created_at < ?",
+            (before_ms,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def watching_ci(self, since_ms: int) -> list[sqlite3.Row]:
         """Approvals still waiting on the build robbie asked for."""
         return list(
@@ -407,12 +420,24 @@ class Db:
         """PRs reviewed since `since_ms` — where threads of ours can exist.
 
         Windowed because each costs an API read every tick and the list only grows.
-        A PR a human has taken drops out early for the same reason.
+        A PR a human has taken drops out early for the same reason. Threads only
+        exist where a pass anchored comments to the diff, so a pass that anchored
+        nothing is excluded too: reading it every tick buys nothing, and those reads
+        are what drain the user-wide GraphQL pool.
+
+        `inline` is three-valued, and only the recorded 0 means "this pass opened no
+        threads". NULL means no pass ever wrote the column — rows older than it, and
+        every approval, since an ok returns before the publish path that records it.
+        Those PRs keep their place in the sweep: the threads it answers are every
+        thread the reviewer login opened, which is not a set this table can bound.
         """
         return [
             int(r["pr"]) for r in self.conn.execute(
-                "SELECT DISTINCT pr FROM reviews WHERE repo=? AND state='published' "
-                "AND created_at >= ? AND COALESCE(ci_state,'') != 'done' ORDER BY pr DESC",
+                "SELECT DISTINCT pr FROM reviews r WHERE repo=? AND state='published' "
+                "AND created_at >= ? AND COALESCE(ci_state,'') != 'done' "
+                "AND EXISTS (SELECT 1 FROM reviews c WHERE c.repo=r.repo AND c.pr=r.pr "
+                "AND c.state='published' AND COALESCE(c.inline,1) > 0) "
+                "ORDER BY pr DESC",
                 (repo, since_ms),
             )
         ]

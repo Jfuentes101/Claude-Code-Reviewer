@@ -79,7 +79,9 @@ def _stored(db: Db, name: str) -> tuple[float, str] | str:
     if row is None or not row["read_at"]:
         return (row["error"] if row and row["error"] else "not polled yet")
     age_s = (now_ms() - int(row["read_at"])) / 1000
-    if age_s > USAGE_STALE_S:
+    # >=, not >: a reading exactly at the limit is not trusted — and the strict
+    # form made the STALE_S=0 test a same-millisecond coin flip
+    if age_s >= USAGE_STALE_S:
         return row["error"] or f"last reading is {age_s / 60:.0f}m old"
     return float(row["pct"]), str(row["note"])
 
@@ -172,19 +174,46 @@ def _check_endpoint(cfg: Config, db: Db, inflight: int) -> Verdict:
     )
 
 
-def _fetch_plan(secrets: Secrets) -> tuple[float, str]:
-    creds = json.loads(secrets.claude_credentials.read_text())  # type: ignore[union-attr]
+def _oauth(secrets: Secrets) -> dict:
+    return json.loads(secrets.claude_credentials.read_text())["claudeAiOauth"]  # type: ignore[union-attr]
+
+
+def _read_usage(token: str) -> tuple[float, str]:
     resp = httpx.get(
         USAGE_URL,
-        headers={
-            "Authorization": f"Bearer {creds['claudeAiOauth']['accessToken']}",
-            "anthropic-beta": "oauth-2025-04-20",
-        },
+        headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"},
         timeout=15,
     )
     resp.raise_for_status()
     data = resp.json()
     return float(data["five_hour"]["utilization"]), str(data["five_hour"]["resets_at"])
+
+
+def _fetch_plan(secrets: Secrets) -> tuple[float, str]:
+    """Read the account's five-hour window.
+
+    Nothing here refreshes the access token — the host's own CLI rewrites the file when it
+    rotates one, and re-reading is how that arrives. The rotation is therefore a live race:
+    read the file, the CLI replaces it, and the token in hand is already dead. That 401 is
+    not a broken meter, and treating it as one unguards the gate for a whole quiet window
+    every few hours. So re-read once, and only give up if the file really has not moved on.
+    """
+    oauth = _oauth(secrets)
+    try:
+        return _read_usage(oauth["accessToken"])
+    except httpx.HTTPStatusError as ex:
+        if ex.response.status_code != 401:
+            raise
+        fresh = _oauth(secrets)
+        if fresh["accessToken"] != oauth["accessToken"]:
+            return _read_usage(fresh["accessToken"])
+        stale_for = time.time() - float(fresh.get("expiresAt", 0)) / 1000
+        if stale_for > 0:
+            raise RuntimeError(
+                f"the account's access token expired {stale_for / 60:.0f} min ago and nothing "
+                "here refreshes it; run `claude` on the host to renew it"
+            ) from ex
+        raise
 
 
 def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:

@@ -16,6 +16,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from robbie import branding
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,10 @@ class RepoConfig(_Strict):
     # A human already reviewed and approved it. Excluding, whatever else the PR
     # carries: `label` and one of these together means not reviewed.
     done_labels: tuple[str, ...] = ()
+    # also review PRs AUTHORED by reviewer_login that carry `label` — the
+    # self-queue (a review request cannot name the author, so these are
+    # otherwise invisible to the daemon). Off by default.
+    self_review: bool = False
     review_command: str = ".claude/commands/code-review.md"
     # Where `review_command` is read from. Not the PR's base branch: the PR picks
     # that, and the rules it is judged by are not its to choose.
@@ -129,6 +135,10 @@ class SlackConfig(_Strict):
 
 
 class Config(_Strict):
+    # the byline on everything a human reads (signatures, dashboard); the
+    # engine and its machine markers stay robbie. Two instances of this code
+    # can sign differently.
+    bot_name: str = Field(default="robbie", pattern=r'^[^"\n]+$')
     slack: SlackConfig
     repos: list[RepoConfig] = Field(min_length=1)
     backend: Literal["api", "oauth"] = "api"
@@ -149,6 +159,10 @@ class Config(_Strict):
     # Empty (the default) hands each reviewer the real key or the real credentials
     # file, which is what this exists to stop: see src/robbie_proxy.
     model_proxy: str = ""
+    # Where to report the review lifecycle (the props board), e.g.
+    # http://host.docker.internal:4021. Empty = no bridge; a set URL is
+    # best-effort only — see src/robbie/props_bridge.py.
+    props_url: str = ""
     # Empty (the default) runs every review on the account's own model, the only
     # shape the spend gates can price. Listing arms splits reviews by weight.
     review_models: list[ReviewModel] = Field(default_factory=list)
@@ -241,6 +255,7 @@ def load(path: str | Path | None = None) -> Config:
     if not p.is_file():
         raise SystemExit(f"config not found: {p} (set ROBBIE_CONFIG or pass --config)")
     cfg = Config.model_validate(_read_yaml(p))
+    branding.set_name(cfg.bot_name)
     try:
         cfg.transcript_dir.mkdir(parents=True, exist_ok=True)
     except OSError as ex:

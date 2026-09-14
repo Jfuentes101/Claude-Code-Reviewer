@@ -146,7 +146,7 @@ def orch(tmp_path, monkeypatch):
     )
     db = Db(tmp_path / "robbie.db")
     db.start_review(key="k7", repo="acme/app", pr=7, head_sha="abc", requested_at="t")
-    db.finish_review("k7", state="published", verdict="needs-work")
+    db.finish_review("k7", state="published", verdict="needs-work", inline=1)
     o = Orchestrator(
         cfg,
         Secrets(gh_token="w", slack_bot_token="s", reviewer_gh_token="r", anthropic_api_key="k"),
@@ -684,7 +684,7 @@ async def test_no_publish_remembers_no_thread(orch, monkeypatch, said):
 async def test_one_unreachable_pr_does_not_take_the_sweep_down(orch, monkeypatch, acted):
     """The sweep runs before the queue read, so losing it loses the whole tick."""
     orch.db.start_review(key="k9", repo="acme/app", pr=9, head_sha="def", requested_at="t")
-    orch.db.finish_review("k9", state="published", verdict="needs-work")
+    orch.db.finish_review("k9", state="published", verdict="needs-work", inline=1)
 
     async def flaky(repo, pr, reviewer):
         if pr == 7:
@@ -715,7 +715,7 @@ async def test_the_prs_are_swept_at_the_same_time(orch, monkeypatch, acted):
     queue phase caps the same shape of work with the same semaphore."""
     for n in (8, 9):
         orch.db.start_review(key=f"k{n}", repo="acme/app", pr=n, head_sha="d", requested_at="t")
-        orch.db.finish_review(f"k{n}", state="published", verdict="needs-work")
+        orch.db.finish_review(f"k{n}", state="published", verdict="needs-work", inline=1)
     together = asyncio.Barrier(3)
 
     async def slow(repo, pr, reviewer):
@@ -724,3 +724,42 @@ async def test_the_prs_are_swept_at_the_same_time(orch, monkeypatch, acted):
 
     monkeypatch.setattr(threads_mod, "my_threads", slow)
     await asyncio.wait_for(orch.answer_threads(), timeout=5)
+
+
+async def test_a_dry_pool_stops_the_sweep_instead_of_draining_it(orch, monkeypatch, acted):
+    """The pool is user-wide: after one rate-limited read, every sibling read this
+    tick would spend a doomed call the props board refresher then goes without."""
+    orch._gate_sem = asyncio.Semaphore(1)  # serial reads make the trip observable
+    for n in (8, 9):
+        orch.db.start_review(key=f"k{n}", repo="acme/app", pr=n, head_sha="d", requested_at="t")
+        orch.db.finish_review(f"k{n}", state="published", verdict="needs-work", inline=1)
+    asked = []
+
+    async def dry(repo, pr, reviewer):
+        asked.append(pr)
+        raise GhError("gh api graphql exited 1: GraphQL: API rate limit already exceeded")
+
+    monkeypatch.setattr(threads_mod, "my_threads", dry)
+    assert await orch.answer_threads() == []
+    assert len(asked) == 1, "the first refusal should stop the other reads"
+
+
+async def test_a_thread_this_token_cannot_resolve_is_not_paid_for_again(orch, monkeypatch):
+    """"Resource not accessible" is a token capability, not a transient — left
+    unsettled it re-spawns a paid model run every tick, forever."""
+    monkeypatch.setattr(threads_mod, "my_threads", _read([
+        thread(555, replies=(("dev", "fixed"),)),
+    ]))
+
+    async def refuse(node_id, *, dry_run=False):
+        raise GhError("gh: Resource not accessible by personal access token")
+
+    monkeypatch.setattr(publish_mod, "resolve_thread", refuse)
+    stub_run(monkeypatch, "<<<THREAD 555>>>\nresolve\n<<<END>>>")
+    out = await orch.answer_threads()
+    assert "1 failed" in out[0].detail
+
+    ran = []
+    monkeypatch.setattr(threads_mod, "run_review", lambda *a, **k: ran.append(1))
+    assert await orch.answer_threads() == []
+    assert ran == [], "the refused thread must not buy another container"

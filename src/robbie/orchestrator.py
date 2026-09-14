@@ -22,7 +22,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any, NamedTuple
 
-from robbie import budget, publish
+from robbie import budget, props_bridge, publish
 from robbie import slack as slackmod
 from robbie.anchor import parse_findings, severity_count, summary_findings
 from robbie.ci_watch import CiWatch
@@ -35,6 +35,7 @@ from robbie.github import (
     GhError,
     PrMeta,
     Thread,
+    authored,
     ci_started,
     labeled_heads,
     last_review_request,
@@ -52,6 +53,16 @@ from robbie.slack import Slack
 from robbie.threads import Sweeper
 
 logger = logging.getLogger(__name__)
+
+
+async def candidates(repo: RepoConfig) -> list[int]:
+    """The daemon's per-repo candidate set: pending review requests, plus (when
+    self_review) the reviewer's own labeled PRs — order-preserving union."""
+    prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
+    if repo.self_review:
+        own = await authored(repo.slug, label=repo.label, author=repo.reviewer_login)
+        prs += [p for p in own if p not in prs]
+    return prs
 
 
 class Orchestrator:
@@ -138,7 +149,7 @@ class Orchestrator:
         async with asyncio.TaskGroup() as tg:
             for repo in self.cfg.repos:
                 try:
-                    prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
+                    prs = await candidates(repo)
                 except GhError as ex:
                     logger.warning("could not fetch the queue for %s: %s", repo.slug, ex)
                     continue
@@ -170,7 +181,7 @@ class Orchestrator:
     async def status(self) -> list[str]:
         rows: list[str] = []
         for repo in self.cfg.repos:
-            prs = await queue(repo.slug, label=repo.label, reviewer=repo.reviewer_login)
+            prs = await candidates(repo)
             rows += await asyncio.gather(*(self._status_row(repo, pr) for pr in prs))
         return rows
 
@@ -412,6 +423,7 @@ class Orchestrator:
                 key=key, repo=repo.slug, pr=meta.number,
                 head_sha=meta.head_sha, requested_at=requested_at,
             )
+            await self._tell_props(meta, "reviewing")
             run = await run_review(
                 self.cfg, self.secrets, repo, meta, prompt=prompt,
                 model=choice.model, via_endpoint=choice.via_endpoint,
@@ -488,9 +500,13 @@ class Orchestrator:
                 key, verdict="ok", **self._pass_state("published"),
                 # nothing asked CI on a run that publishes nothing, so nothing to wait for
                 ci_state=None if self.no_publish else "waiting",
+                # an ok posts no comment at all, and saying so is what lets the
+                # reply sweep skip the PR: left unwritten it reads as unknown
+                inline=0,
                 **common,
             )
             await self._announce_approval(meta, ci)
+            await self._tell_props(meta, "posted")
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
         # recorded as judged either way: retrying a permanent publish failure
@@ -529,6 +545,7 @@ class Orchestrator:
                 inline=result.inline, **common,
             )
             await self._notify(repo, meta, verdict, findings)
+            await self._tell_props(meta, "posted")
         return Outcome(repo.slug, meta.number, "review", f"{verdict}: {result.detail}")
 
     async def _gave_up(
@@ -539,7 +556,16 @@ class Orchestrator:
         Not `_dm_owner_once`: a second failure on the same PR is news again.
         """
         await self.slack.dm_owner(told)
+        await self._tell_props(meta, "skipped")
         return Outcome(repo.slug, meta.number, "failed", detail)
+
+    async def _tell_props(self, meta: PrMeta, status: str) -> None:
+        """The board hears where this head is in its life. Quiet runs report
+        nothing, like everything else they touch."""
+        if not self._quiet:
+            await props_bridge.report(
+                self.cfg.props_url, meta.number, meta.head_sha, status
+            )
 
     async def _prior_threads(self, repo: RepoConfig, meta: PrMeta) -> list[Thread]:
         """Reuse what the gate fetched; fetch it for a forced run that skipped it."""

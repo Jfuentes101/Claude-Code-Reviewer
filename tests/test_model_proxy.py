@@ -297,6 +297,7 @@ async def test_an_expired_session_says_so_instead_of_forwarding(tmp_path, seen):
     assert seen == []
 
 
+@pytest.mark.skipif(not Path("/proc").exists(), reason="/proc/self/fd is Linux-only")
 def test_an_expired_token_the_host_already_replaced_blames_the_mount(tmp_path):
     """The daily outage this cost us: a file bind mount pins the container to the
     inode it booted with, so a host that renews on time still starves it."""

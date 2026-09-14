@@ -13,10 +13,11 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from robbie import branding
+
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 SNAP = 3  # lines a finding may be nudged to reach the diff
 MAX_BODY = 3000
-SIGNATURE = "<sub>🤖 automated pre-review by robbie</sub>"
 BADGE = {
     "critical": "🛑 **Critical**",
     "must-fix": "🔴 **Must-fix**",
@@ -73,7 +74,7 @@ def render(f: dict, snapped_from: int | None) -> str:
     body = f"{head}\n\n{str(f.get('body', '')).strip()}"[:MAX_BODY]
     if snapped_from:
         body += f"\n\n<sub>reported for line {snapped_from}</sub>"
-    return f"{body}\n\n{SIGNATURE}"
+    return f"{body}\n\n{branding.signature_sub()}"
 
 
 def anchor(findings: list[dict], valid: dict[str, set[int]]) -> Anchored:

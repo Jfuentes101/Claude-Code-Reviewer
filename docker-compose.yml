@@ -20,6 +20,9 @@ services:
       dockerfile: Dockerfile.orchestrator
     image: robbie-orchestrator:latest
     restart: unless-stopped
+    # the props bridge reaches the Mac's local tunnel (4021 -> the box's board)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # SIGTERM finishes the tick in flight; a review can legitimately take 30 min
     stop_grace_period: 35m
     env_file: .env

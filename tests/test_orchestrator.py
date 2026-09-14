@@ -177,7 +177,7 @@ async def test_a_done_label_retires_the_pr_from_the_panel_and_the_sweep(
     orch.db.start_review(
         key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
     )
-    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting", inline=1)
     assert orch.db.reviewed_prs("acme/app") == [7]
 
     await orch._gate(repo, 7)
@@ -205,7 +205,8 @@ def _approved(db, pr_number=7):
     db.start_review(
         key=key, repo="acme/app", pr=pr_number, head_sha="abc1234567", requested_at=REQ
     )
-    db.finish_review(key, state="published", verdict="ok", ci_state="green")
+    # inline=1: threads of ours can exist, so the reply sweep keeps the PR
+    db.finish_review(key, state="published", verdict="ok", ci_state="green", inline=1)
     # the panel's second condition: somebody is still asking for the review
     db.set_requested("acme/app", [pr_number])
 
@@ -311,7 +312,7 @@ async def test_a_dry_run_marks_nothing(orch, cfg, monkeypatch):
     orch.db.start_review(
         key=KEY, repo="acme/app", pr=7, head_sha="abc1234567", requested_at=REQ
     )
-    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting")
+    orch.db.finish_review(KEY, state="published", verdict="ok", ci_state="waiting", inline=1)
 
     await orch._gate(repo, 7)
 
@@ -587,6 +588,18 @@ async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypat
     ], "an ok is invisible on the PR, so one line has to say it happened"
     assert orch.slack.owner == [], "not an operator alert; it goes to whoever reviews"
     assert orch.slack.channels == [], "no review was posted, so nothing to announce"
+
+
+async def test_an_approval_says_it_opened_no_threads(orch, repo, monkeypatch):
+    """The sweep reads this column to skip the PR, and only a recorded 0 means
+    there is nothing there — an ok that left it unwritten would be swept forever."""
+    _build(monkeypatch)
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(True, "ci")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+    await orch._review(repo, pr(), KEY, REQ)
+    assert orch.db.reviewed_prs("acme/app") == []
 
 
 async def test_ci_is_asked_for_once_per_commit(orch, repo, monkeypatch):
@@ -1192,3 +1205,44 @@ async def test_the_red_build_note_goes_out_once_per_commit(orch, repo, monkeypat
     orch.db.set_ci_state(KEY, "waiting")  # as a second row on the same commit would
     await orch.ci.watch()
     assert posted == [1]
+
+
+# ----- the props bridge --------------------------------------------------
+
+
+def _told(monkeypatch):
+    told = []
+
+    async def fake_report(url, pr_num, head, status):
+        told.append(status)
+
+    monkeypatch.setattr(orch_mod.props_bridge, "report", fake_report)
+    return told
+
+
+async def test_the_board_hears_the_review_lifecycle(orch, repo, monkeypatch):
+    told = _told(monkeypatch)
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "did it")))
+    stub_run(monkeypatch, ok_run(
+        "needs-work", inline='[{"path":"a.rb","line":1,"severity":"Must-fix"}]'
+    ))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert told == ["reviewing", "posted"]
+
+
+async def test_a_failed_run_tells_the_board_skipped(orch, repo, monkeypatch):
+    told = _told(monkeypatch)
+    stub_run(monkeypatch, ReviewRun(ok=False, error="container exited 1", duration_s=3.0))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert told == ["reviewing", "skipped"]
+
+
+async def test_a_quiet_run_tells_the_board_nothing(orch, repo, monkeypatch):
+    told = _told(monkeypatch)
+    orch.no_publish = True
+    monkeypatch.setattr(publish_mod, "publish_review", _async(PublishResult(True, "did it")))
+    stub_run(monkeypatch, ok_run(
+        "needs-work", inline='[{"path":"a.rb","line":1,"severity":"Must-fix"}]'
+    ))
+    await orch._review(repo, pr(), KEY, REQ)
+    assert told == [], "--no-publish posts nothing anywhere, the board included"
