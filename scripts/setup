@@ -75,24 +75,27 @@ fi
 if [[ -f config/robbie.yaml ]]; then
   echo
   echo "mirrors:"
-  mapfile -t slugs < <(sed -n 's/^[[:space:]]*-\{0,1\}[[:space:]]*slug:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
-  mapfile -t bares < <(sed -n 's/^[[:space:]]*bare:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
-  if [[ ${#bares[@]} -eq 0 ]]; then
+  # read -r, not mapfile: mapfile is bash 4 and the stock macOS bash is 3.2
+  slugs=() bares=()
+  while IFS= read -r line; do slugs+=("$line"); done < <(sed -n 's/^[[:space:]]*-\{0,1\}[[:space:]]*slug:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
+  while IFS= read -r line; do bares+=("$line"); done < <(sed -n 's/^[[:space:]]*bare:[[:space:]]*\([^[:space:]]*\).*/\1/p' config/robbie.yaml || true)
+  if [[ -z "${bares[*]-}" ]]; then
     bad "no repos[].bare in config/robbie.yaml"
+  else
+    for i in "${!bares[@]}"; do
+      bare="${bares[$i]}" slug="${slugs[$i]:-owner/repo}"
+      if [[ -f "$bare/HEAD" ]]; then
+        ok "$slug → $bare"
+      elif $CHECK_ONLY; then
+        bad "$slug has no mirror at $bare"
+        note "ROBBIE_MIRRORS=$(dirname "$bare") scripts/mirror-sync $slug"
+      else
+        note "$slug has no mirror at $bare — cloning it (this is the whole repo)"
+        ROBBIE_MIRRORS="$(dirname "$bare")" scripts/mirror-sync "$slug"
+        ok "$slug → $bare"
+      fi
+    done
   fi
-  for i in "${!bares[@]}"; do
-    bare="${bares[$i]}" slug="${slugs[$i]:-owner/repo}"
-    if [[ -f "$bare/HEAD" ]]; then
-      ok "$slug → $bare"
-    elif $CHECK_ONLY; then
-      bad "$slug has no mirror at $bare"
-      note "ROBBIE_MIRRORS=$(dirname "$bare") scripts/mirror-sync $slug"
-    else
-      note "$slug has no mirror at $bare — cloning it (this is the whole repo)"
-      ROBBIE_MIRRORS="$(dirname "$bare")" scripts/mirror-sync "$slug"
-      ok "$slug → $bare"
-    fi
-  done
 fi
 
 # Every sidecar sits behind a compose profile, so a plain `up -d` starts none of
@@ -115,7 +118,7 @@ if [[ -f config/robbie.yaml ]]; then
   }
   sidecar '^[[:space:]]*model_proxy:[[:space:]]*http' proxy \
     "robbie exits at boot when the proxy is unreachable — no review would run"
-  sidecar '^\s*review_mcp:.*mcp-sentry' sentry \
+  sidecar '^[[:space:]]*review_mcp:.*mcp-sentry' sentry \
     "every review would fail its MCP connection to a name that does not resolve"
   [[ -z "$enabled" ]] && note "nothing in COMPOSE_PROFILES — only the orchestrator comes up"
 fi
