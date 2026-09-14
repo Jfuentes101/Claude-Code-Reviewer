@@ -590,6 +590,18 @@ async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypat
     assert orch.slack.channels == [], "no review was posted, so nothing to announce"
 
 
+async def test_an_approval_says_it_opened_no_threads(orch, repo, monkeypatch):
+    """The sweep reads this column to skip the PR, and only a recorded 0 means
+    there is nothing there — an ok that left it unwritten would be swept forever."""
+    _build(monkeypatch)
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(True, "ci")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+    await orch._review(repo, pr(), KEY, REQ)
+    assert orch.db.reviewed_prs("acme/app") == []
+
+
 async def test_ci_is_asked_for_once_per_commit(orch, repo, monkeypatch):
     """A build costs money now, and a forced re-review must not buy a second one."""
     _build(monkeypatch)

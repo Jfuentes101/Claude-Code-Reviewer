@@ -500,6 +500,9 @@ class Orchestrator:
                 key, verdict="ok", **self._pass_state("published"),
                 # nothing asked CI on a run that publishes nothing, so nothing to wait for
                 ci_state=None if self.no_publish else "waiting",
+                # an ok posts no comment at all, and saying so is what lets the
+                # reply sweep skip the PR: left unwritten it reads as unknown
+                inline=0,
                 **common,
             )
             await self._announce_approval(meta, ci)
