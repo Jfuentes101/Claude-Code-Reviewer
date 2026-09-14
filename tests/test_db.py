@@ -280,10 +280,19 @@ def test_threadless_reviews_leave_the_reply_sweep(db):
     """A pass that anchored nothing opened no threads — sweeping it every tick
     buys nothing and the reads drain the user-wide GraphQL pool."""
     start(db)
-    db.finish_review(KEY, state="published", verdict="needs-work")
-    assert db.reviewed_prs("acme/app") == [], "no inline comments, nothing to sweep"
+    db.finish_review(KEY, state="published", verdict="needs-work", inline=0)
+    assert db.reviewed_prs("acme/app") == [], "anchored nothing, nothing to sweep"
     key2 = "acme/app:8:def456:2026-01-01T00:00:00Z"
     db.start_review(key=key2, repo="acme/app", pr=8, head_sha="def456",
                     requested_at="2026-01-01T00:00:00Z")
     db.finish_review(key2, state="published", verdict="needs-work", inline=2)
     assert db.reviewed_prs("acme/app") == [8], "anchored comments earn the sweep"
+
+
+def test_a_pass_that_never_recorded_inline_keeps_its_place_in_the_sweep(db):
+    """NULL is not zero: rows predating the column, and every approval, leave it
+    unwritten. The sweep answers every thread the login opened, robbie's or the
+    operator's own, so an unwritten count is no evidence there is nothing there."""
+    start(db)
+    db.finish_review(KEY, state="published", verdict="ok")
+    assert db.reviewed_prs("acme/app") == [7]

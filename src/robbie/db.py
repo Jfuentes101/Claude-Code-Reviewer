@@ -421,16 +421,22 @@ class Db:
 
         Windowed because each costs an API read every tick and the list only grows.
         A PR a human has taken drops out early for the same reason. Threads only
-        exist where a pass anchored comments to the diff, so a PR that never got
-        an inline comment is excluded too: reading it every tick buys nothing, and
-        those reads are what drain the user-wide GraphQL pool.
+        exist where a pass anchored comments to the diff, so a pass that anchored
+        nothing is excluded too: reading it every tick buys nothing, and those reads
+        are what drain the user-wide GraphQL pool.
+
+        `inline` is three-valued, and only the recorded 0 means "this pass opened no
+        threads". NULL means no pass ever wrote the column — rows older than it, and
+        every approval, since an ok returns before the publish path that records it.
+        Those PRs keep their place in the sweep: the threads it answers are every
+        thread the reviewer login opened, which is not a set this table can bound.
         """
         return [
             int(r["pr"]) for r in self.conn.execute(
                 "SELECT DISTINCT pr FROM reviews r WHERE repo=? AND state='published' "
                 "AND created_at >= ? AND COALESCE(ci_state,'') != 'done' "
                 "AND EXISTS (SELECT 1 FROM reviews c WHERE c.repo=r.repo AND c.pr=r.pr "
-                "AND c.state='published' AND COALESCE(c.inline,0) > 0) "
+                "AND c.state='published' AND COALESCE(c.inline,1) > 0) "
                 "ORDER BY pr DESC",
                 (repo, since_ms),
             )
