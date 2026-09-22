@@ -515,6 +515,12 @@ a person, carrying whatever the model said stopped it — usually "I could not
 write a test that fails for this", which is worth more to whoever picks it up
 than a patch would have been.
 
+Its standing instructions are `policy/fix/CLAUDE.md`, not the review standards:
+a subdirectory of `policy_dir` named after the mode replaces the root for that
+mode. They are written against `policy/CLAUDE.md` on purpose — the pull request
+this opens is reviewed by robbie, so the fixer is told to write the patch that
+survives the rules the reviewer will apply to it.
+
 `issues.fix_model` picks the arm, and it is one arm, not a split. `review_models`
 exists to compare models on reviews; a fix is not a thing to try cheaply, because
 an arm that gets three of the four steps right opens a draft pull request that

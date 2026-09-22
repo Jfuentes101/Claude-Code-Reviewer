@@ -22,6 +22,7 @@ from robbie.runner import (
     _kept,
     _stem,
     _why_it_failed,
+    policy_for,
     prune_transcripts,
 )
 
@@ -341,6 +342,33 @@ def test_a_fix_run_carries_no_github_token():
     assert "GH_TOKEN" not in argv
     assert "GH_TOKEN" not in _docker_env(cfg, _secrets(), mode="fix")
     assert "GH_TOKEN" in _docker_env(cfg, _secrets()), "a review still needs one"
+
+
+def test_each_mode_gets_the_standing_instructions_written_for_it():
+    """A fixer reading the review standards is being told to produce findings
+    about a diff it is supposed to be writing."""
+    cfg = _cfg(Path("/tmp")).model_copy(update={"policy_dir": Path("policy")})
+
+    assert policy_for(cfg, "fix") == Path("policy/fix")
+    assert policy_for(cfg, "review") == Path("policy"), "unchanged without a subdir"
+    assert policy_for(cfg, "money") == Path("policy")
+    assert policy_for(cfg.model_copy(update={"policy_dir": None}), "fix") is None
+
+
+def test_a_fix_run_mounts_its_own_policy():
+    cfg = _cfg(Path("/tmp")).model_copy(update={"policy_dir": Path("policy")})
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _issue(), name="n", mode="fix")
+    assert "policy/fix:/policy:ro" in argv
+
+
+def test_the_shipped_fix_policy_is_present_and_whole():
+    """Edited live on the host like the review one, so a truncation ships silently."""
+    text = Path("policy/fix/CLAUDE.md").read_text(encoding="utf-8")
+    for heading in ("The test is the deliverable", "Never make an existing test pass",
+                    "The smallest change that works", "`cannot` is a real answer",
+                    "The tool", "The summary"):
+        assert heading in text, heading
+    assert len(text) > 3000, "fix policy looks truncated"
 
 
 def test_the_shipped_policy_is_present_and_whole():
