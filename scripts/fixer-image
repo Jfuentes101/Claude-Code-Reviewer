@@ -13,6 +13,11 @@ SRC="${1:?usage: fixer-image <bare-or-checkout> [ref] [tag]}"
 REF="${2:-main}"
 TAG="${3:-robbie-fixer:latest}"
 
+# The base carries the entrypoint, and a stale one is invisible: the fix image
+# builds fine and then behaves like whatever the reviewer image last knew.
+echo "rebuilding the base first"
+docker compose build reviewer-image
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -40,7 +45,36 @@ if [ -f "$WORK/.ruby-version" ]; then
   echo "ruby ${version}"
 fi
 
+# Compiled assets, so the container never needs npm. Some of them come from a
+# private registry, and a test that renders a view wants the packs, not the
+# right to download them.
+PACKS="${FIXER_PACKS:-}"
+if [ -n "$PACKS" ] && [ -d "$PACKS" ]; then
+  echo "packs from $PACKS ($(du -sh "$PACKS" | cut -f1))"
+else
+  PACKS="$WORK/.empty-packs"
+  mkdir -p "$PACKS"
+fi
+
+# The handful of npm packages the asset pipeline imports SCSS from. Copied, not
+# installed: some come from a private registry, and the container has no business
+# holding a token for one. Name them in FIXER_NODE_PACKAGES.
+MODULES="$WORK/.empty-modules"
+mkdir -p "$MODULES"
+if [ -n "${FIXER_NODE_MODULES:-}" ] && [ -d "${FIXER_NODE_MODULES:-}" ]; then
+  for pkg in ${FIXER_NODE_PACKAGES:-}; do
+    if [ -d "$FIXER_NODE_MODULES/$pkg" ]; then
+      mkdir -p "$MODULES/$(dirname "$pkg")"
+      cp -r "$FIXER_NODE_MODULES/$pkg" "$MODULES/$pkg"
+    else
+      echo "fixer-image: $pkg not in $FIXER_NODE_MODULES, skipping" >&2
+    fi
+  done
+  echo "node modules: $(du -sh "$MODULES" | cut -f1)"
+fi
+
 docker build -f Dockerfile.fixer -t "$TAG" \
-  "${RUBY_ARG[@]}" --build-context "repo=$WORK" .
+  "${RUBY_ARG[@]}" --build-context "repo=$WORK" --build-context "packs=$PACKS" \
+  --build-context "modules=$MODULES" .
 
 echo "built $TAG — set it as issues.fix_image"
