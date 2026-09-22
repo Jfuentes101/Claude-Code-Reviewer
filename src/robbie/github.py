@@ -131,6 +131,65 @@ async def authored(repo: str, *, label: str, author: str) -> list[int]:
     return [int(r["number"]) for r in rows or []]
 
 
+ISSUE_FIELDS = "number,title,url,author,body,labels,state"
+
+
+@dataclass(frozen=True)
+class IssueMeta:
+    number: int
+    title: str
+    url: str
+    author: str
+    body: str
+    labels: tuple[str, ...]
+    state: str = "OPEN"
+
+
+async def issue_queue(repo: str, *, labels: tuple[str, ...]) -> list[int]:
+    """Open issues carrying EVERY one of these labels — the fixer's candidate set.
+
+    AND, not OR, and at least one label is mandatory: no label at all is every
+    open issue in the repo, which is not a queue anybody meant to hand a bot.
+    The second label is what makes it revocable — a form applies its labels on
+    filing, and a human taking one off is how the issue stops being the bot's.
+
+    Same page-limit caveat as `queue`.
+    """
+    if not labels:
+        raise GhError("issue_queue: at least one label, or the queue is the whole repo")
+    rows = await gh_json(
+        "search", "issues", "--repo", repo,
+        *[f"--label={label}" for label in labels],
+        "--state", "open", "--limit", str(QUEUE_LIMIT), "--json", "number",
+    )
+    issues = [int(r["number"]) for r in rows or []]
+    if len(issues) == QUEUE_LIMIT:
+        logger.warning(
+            "%s: the issue read filled its %d-issue page; anything past it is unseen",
+            repo, QUEUE_LIMIT,
+        )
+    return issues
+
+
+async def issue_meta(repo: str, number: int) -> IssueMeta:
+    """One issue, in the shape triage reads. The body is returned raw: what a
+    heading means is the parser's business, and stripping here would hide it."""
+    data = await gh_json(
+        "issue", "view", str(number), "--repo", repo, "--json", ISSUE_FIELDS,
+    )
+    if not data:
+        raise GhError(f"could not fetch {repo}#{number}")
+    return IssueMeta(
+        number=int(data["number"]),
+        title=data.get("title") or "",
+        url=data.get("url") or "",
+        author=(data.get("author") or {}).get("login") or "someone",
+        body=data.get("body") or "",
+        labels=tuple(lbl["name"] for lbl in data.get("labels") or []),
+        state=str(data.get("state") or "OPEN"),
+    )
+
+
 PR_FIELDS = (
     "number,title,url,author,headRefOid,changedFiles,labels,"
     "statusCheckRollup,baseRefName,state"

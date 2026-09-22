@@ -102,3 +102,56 @@ async def test_any_other_failure_is_still_a_skip(fake_gh):
     fake_gh('echo "bad credentials" >&2; exit 1')
     with pytest.raises(GhError, match="bad credentials"):
         await gh_mod.pr_meta("acme/app", 7)
+
+
+# ----- the issue queue -----------------------------------------------------
+
+
+async def test_the_issue_queue_asks_for_every_label_at_once(fake_gh, tmp_path):
+    """Repeated `--label` is an AND. One call with both, not two calls unioned:
+    an issue that lost `needs-triage` has been claimed and is nobody's to fix."""
+    argv = tmp_path / "argv"
+    fake_gh(f'printf "%s\\n" "$@" > {argv}\necho \'[{{"number":7}},{{"number":9}}]\'')
+
+    assert await gh_mod.issue_queue("acme/app", labels=("bug", "needs-triage")) == [7, 9]
+
+    sent = argv.read_text().split("\n")
+    assert sent[:4] == ["search", "issues", "--repo", "acme/app"]
+    assert "--label=bug" in sent
+    assert "--label=needs-triage" in sent
+    assert "--state" in sent and "open" in sent
+
+
+async def test_an_unlabelled_queue_is_refused_before_it_reaches_github(fake_gh, tmp_path):
+    """No label is every open issue in the repo. That is not a queue, and it must
+    fail as a mistake rather than come back as work."""
+    argv = tmp_path / "argv"
+    fake_gh(f'printf "ran" > {argv}\necho "[]"')
+
+    with pytest.raises(GhError, match="at least one label"):
+        await gh_mod.issue_queue("acme/app", labels=())
+
+    assert not argv.exists(), "it asked GitHub anyway"
+
+
+async def test_an_issue_comes_back_in_the_shape_triage_reads(fake_gh):
+    fake_gh(
+        'echo \'{"number":12,"title":"[Bug]: spinner","url":"https://x/12",'
+        '"author":{"login":"cs-person"},"body":"### Environment\\n\\nQA",'
+        '"labels":[{"name":"bug"},{"name":"needs-triage"}],"state":"OPEN"}\''
+    )
+
+    issue = await gh_mod.issue_meta("acme/app", 12)
+
+    assert (issue.number, issue.author, issue.state) == (12, "cs-person", "OPEN")
+    assert issue.labels == ("bug", "needs-triage")
+    assert issue.body == "### Environment\n\nQA", "the body is the form; it stays raw"
+
+
+async def test_an_issue_that_does_not_come_back_is_an_error_not_an_empty_one(fake_gh):
+    """An empty read is a hiccup, and a blank body would triage as a form with no
+    money answer — which is a decision, taken on no information."""
+    fake_gh('echo "null"')
+
+    with pytest.raises(GhError, match="could not fetch"):
+        await gh_mod.issue_meta("acme/app", 12)
