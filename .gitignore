@@ -13,4 +13,5 @@ docker-compose.override.yml
 
 # repo-specific review contracts, never public
 policy/CLAUDE.local.md
+policy/*/CLAUDE.local.md
 uv.lock

@@ -227,6 +227,21 @@ def mcp_for(cfg: Config, mode: str) -> str:
     return cfg.fix_mcp if mode == "fix" else cfg.review_mcp
 
 
+def policy_for(cfg: Config, mode: str) -> Path | None:
+    """The standing instructions this mode gets, as a host path.
+
+    `<policy_dir>/<mode>` when that directory exists, and the root otherwise. A
+    fixer reading 400 lines of review criteria is being told to produce findings
+    about a diff it is supposed to be writing, and the root is where the review
+    standards already live — so the split is a directory an operator creates, and
+    nothing changes for a deployment that does not.
+    """
+    if not cfg.policy_dir:
+        return None
+    per_mode = Path(cfg.policy_dir) / mode
+    return per_mode if per_mode.is_dir() else Path(cfg.policy_dir)
+
+
 def _docker_argv(
     cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta | IssueMeta, *,
     name: str, mode: str = "review", model: str | None = None,
@@ -267,8 +282,8 @@ def _docker_argv(
         # the network is how the sidecars are reached; with neither configured it is
         # only reachable surface for code the reviewer is about to run
         argv += ["--network", network]
-    if cfg.policy_dir:
-        argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
+    if (policy := policy_for(cfg, mode)):
+        argv += ["-v", f"{policy}:/policy:ro"]
     if model:
         argv += ["-e", f"REVIEW_MODEL={model}"]
     if cfg.model_proxy:

@@ -12,10 +12,15 @@ state_dir: /var/lib/robbie
 review_effort: high
 stale_review_days: 7    # `robbie digest` threshold
 
-# HOST path to robbie's cross-repo review standards. Mounted read-only into every
-# reviewer and copied to its user scope, where the CLI loads it unprompted — so
+# HOST path to robbie's cross-repo standards. Mounted read-only into every
+# container and copied to its user scope, where the CLI loads it unprompted — so
 # it costs no prompt tokens and the model cannot skip it. A PR cannot touch it.
-# Edit the files and the next review uses them; no rebuild, no restart.
+# Edit the files and the next run uses them; no rebuild, no restart.
+#
+# A subdirectory named after a mode replaces the root for that mode: `fix/` is
+# the one that ships, because a fixer reading the review standards is being told
+# to produce findings about a diff it is supposed to be writing. No subdirectory
+# means every mode reads the root, which is what a review-only deployment wants.
 policy_dir: /opt/robbie/policy
 
 # Read-only context the REVIEW MODEL may pull while judging. Empty = none.
