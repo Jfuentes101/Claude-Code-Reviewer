@@ -10,6 +10,13 @@ cd "$(dirname "$0")/.."
 CREDS="$(sed -n 's/^CLAUDE_CREDENTIALS=//p' .env | head -1)"
 [ -n "$CREDS" ] || { echo "creds-sync: no CLAUDE_CREDENTIALS in .env" >&2; exit 1; }
 
+# Only macOS hides the token in a keychain; elsewhere the CLI owns the file and
+# a "sync" could only clobber it.
+if [ "$(uname -s)" != "Darwin" ]; then
+  [ -s "$CREDS" ] || { echo "creds-sync: $CREDS missing — log in with the Claude CLI" >&2; exit 1; }
+  exit 0
+fi
+
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 security find-generic-password -s "Claude Code-credentials" -w > "$TMP"

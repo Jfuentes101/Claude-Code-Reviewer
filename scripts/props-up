@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# Start the PR Ops reviewer for the day (macOS).
+# Start the PR Ops reviewer for the day (macOS, or Linux with plain docker).
 #   props-up              daemon + proxy + dashboard (autonomous + directed)
 #   props-up --no-daemon  proxy + dashboard only (directed /review runs only)
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/.."  # resolve the ~/.local/bin symlink
 
-docker info >/dev/null 2>&1 || { echo "props-up: docker daemon unreachable — colima start (or: brew services start colima)"; exit 1; }
+docker info >/dev/null 2>&1 || { echo "props-up: docker daemon unreachable — start it (macOS: colima start)"; exit 1; }
 ./scripts/creds-sync
 
-# keychain->file sync every 2 min: a rotation kills the old token instantly, and
-# every minute the file lags is a minute of dead reads (401s, unguarded meter)
-PLIST="$HOME/Library/LaunchAgents/com.props.creds-sync.plist"
-if [ ! -f "$PLIST" ]; then
-  cat > "$PLIST" <<XML
+if [ "$(uname -s)" = "Darwin" ]; then
+  # keychain->file sync every 2 min: a rotation kills the old token instantly, and
+  # every minute the file lags is a minute of dead reads (401s, unguarded meter)
+  PLIST="$HOME/Library/LaunchAgents/com.props.creds-sync.plist"
+  if [ ! -f "$PLIST" ]; then
+    cat > "$PLIST" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -22,8 +23,9 @@ if [ ! -f "$PLIST" ]; then
   <key>RunAtLoad</key><true/>
 </dict></plist>
 XML
-  launchctl load "$PLIST" 2>/dev/null || true
-  echo "installed creds-sync every 2 min (launchd)"
+    launchctl load "$PLIST" 2>/dev/null || true
+    echo "installed creds-sync every 2 min (launchd)"
+  fi
 fi
 
 if [[ "${1:-}" == "--no-daemon" ]]; then
