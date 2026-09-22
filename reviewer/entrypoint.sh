@@ -22,7 +22,11 @@ fi
 # `gh` authenticates from GH_TOKEN; plain git over https does not. The review
 # command fetches the base ref to get one fresher than the mirror's, and without
 # this that asks for a username on a terminal nobody is holding.
-gh auth setup-git
+#
+# A fix run has no token to set up. It never reaches GitHub: it reads the mirror
+# and hands its patch to the PR tool, which is the only thing here holding a
+# credential that can write.
+[[ "$MODE" == "fix" ]] || gh auth setup-git
 
 # --shared keeps the objects in the read-only mirror instead of copying them:
 # on a large repo that is the difference between a 2s and a 40s start.
@@ -33,6 +37,10 @@ if [ -n "$PR_NUMBER" ]; then
   # the mirror is only an object cache; gh fetches the head itself, so this works
   # even for a fork or a branch the mirror has never seen
   gh pr checkout "$PR_NUMBER" >/dev/null
+elif [[ "$MODE" == "fix" ]]; then
+  # offline by construction: the mirror is all a fix run gets, and the PR tool
+  # rebases onto a fresh trunk anyway when it applies the patch
+  git checkout --quiet "origin/$CRITERIA_REF"
 else
   # an issue is asked about trunk, and about a trunk fresher than the mirror:
   # the answer is which code a report lands in, and the mirror lags every push
@@ -70,12 +78,13 @@ mcp="${REVIEW_MCP:-}"
 model=()
 [[ -n "${REVIEW_MODEL:-}" ]] && model=(--model "$REVIEW_MODEL")
 
-exec claude -p \
-  --output-format json \
-  --permission-mode bypassPermissions \
-  --setting-sources user \
-  --strict-mcp-config --mcp-config "$mcp" \
-  --effort "${REVIEW_EFFORT:-high}" \
-  --no-session-persistence \
-  "${model[@]}" \
-  <<<"$preamble$body"
+cmd=(claude -p
+  --output-format json
+  --permission-mode bypassPermissions
+  --setting-sources user
+  --strict-mcp-config --mcp-config "$mcp"
+  --effort "${REVIEW_EFFORT:-high}"
+  --no-session-persistence
+  "${model[@]}")
+
+exec "${cmd[@]}" <<<"$preamble$body"

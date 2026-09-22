@@ -29,6 +29,7 @@ from robbie import budget, dashboard
 from robbie import config as configmod
 from robbie.db import Db
 from robbie.digest import post_digest
+from robbie.fixer import fix_tick
 from robbie.issues import triage_tick
 from robbie.orchestrator import Orchestrator
 from robbie.runner import check_model_proxy
@@ -95,6 +96,9 @@ def _parser() -> argparse.ArgumentParser:
     tri = sub.add_parser("triage", help="triage the bug queue: decide, comment, label")
     tri.add_argument("--repo", default=None, help="only this repo")
 
+    fx = sub.add_parser("fix", help="attempt the issues triage cleared for a bot")
+    fx.add_argument("--repo", default=None, help="only this repo")
+
     dig = sub.add_parser("digest", help="post the stuck-in-review digest")
     dig.add_argument("--days", type=int, default=None)
 
@@ -154,7 +158,7 @@ async def _run(args: argparse.Namespace) -> int:
     model = getattr(args, "model", None)
     if (why := why_no_model(cfg, secrets, model)) is not None:
         raise SystemExit(why)
-    if args.command in ("poll", "once", "threads", "triage"):
+    if args.command in ("poll", "once", "threads", "triage", "fix"):
         # only the commands that spawn one; `status` and `digest` stay usable
         # precisely when something is down
         await check_model_proxy(cfg, secrets)
@@ -193,6 +197,22 @@ async def _run(args: argparse.Namespace) -> int:
                 logger.info("#%s %s: %s", one.number, one.action, one.reason)
             if not settled:
                 logger.info("nothing in the bug queue is waiting on a decision")
+            return 0
+
+        if args.command == "fix":
+            repos = [r for r in cfg.repos if args.repo in (None, r.slug)]
+            if not repos:
+                raise SystemExit(f"{args.repo} is not a configured repo")
+            if not cfg.fix_mcp:
+                raise SystemExit("fix_mcp is unset, so no fix can get out of a container")
+            done = [
+                f for r in repos
+                for f in await fix_tick(cfg, secrets, r, db, dry_run=args.dry_run)
+            ]
+            for one in done:
+                logger.info("#%s %s", one.number, one.opened or f"back to a person: {one.reason}")
+            if not done:
+                logger.info("nothing is waiting for a fix")
             return 0
 
         if args.command == "status":

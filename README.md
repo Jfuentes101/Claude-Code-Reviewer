@@ -449,6 +449,7 @@ docker compose exec robbie robbie poll --once                   # a single tick
 docker compose exec robbie robbie digest --days 7               # stuck-in-review digest
 docker compose exec robbie robbie threads --pr 123              # just the replies half
 docker compose exec robbie robbie triage --repo o/r             # decide the bug queue
+docker compose exec robbie robbie fix --repo o/r                # attempt what it cleared
 docker compose exec robbie robbie retract                       # drop vetoes a later ok undid
 docker compose exec robbie robbie --dry-run poll --once         # decide, write nothing
 docker compose exec robbie robbie --no-publish poll --once      # review for real, post nothing
@@ -485,6 +486,36 @@ model that never answered — leaves the label on.
 
 It is a command, not part of the daemon's tick. Run it from cron, or by hand
 while the rules are still being tuned.
+
+### fix
+
+What `triage` cleared, attempted. One container per issue, and the thing worth
+knowing about it is what it does **not** have: no GitHub token, no remote, no
+`gh`. It reads the mirror, writes a failing test and the smallest change that
+turns it green, and hands the patch to `open_pull_request` — a tool on the
+`mcp-pr` sidecar, which is the only thing in this system holding a credential
+that can write to the repository.
+
+The model fills in a form: the issue, a title, a summary, the patch. The sidecar
+decides everything else — the branch (`fix/issue-<n>`), the base, that it is a
+draft — and refuses a patch that changes no test, that touches CI config,
+dependency manifests or migrations, that is too large, or that does not apply to
+a fresh checkout. A refusal comes back to the model as a reason it can act on,
+which is the point of a tool call over a block of text.
+
+`mcp-pr` is **not** on the reviewers' network. Every reviewer joins `robbie` and
+a reviewer runs a PR's own code with `bypassPermissions`, so reaching a service
+that pushes branches by name would be the whole of what it needed. Fix runs join
+`robbie-fix` instead, and a test in `test_wiring.py` fails if that ever stops
+being true.
+
+Whether it worked is read from GitHub, not from the model: the branch either has
+a pull request on it or it does not. No pull request means the issue goes back to
+a person, carrying whatever the model said stopped it — usually "I could not
+write a test that fails for this", which is worth more to whoever picks it up
+than a patch would have been.
+
+Needs `FIXER_GH_TOKEN` and `fix_mcp`. Without either, the fixer does not run.
 
 ### retract
 

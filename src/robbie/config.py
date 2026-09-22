@@ -116,6 +116,9 @@ class DockerConfig(_Strict):
     # reviewers are spawned over the docker socket, so they are not on the
     # compose network by default and cannot resolve the mcp sidecars by name
     network: str | None = "robbie"
+    # where a fix run goes instead. Its own network because the PR tool lives
+    # there, and a reviewer running a PR's code must not be able to reach it.
+    fix_network: str | None = "robbie-fix"
     # Turn OFF on an AppArmor host (Ubuntu, Pop!_OS): docker-default reads the
     # exec-time profile transition as gaining privileges and every execve in the
     # container returns EPERM. It still runs unprivileged with all caps dropped.
@@ -186,6 +189,9 @@ class Config(_Strict):
     policy_dir: Path | None = None
     # passed to the reviewer as --mcp-config; empty means no MCP servers at all
     review_mcp: str = ""
+    # the PR tool a fix run reaches. Its own server, because it is the one MCP
+    # here that writes, and it holds the only credential that can.
+    fix_mcp: str = ""
     # Where the model-credential proxy listens, e.g. http://model-proxy:8080.
     # Empty (the default) hands each reviewer the real key or the real credentials
     # file, which is what this exists to stop: see src/robbie_proxy.
@@ -279,6 +285,10 @@ class Secrets(_Strict):
     # what a reviewer presents to the model proxy. Worth nothing off the compose
     # network, which is the point: it is what a container holds instead of a key.
     model_proxy_token: SecretStr | None = None
+    # Contents + Pull requests write, and the only token here that can change the
+    # repository. It never reaches a container: the fixer's patch comes back out
+    # and the push happens here. Unset = the fixer does not run.
+    fixer_gh_token: SecretStr | None = None
 
 
 def load(path: str | Path | None = None) -> Config:
@@ -353,6 +363,7 @@ def load_secrets(cfg: Config) -> Secrets:
         review_base_url=os.environ.get("REVIEW_BASE_URL", "").strip() or None,
         review_api_token=_optional_secret("REVIEW_API_TOKEN"),
         model_proxy_token=_optional_secret("MODEL_PROXY_TOKEN"),
+        fixer_gh_token=_optional_secret("FIXER_GH_TOKEN"),
     )
     if cfg.model_proxy and s.model_proxy_token is None:
         raise SystemExit("model_proxy is set, so MODEL_PROXY_TOKEN has to be too")
@@ -363,6 +374,14 @@ def load_secrets(cfg: Config) -> Secrets:
             raise SystemExit("backend=oauth needs CLAUDE_CREDENTIALS=/path/to/.credentials.json")
         if not s.claude_credentials.is_file():
             raise SystemExit(f"CLAUDE_CREDENTIALS not readable: {s.claude_credentials}")
+    if s.fixer_gh_token is not None and (
+        s.fixer_gh_token.get_secret_value() == s.reviewer_gh_token.get_secret_value()
+    ):
+        raise SystemExit(
+            "FIXER_GH_TOKEN is the same value as the reviewer's token. The reviewer "
+            "runs a PR's own code with bypassPermissions, so that hands write access "
+            "to every container: give the fixer a token of its own."
+        )
     if s.reviewer_gh_token.get_secret_value() == s.gh_token.get_secret_value():
         # The security bet is that the worst a reviewer can do with its token is
         # exfiltrate it, which only holds while the token is read-only. A warning
