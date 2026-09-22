@@ -40,9 +40,16 @@ class IssueConfig(_Strict):
     fixable_label: str = ""  # applied instead, when nothing forbids a bot trying
     assignee: str = ""  # who gets the ones a bot may not touch. Empty = nobody
     rules: Rules = Rules()
-    # which arm answers the money question. Same meaning as `review_models`.
-    model: str | None = None
-    via_endpoint: bool = False
+    # Which arm answers the money question: a classification, so a cheap one does.
+    # `via` has the same meaning as in `review_models` — it picks the endpoint and
+    # the meter the spend gate reads.
+    money_model: str | None = None
+    money_via_endpoint: bool = False
+    # And which one writes the fix. Not a classification: it has to find the code,
+    # write a test that fails, keep the change small and drive a tool call to the
+    # end, which is where a cheap arm stops being cheap. None = the account default.
+    fix_model: str | None = None
+    fix_via_endpoint: bool = False
 
     @model_validator(mode="after")
     def _clears_must_narrow_the_queue(self) -> IssueConfig:

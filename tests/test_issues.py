@@ -228,3 +228,20 @@ async def test_a_dry_run_asks_nobody_and_writes_nothing(cfg, db, repo, monkeypat
     )
 
     assert await triage_tick(cfg, SECRETS, repo, db, dry_run=True) == []
+
+
+async def test_the_money_question_runs_on_its_own_arm(cfg, db, repo, monkeypatch, settled):
+    """The cheap one, and billed against the endpoint's meter rather than the
+    account's — a run a third party bills is not the account's spend."""
+    armed = repo.model_copy(update={
+        "issues": repo.issues.model_copy(update={
+            "money_model": "glm-5.3-flash:cloud", "money_via_endpoint": True,
+        })
+    })
+    stub_issue(monkeypatch, money="Not sure")
+    spawned = stub_run(monkeypatch, ReviewRun(ok=True, text="MONEY: no"))
+
+    await triage_tick(cfg, SECRETS, armed, db)
+
+    assert spawned[0]["model"] == "glm-5.3-flash:cloud"
+    assert spawned[0]["via_endpoint"] is True

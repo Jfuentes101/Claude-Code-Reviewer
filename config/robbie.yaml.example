@@ -139,8 +139,16 @@ repos:
       clears: needs-triage
       fixable_label: robbie-fix
       assignee: some-dev        # who gets the ones a bot may not touch
-      # model: glm-5.3-flash:cloud   # which arm answers the money question
-      # via_endpoint: true           # ...and whose meter it is billed against
+      # Which arm answers the money question. A classification, so a cheap one
+      # does; `money_via_endpoint` also picks the meter the spend gate reads.
+      # money_model: glm-5.3-flash:cloud
+      # money_via_endpoint: true
+      # And which one writes the fix. Deliberately NOT part of `review_models`:
+      # a review can be split between arms to compare them, a fix cannot — it has
+      # to find the code, write a test that fails, keep the change small and drive
+      # a tool call to the end, and an arm that manages three of those four opens
+      # a draft pull request somebody has to close. Unset = the account default.
+      fix_model: opus
       rules:
         require:
           "Does this involve money?": ["No"]

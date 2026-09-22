@@ -155,14 +155,19 @@ def settled(monkeypatch) -> list[dict]:
     return calls
 
 
-def stub(monkeypatch, *, run: ReviewRun | None = None, pr_url: str = "", before: str = ""):
+def stub(monkeypatch, *, run: ReviewRun | None = None, pr_url: str = "", before: str = "",
+         spawned: list | None = None):
     monkeypatch.setattr(fixer_mod, "issue_queue", _async([12]))
     monkeypatch.setattr(fixer_mod, "issue_meta", _async(ISSUE))
     monkeypatch.setattr(budget_mod, "check", lambda *a, **k: Meter(True, "fine"))
     seen = iter([before, pr_url])
     monkeypatch.setattr(fixer_mod, "open_pr_for", lambda *a, **k: _async(next(seen))())
     if run is not None:
-        monkeypatch.setattr(fixer_mod, "run_review", _async(run))
+        async def fake(cfg, secrets, repo, meta, **kw):
+            if spawned is not None:
+                spawned.append(kw)
+            return run
+        monkeypatch.setattr(fixer_mod, "run_review", fake)
     else:
         monkeypatch.setattr(
             fixer_mod, "run_review", lambda *a, **k: pytest.fail("spawned a container")
@@ -251,3 +256,33 @@ async def test_what_the_run_cost_is_recorded(cfg, db, repo, monkeypatch, settled
     stub(monkeypatch, run=ReviewRun(ok=False, error="boom", cost_usd=0.4), pr_url="")
     await fix_tick(cfg, SECRETS, repo, db)
     assert db.spend_since(0) == pytest.approx(0.4)
+
+
+async def test_the_fix_runs_on_the_arm_the_file_names(cfg, db, repo, monkeypatch, settled):
+    """Separate from the arm that answers the money question: one classifies, the
+    other has to write a test that fails and drive a tool call to the end."""
+    armed = repo.model_copy(update={
+        "issues": repo.issues.model_copy(update={
+            "fix_model": "opus", "money_model": "glm-5.3-flash:cloud",
+            "money_via_endpoint": True,
+        })
+    })
+    spawned: list[dict] = []
+    stub(monkeypatch, run=ReviewRun(ok=True, text=""), pr_url="https://x/pull/1",
+         spawned=spawned)
+
+    await fix_tick(cfg, SECRETS, armed, db)
+
+    assert spawned[0]["model"] == "opus"
+    assert spawned[0]["via_endpoint"] is False
+    assert spawned[0]["mode"] == "fix"
+
+
+async def test_no_arm_named_means_the_account_default(cfg, db, repo, monkeypatch, settled):
+    spawned: list[dict] = []
+    stub(monkeypatch, run=ReviewRun(ok=True, text=""), pr_url="https://x/pull/1",
+         spawned=spawned)
+
+    await fix_tick(cfg, SECRETS, repo, db)
+
+    assert spawned[0]["model"] is None
