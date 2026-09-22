@@ -71,7 +71,7 @@ async def run_review(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, **_docker_env(cfg, secrets, via_endpoint=via_endpoint)},
+        env={**os.environ, **_docker_env(cfg, secrets, via_endpoint=via_endpoint, mode=mode)},
     )
     try:
         out, err = await asyncio.wait_for(
@@ -223,6 +223,10 @@ def _why_it_failed(code: int | None, out: bytes, err: bytes) -> str:
     return f"container exited {code}: {err.decode(errors='replace').strip()[-400:]}"
 
 
+def mcp_for(cfg: Config, mode: str) -> str:
+    return cfg.fix_mcp if mode == "fix" else cfg.review_mcp
+
+
 def _docker_argv(
     cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta | IssueMeta, *,
     name: str, mode: str = "review", model: str | None = None,
@@ -237,9 +241,6 @@ def _docker_argv(
         "--cap-drop", "ALL",
         # the mirror is the only host path a reviewer can see, and it cannot write to it
         "-v", f"{repo.bare}:/bare:ro",
-        # by name, not by value: an argv is world-readable through /proc, and the
-        # docker CLI reads these out of its own environment (see _docker_env)
-        "-e", "GH_TOKEN",
         "-e", f"REPO_SLUG={repo.slug}",
         # empty for an issue: there is no PR to check out, and the entrypoint
         # reads that as "stay on CRITERIA_REF" rather than guessing
@@ -252,12 +253,20 @@ def _docker_argv(
         "-e", f"CRITERIA_REF={repo.criteria_ref}",
         "-e", f"REVIEW_MODE={mode}",
     ]
+    # A fix run gets no GitHub credential at all. It reads the mirror and hands
+    # its patch to the PR tool, which is where the only token that can write
+    # lives — so a poisoned report has nothing in reach to write with.
+    if mode != "fix":
+        # by name, not by value: an argv is world-readable through /proc, and the
+        # docker CLI reads these out of its own environment (see _docker_env)
+        argv += ["-e", "GH_TOKEN"]
     if cfg.docker.no_new_privileges:
         argv += ["--security-opt", "no-new-privileges"]
-    if cfg.docker.network and (cfg.review_mcp or cfg.model_proxy):
+    network = cfg.docker.fix_network if mode == "fix" else cfg.docker.network
+    if network and (mcp_for(cfg, mode) or cfg.model_proxy):
         # the network is how the sidecars are reached; with neither configured it is
         # only reachable surface for code the reviewer is about to run
-        argv += ["--network", cfg.docker.network]
+        argv += ["--network", network]
     if cfg.policy_dir:
         argv += ["-v", f"{cfg.policy_dir}:/policy:ro"]
     if model:
@@ -283,21 +292,23 @@ def _docker_argv(
         # on this file, and it carries every other OAuth session the host has —
         # `model_proxy` is what ends both, and this branch is what it replaces.
         argv += ["-v", f"{secrets.claude_credentials}:/home/robbie/.claude/.credentials.json"]
-    if cfg.review_mcp:
-        argv += ["-e", f"REVIEW_MCP={cfg.review_mcp}"]
+    if (mcp := mcp_for(cfg, mode)):
+        argv += ["-e", f"REVIEW_MCP={mcp}"]
     argv.append(repo.image)
     return argv
 
 
 def _docker_env(
-    cfg: Config, secrets: Secrets, *, via_endpoint: bool = False
+    cfg: Config, secrets: Secrets, *, via_endpoint: bool = False, mode: str = "review"
 ) -> dict[str, str]:
     """The secrets `docker run -e NAME` picks up, kept out of the command line.
 
     The read-only token when one is configured, and with `model_proxy` set, no
     model credential at all.
     """
-    env = {"GH_TOKEN": secrets.reviewer_gh_token.get_secret_value()}
+    env: dict[str, str] = {}
+    if mode != "fix":
+        env["GH_TOKEN"] = secrets.reviewer_gh_token.get_secret_value()
     if cfg.model_proxy:
         env["ANTHROPIC_AUTH_TOKEN"] = _plain(secrets.model_proxy_token)
     elif via_endpoint:

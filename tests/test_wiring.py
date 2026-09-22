@@ -314,6 +314,35 @@ def test_nothing_a_pr_may_not_read_shares_the_reviewers_network():
     )
 
 
+def test_the_thing_that_can_write_is_not_on_the_reviewers_network():
+    """mcp-pr pushes branches and opens pull requests. A reviewer runs a PR's own
+    code with bypassPermissions, so being able to reach that by service name is
+    the whole of what it would need."""
+    compose = __import__("yaml").safe_load(
+        Path("docker-compose.yml").read_text(encoding="utf-8")
+    )
+    nets = compose["services"]["mcp-pr"].get("networks") or []
+    assert "robbie" not in nets, "the write tool is reachable from every reviewer"
+    assert nets == ["robbie-fix"]
+
+
+def test_a_fix_run_goes_on_the_network_that_has_the_write_tool():
+    cfg = _cfg(Path("/tmp")).model_copy(update={"fix_mcp": '{"mcpServers":{}}'})
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _issue(), name="n", mode="fix")
+    assert "robbie-fix" in argv
+    assert "robbie" not in argv[argv.index("--network") + 1:argv.index("--network") + 2]
+
+
+def test_a_fix_run_carries_no_github_token():
+    """It reads the mirror and hands its patch to the PR tool. A credential in
+    that container is one a poisoned bug report could go looking for."""
+    cfg = _cfg(Path("/tmp")).model_copy(update={"fix_mcp": '{"mcpServers":{}}'})
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _issue(), name="n", mode="fix")
+    assert "GH_TOKEN" not in argv
+    assert "GH_TOKEN" not in _docker_env(cfg, _secrets(), mode="fix")
+    assert "GH_TOKEN" in _docker_env(cfg, _secrets()), "a review still needs one"
+
+
 def test_the_shipped_policy_is_present_and_whole():
     """policy/ is edited live on the host, so a truncation ships silently."""
     text = Path("policy/CLAUDE.md").read_text(encoding="utf-8")

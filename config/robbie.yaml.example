@@ -28,6 +28,12 @@ policy_dir: /opt/robbie/policy
 # starts and every review fails its MCP connection to a name that does not
 # resolve — so this ships empty and the line below is what you uncomment.
 review_mcp: ''
+# The PR tool a fix run reaches, and the only MCP here that writes. Its own
+# server and its own network, because a reviewer must not be able to reach it.
+# Needs `fixer` in COMPOSE_PROFILES and FIXER_GH_TOKEN, or no fix leaves a
+# container. Empty = the fixer does not run.
+fix_mcp: ''
+# fix_mcp: '{"mcpServers":{"pr":{"type":"http","url":"http://mcp-pr:8080/mcp"}}}'
 # review_mcp: '{"mcpServers":{"sentry":{"type":"http","url":"http://mcp-sentry:8080/mcp"}}}'
 
 # Where the model-credential proxy listens. Empty (the default) hands every

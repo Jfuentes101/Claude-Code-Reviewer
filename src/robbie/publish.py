@@ -361,6 +361,7 @@ async def settle_issue(
     say: str,
     add_label: str = "",
     assignee: str = "",
+    clears: str = "",
     dry_run: bool = False,
 ) -> PublishResult:
     """Record a triage decision on the issue and take it out of the queue.
@@ -372,7 +373,7 @@ async def settle_issue(
 
     No close, no edit of the report, no assignee it was not configured with.
     """
-    clears = repo.issues.clears
+    clears = clears or repo.issues.clears
     if dry_run:
         return PublishResult(False, f"dry run: would settle #{issue.number} ({say})")
     body = f"{TRIAGE_MARKER}\n{branding.signature()}\n\n{say}"

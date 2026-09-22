@@ -123,7 +123,7 @@ services:
       dockerfile: Dockerfile.model-proxy
     image: robbie-model-proxy:latest
     restart: unless-stopped
-    networks: [robbie]
+    networks: [robbie, robbie-fix]
     environment:
       - MODEL_PROXY_TOKEN
       # what it will forward at all, comma-separated. Unset is the model surface
@@ -191,9 +191,45 @@ services:
       retries: 3
       start_period: 10s
 
+  mcp-pr:
+    profiles: [fixer]
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-pr
+    image: robbie-mcp-pr:latest
+    restart: unless-stopped
+    # NOT on `robbie`: every reviewer joins that network and reviewers run a PR's
+    # own code. This is the one service that can write to the repository, so the
+    # only containers that can reach it are the fix runs, which join this network
+    # instead.
+    networks: [robbie-fix]
+    environment:
+      # Contents + Pull requests write, this repo only. The one credential in
+      # this compose file that can change the repository, and the reason this
+      # service exists: no fix container ever sees it.
+      - FIXER_GH_TOKEN
+      - FIXER_REPO
+      - FIXER_BASE
+      - FIXER_LABEL
+      # the bare mirror to clone from: a HOST path, same-path rule as the rest
+      - FIXER_MIRROR
+      - MCP_ALLOWED_HOSTS=mcp-pr:8080,mcp-pr
+    volumes:
+      # read-only: it clones from here and pushes to GitHub, never back
+      - ${ROBBIE_MIRRORS:-/srv/robbie/repos}:${ROBBIE_MIRRORS:-/srv/robbie/repos}:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   robbie:
     name: robbie
+  robbie-fix:
+    name: robbie-fix
 
 volumes:
   robbie-state:
