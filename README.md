@@ -525,6 +525,15 @@ the first repo this was tried against made that an 11GB build context. Reviews
 stay on the light image: reading a diff needs git and ripgrep, and the difference
 is several gigabytes.
 
+Assets are copied in, never installed. A test that renders a view wants compiled
+packs and the handful of npm packages the stylesheets `@import`; it does not want
+the right to download them, and one of those packages here is a paid font kit
+whose licence is metered per download. So `FIXER_PACKS` and `FIXER_NODE_PACKAGES`
+bake the files that already exist on the machine doing the build, the entrypoint
+drops them into the clone and points shakapacker at a config with compilation
+off, and the container reaches no registry at all. Both land on paths the repo
+gitignores, so none of it shows up in the patch the model hands over.
+
 With `fix_image` and `fix_db_url` set, the entrypoint starts a throwaway postgres
 inside the container, creates the role and database named in that URL, and runs
 `db:test:prepare` against the schema the checkout carries. The database dies with

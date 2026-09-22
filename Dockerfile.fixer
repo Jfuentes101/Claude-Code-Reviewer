@@ -10,6 +10,12 @@
 #
 #   scripts/fixer-image <bare-or-checkout> [ref] [tag]
 #
+# with, for a repo whose tests render views:
+#
+#   FIXER_PACKS=<checkout>/public/packs-test
+#   FIXER_NODE_MODULES=<checkout>/node_modules
+#   FIXER_NODE_PACKAGES="bootstrap trix …"   # whatever the SCSS @imports
+#
 # which exports the ref, reads `.ruby-version` and builds. Do not hand it a
 # working copy as the context directly: node_modules and .git made that 11GB of
 # build context on the first repo this was tried against.
@@ -81,8 +87,15 @@ ENV BUNDLE_PATH=/usr/local/bundle \
     PATH=/usr/lib/postgresql/15/bin:/usr/local/bundle/bin:/usr/local/bin:$PATH \
     LANG=C.UTF-8
 
+# Prebuilt assets for the test environment. The entrypoint drops them into the
+# clone, and points shakapacker at a config with compile off, so a test that
+# renders a view neither builds them nor needs a registry token to.
+COPY --from=packs / /packs
+COPY --from=modules / /node_modules
+
 # unprivileged at run time, so it must never need to write into either
 RUN chmod -R a+rX /usr/local/bundle \
+ && chmod -R a+rX /packs /node_modules \
  && mkdir -p /work/pgdata && chown -R 1000:1000 /work
 
 USER robbie

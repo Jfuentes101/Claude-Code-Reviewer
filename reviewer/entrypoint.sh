@@ -89,6 +89,23 @@ if [[ "$MODE" == "fix" && -n "${FIX_DB_URL:-}" ]] && command -v pg_ctl >/dev/nul
     && pg_ctl start -w -o "-h 127.0.0.1 -p 5432 -k /tmp" -l /work/pg.log >&2 \
     && createdb --username="$db_user" "$db_name" >&2 \
     || echo "entrypoint: no database this run; the fix cannot run its test" >&2
+  # Both of these live outside the checkout on purpose: anything written inside
+  # it lands in the patch the model hands over.
+  if [ -d /packs ] && [ -n "$(ls -A /packs 2>/dev/null)" ] && [ -f config/shakapacker.yml ]; then
+    out="$(ruby -ryaml -e 'print(YAML.unsafe_load_file(ARGV[0]).dig("test","public_output_path").to_s)' \
+            config/shakapacker.yml 2>/dev/null)"
+    if [ -n "$out" ]; then
+      mkdir -p "public/$out" && cp -r /packs/. "public/$out/" 2>/dev/null
+      ruby -ryaml -e 'c=YAML.unsafe_load_file(ARGV[0]); c["test"]["compile"]=false; File.write(ARGV[1], c.to_yaml)' \
+        config/shakapacker.yml /tmp/shakapacker.yml 2>/dev/null \
+        && export SHAKAPACKER_CONFIG=/tmp/shakapacker.yml
+    fi
+  fi
+
+  if [ -n "$(ls -A /node_modules 2>/dev/null)" ]; then
+    mkdir -p node_modules && cp -r /node_modules/. node_modules/ 2>/dev/null
+  fi
+
   if [ -x bin/rails ]; then
     # the schema the checkout carries, not a dump: a migration in trunk that has
     # not been loaded is a test failing for a reason the fix did not cause
