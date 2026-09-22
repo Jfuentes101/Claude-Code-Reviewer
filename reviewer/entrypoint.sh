@@ -96,6 +96,14 @@ if [[ "$MODE" == "fix" && -n "${FIX_DB_URL:-}" ]] && command -v pg_ctl >/dev/nul
             config/shakapacker.yml 2>/dev/null)"
     if [ -n "$out" ]; then
       mkdir -p "public/$out" && cp -r /packs/. "public/$out/" 2>/dev/null
+      src="$(ruby -ryaml -e 'print((YAML.unsafe_load_file(ARGV[0]).dig("test","source_path") rescue nil) || "app/javascript")' \
+              config/shakapacker.yml 2>/dev/null)"
+      now="$(find "$src" -type f -print0 2>/dev/null | sort -z \
+             | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d" " -f1)"
+      was="$(cat /packs-source-digest 2>/dev/null)"
+      if [ -n "$was" ] && [ "$now" != "$was" ]; then
+        STALE_PACKS=1
+      fi
       ruby -ryaml -e 'c=YAML.unsafe_load_file(ARGV[0]); c["test"]["compile"]=false; File.write(ARGV[1], c.to_yaml)' \
         config/shakapacker.yml /tmp/shakapacker.yml 2>/dev/null \
         && export SHAKAPACKER_CONFIG=/tmp/shakapacker.yml
@@ -112,6 +120,21 @@ if [[ "$MODE" == "fix" && -n "${FIX_DB_URL:-}" ]] && command -v pg_ctl >/dev/nul
     bin/rails db:test:prepare >&2 2>/dev/null \
       || echo "entrypoint: db:test:prepare did not finish; the suite may not run" >&2
   fi
+fi
+
+if [ "${STALE_PACKS:-0}" = "1" ]; then
+  # into the prompt, not just the log: the model is the only one who can decide
+  # whether its test depends on the bundle, and it cannot ask
+  body="$body
+
+--- note on this container ---
+The compiled frontend assets here were built from a different revision of $src
+than the one you are working on. Rails will serve them without rebuilding, so a
+test that renders a view runs against an older bundle. For a test that asserts
+server-rendered markup this changes nothing. If your test depends on what the
+frontend bundle produces, say so in your summary and do not report it as
+verified: CI builds the assets from your branch and is the one that can tell."
+  echo "entrypoint: packs are from another revision of $src" >&2
 fi
 
 mcp="${REVIEW_MCP:-}"
