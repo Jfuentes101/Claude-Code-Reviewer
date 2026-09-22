@@ -515,6 +515,23 @@ a person, carrying whatever the model said stopped it — usually "I could not
 write a test that fails for this", which is worth more to whoever picks it up
 than a patch would have been.
 
+It runs on its own image, built with `scripts/fixer-image <mirror> [ref] [tag]`.
+`Dockerfile.fixer` builds one FROM the reviewer's with
+a language runtime, a postgres to match CI and the headers the repo's gems build
+against, and bakes the gems from the repo's own lock — so it is repo-specific by
+construction. The script exports the ref with `git archive` rather than handing
+docker a working copy, because a checkout carries `node_modules` and `.git`, and
+the first repo this was tried against made that an 11GB build context. Reviews
+stay on the light image: reading a diff needs git and ripgrep, and the difference
+is several gigabytes.
+
+With `fix_image` and `fix_db_url` set, the entrypoint starts a throwaway postgres
+inside the container, creates the role and database named in that URL, and runs
+`db:test:prepare` against the schema the checkout carries. The database dies with
+the container, so two runs cannot see each other's rows. Without them a fix still
+runs on the light image — it just cannot execute the test it writes, and CI on
+the draft is the first thing that does.
+
 Its standing instructions are `policy/fix/CLAUDE.md`, not the review standards:
 a subdirectory of `policy_dir` named after the mode replaces the root for that
 mode. They are written against `policy/CLAUDE.md` on purpose — the pull request

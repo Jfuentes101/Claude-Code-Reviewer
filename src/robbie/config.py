@@ -50,6 +50,14 @@ class IssueConfig(_Strict):
     # end, which is where a cheap arm stops being cheap. None = the account default.
     fix_model: str | None = None
     fix_via_endpoint: bool = False
+    # A fix runs on its own image: it needs a runtime, a database and the native
+    # libraries the repo's gems build against, none of which a review needs and
+    # all of which are the difference between a small image and a huge one.
+    # Empty = the reviewer's image, and a fix that cannot run what it writes.
+    fix_image: str = ""
+    # Handed to the fix container as DATABASE_URL, and what the entrypoint reads
+    # to know which role and database to create. Empty = no database is started.
+    fix_db_url: str = ""
 
     @model_validator(mode="after")
     def _clears_must_narrow_the_queue(self) -> IssueConfig:
