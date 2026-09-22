@@ -78,7 +78,7 @@ async def _fix_one(
         # somebody's earlier run already got there; the label is all that is left
         return await _settle(repo, issue, opened, "a pull request was already open")
 
-    gate = budget.check(cfg, db, 1)
+    gate = budget.check(cfg, db, 1, via_endpoint=repo.issues.fix_via_endpoint)
     if not gate.allowed:
         logger.info("%s#%s: the fix waits for the meter: %s", repo.slug, number, gate.detail)
         return None
@@ -87,6 +87,8 @@ async def _fix_one(
         cfg, secrets, repo, issue,
         prompt=fix_preamble(number=number, title=issue.title, body=issue.body),
         mode="fix",
+        model=repo.issues.fix_model,
+        via_endpoint=repo.issues.fix_via_endpoint,
     )
     db.record_spend(
         repo=repo.slug, pr=number, kind="fix",
@@ -96,8 +98,10 @@ async def _fix_one(
     opened = await open_pr_for(repo.slug, number)
     if opened:
         blocks = parse_fix(run.text)
-        logger.info("%s#%s: opened %s in %.0fs costing %s",
-                    repo.slug, number, opened, run.duration_s, run.cost_usd)
+        logger.info("%s#%s: opened %s with %s in %.0fs costing %s",
+                    repo.slug, number, opened,
+                    repo.issues.fix_model or "the account default",
+                    run.duration_s, run.cost_usd)
         return await _settle(repo, issue, opened, blocks.body or "fixed")
 
     reason = _why_not(run.ok, run.error, run.text)

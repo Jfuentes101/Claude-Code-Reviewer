@@ -107,12 +107,12 @@ async def _ask_about_money(
     onwards: the choice of model here is a guess until there are real reports to
     replay it against, and a guess nobody wrote down stays one.
     """
-    arm = repo.issues.model or "the account default"
+    arm = repo.issues.money_model or "the account default"
     if dry_run:
         logger.info("%s#%s: dry run: would ask %s the money question",
                     repo.slug, issue.number, arm)
         return None
-    gate = budget.check(cfg, db, 1, via_endpoint=repo.issues.via_endpoint)
+    gate = budget.check(cfg, db, 1, via_endpoint=repo.issues.money_via_endpoint)
     if not gate.allowed:
         logger.info("%s#%s: the money question waits for the meter: %s",
                     repo.slug, issue.number, gate.detail)
@@ -122,8 +122,8 @@ async def _ask_about_money(
         cfg, secrets, repo, issue,
         prompt=money_prompt(issue.title, issue.body),
         mode="money",
-        model=repo.issues.model,
-        via_endpoint=repo.issues.via_endpoint,
+        model=repo.issues.money_model,
+        via_endpoint=repo.issues.money_via_endpoint,
     )
     db.record_spend(
         repo=repo.slug, pr=issue.number, kind="money",

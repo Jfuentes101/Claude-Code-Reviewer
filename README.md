@@ -515,6 +515,11 @@ a person, carrying whatever the model said stopped it — usually "I could not
 write a test that fails for this", which is worth more to whoever picks it up
 than a patch would have been.
 
+`issues.fix_model` picks the arm, and it is one arm, not a split. `review_models`
+exists to compare models on reviews; a fix is not a thing to try cheaply, because
+an arm that gets three of the four steps right opens a draft pull request that
+somebody has to read and close. Unset means the account default.
+
 Needs `FIXER_GH_TOKEN` and `fix_mcp`. Without either, the fixer does not run.
 
 ### retract
