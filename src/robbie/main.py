@@ -29,6 +29,7 @@ from robbie import budget, dashboard
 from robbie import config as configmod
 from robbie.db import Db
 from robbie.digest import post_digest
+from robbie.issues import triage_tick
 from robbie.orchestrator import Orchestrator
 from robbie.runner import check_model_proxy
 from robbie.slack import Slack
@@ -91,6 +92,9 @@ def _parser() -> argparse.ArgumentParser:
     th.add_argument("--repo", default=None)
     th.add_argument("--pr", type=int, nargs="+", default=[], help="only these PRs")
 
+    tri = sub.add_parser("triage", help="triage the bug queue: decide, comment, label")
+    tri.add_argument("--repo", default=None, help="only this repo")
+
     dig = sub.add_parser("digest", help="post the stuck-in-review digest")
     dig.add_argument("--days", type=int, default=None)
 
@@ -150,7 +154,7 @@ async def _run(args: argparse.Namespace) -> int:
     model = getattr(args, "model", None)
     if (why := why_no_model(cfg, secrets, model)) is not None:
         raise SystemExit(why)
-    if args.command in ("poll", "once", "threads"):
+    if args.command in ("poll", "once", "threads", "triage"):
         # only the commands that spawn one; `status` and `digest` stay usable
         # precisely when something is down
         await check_model_proxy(cfg, secrets)
@@ -175,6 +179,20 @@ async def _run(args: argparse.Namespace) -> int:
                 logger.info("%s", outcome)
             if not outcomes:
                 logger.info("no threads of mine are waiting on me")
+            return 0
+
+        if args.command == "triage":
+            repos = [r for r in cfg.repos if args.repo in (None, r.slug)]
+            if not repos:
+                raise SystemExit(f"{args.repo} is not a configured repo")
+            settled = [
+                s for r in repos
+                for s in await triage_tick(cfg, secrets, r, db, dry_run=args.dry_run)
+            ]
+            for one in settled:
+                logger.info("#%s %s: %s", one.number, one.action, one.reason)
+            if not settled:
+                logger.info("nothing in the bug queue is waiting on a decision")
             return 0
 
         if args.command == "status":

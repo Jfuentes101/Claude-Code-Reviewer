@@ -110,3 +110,37 @@ repos:
     # posted as the whole comment body on an `ok`, to start a build that no
     # longer runs on push. Whatever listens for it may match the entire comment.
     ci_phrase: run-ci
+
+    # The bug queue. Leave `labels` out and none of this runs.
+    #
+    # An issue is a candidate while it carries EVERY label in `labels`. robbie
+    # takes `clears` off once it has decided, which is what keeps it from reading
+    # the same report every tick; take that label off by hand and the issue is
+    # yours, put it back and it is robbie's again.
+    #
+    # `rules` reads the issue form's own answers, by their exact headings and
+    # their exact dropdown strings. Copy them from the form; they are the whole
+    # contract, and a heading renamed on one side silently stops matching.
+    #   require:  the ONLY answers that pass. An option added to the form later
+    #             is a no until it is listed here — use this for money.
+    #   needs:    fields that must be answered at all.
+    #   block_if: answers that send it to a person.
+    #   ask_if:   answers that settle nothing, so a model is asked instead. A
+    #             dropdown left at its default belongs here, not in `require`.
+    # YAML turns a bare No into false: quote it, or the rule matches nothing.
+    issues:
+      labels: ["bug", "needs-triage"]
+      clears: needs-triage
+      fixable_label: robbie-fix
+      assignee: some-dev        # who gets the ones a bot may not touch
+      # model: glm-5.3-flash:cloud   # which arm answers the money question
+      # via_endpoint: true           # ...and whose meter it is billed against
+      rules:
+        require:
+          "Does this involve money?": ["No"]
+        ask_if:
+          "Does this involve money?": ["Not sure"]
+        needs: ["Steps to reproduce"]
+        block_if:
+          "How often does it happen?": ["Unable to reproduce"]
+          "How many are affected?": ["Many or all customers"]

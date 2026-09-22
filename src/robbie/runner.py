@@ -28,7 +28,7 @@ from pydantic import SecretStr
 
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.contract import Blocks, parse_blocks
-from robbie.github import PrMeta
+from robbie.github import IssueMeta, PrMeta
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ async def run_review(
     cfg: Config,
     secrets: Secrets,
     repo: RepoConfig,
-    meta: PrMeta,
+    meta: PrMeta | IssueMeta,
     *,
     prompt: str,
     mode: str = "review",
@@ -175,10 +175,17 @@ def prune_transcripts(cfg: Config) -> int:
 
 
 def _stem(
-    cfg: Config, repo: RepoConfig, meta: PrMeta, model: str | None, *, mode: str = "review"
+    cfg: Config, repo: RepoConfig, meta: PrMeta | IssueMeta, model: str | None, *,
+    mode: str = "review",
 ) -> str:
-    """Names this run's transcripts and its container — one per model per commit."""
-    tag = f"{repo.name}-{meta.number}-{meta.head_sha[:8]}"
+    """Names this run's transcripts and its container — one per model per commit.
+
+    An issue has no commit, so its runs are named by number alone: two of them for
+    the same issue are the same question asked twice, and the second overwriting
+    the first is the honest record of that.
+    """
+    sha = getattr(meta, "head_sha", "")
+    tag = f"{repo.name}-{meta.number}-{sha[:8]}" if sha else f"{repo.name}-{meta.number}"
     if mode != "review":
         tag = f"{tag}-{mode}"
     if model:
@@ -217,7 +224,7 @@ def _why_it_failed(code: int | None, out: bytes, err: bytes) -> str:
 
 
 def _docker_argv(
-    cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta, *,
+    cfg: Config, secrets: Secrets, repo: RepoConfig, meta: PrMeta | IssueMeta, *,
     name: str, mode: str = "review", model: str | None = None,
     via_endpoint: bool = False,
 ) -> list[str]:
@@ -234,11 +241,13 @@ def _docker_argv(
         # docker CLI reads these out of its own environment (see _docker_env)
         "-e", "GH_TOKEN",
         "-e", f"REPO_SLUG={repo.slug}",
-        "-e", f"PR_NUMBER={meta.number}",
+        # empty for an issue: there is no PR to check out, and the entrypoint
+        # reads that as "stay on CRITERIA_REF" rather than guessing
+        "-e", f"PR_NUMBER={meta.number if isinstance(meta, PrMeta) else ''}",
         "-e", f"PR_URL={meta.url}",
         "-e", f"REVIEW_COMMAND={repo.review_command}",
         "-e", f"REVIEW_EFFORT={cfg.review_effort}",
-        "-e", f"BASE_REF={meta.base_ref}",
+        "-e", f"BASE_REF={getattr(meta, 'base_ref', repo.criteria_ref)}",
         # the diff is judged against BASE_REF; the criteria come from here
         "-e", f"CRITERIA_REF={repo.criteria_ref}",
         "-e", f"REVIEW_MODE={mode}",

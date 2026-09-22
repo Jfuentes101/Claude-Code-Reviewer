@@ -3,7 +3,9 @@
 # envelope to stdout, touches nothing on the host.
 set -euo pipefail
 
-: "${REPO_SLUG:?}" "${PR_NUMBER:?}" "${PR_URL:?}" "${REVIEW_COMMAND:?}" "${BASE_REF:?}"
+: "${REPO_SLUG:?}" "${PR_URL:?}" "${REVIEW_COMMAND:?}" "${BASE_REF:?}"
+# empty on an issue run: there is no PR, and the checkout below is skipped
+: "${PR_NUMBER?}"
 # unset means an orchestrator too old to pin it, which is the bug this closes
 : "${CRITERIA_REF:?}"
 
@@ -27,9 +29,16 @@ gh auth setup-git
 git clone --quiet --shared /bare /work/repo
 cd /work/repo
 git remote set-url origin "https://github.com/$REPO_SLUG.git"
-# the mirror is only an object cache; gh fetches the head itself, so this works
-# even for a fork or a branch the mirror has never seen
-gh pr checkout "$PR_NUMBER" >/dev/null
+if [ -n "$PR_NUMBER" ]; then
+  # the mirror is only an object cache; gh fetches the head itself, so this works
+  # even for a fork or a branch the mirror has never seen
+  gh pr checkout "$PR_NUMBER" >/dev/null
+else
+  # an issue is asked about trunk, and about a trunk fresher than the mirror:
+  # the answer is which code a report lands in, and the mirror lags every push
+  git fetch --quiet origin "$CRITERIA_REF"
+  git checkout --quiet FETCH_HEAD
+fi
 
 # The review criteria come from CRITERIA_REF, never from the checkout and never
 # from BASE_REF: a PR must not be able to rewrite the rules it is judged by, and

@@ -27,7 +27,7 @@ from robbie import branding
 from robbie.anchor import Anchored, anchor, commentable
 from robbie.config import RepoConfig
 from robbie.db import Db
-from robbie.github import GhError, PrMeta, gh, gh_json
+from robbie.github import GhError, IssueMeta, PrMeta, gh, gh_json
 
 logger = logging.getLogger(__name__)
 
@@ -349,3 +349,49 @@ async def _set_label(repo: RepoConfig, pr: int, *, add: bool) -> None:
             "api", "-X", "DELETE",
             f"repos/{repo.slug}/issues/{pr}/labels/{quote(repo.needs_work_label, safe='')}",
         )
+
+
+TRIAGE_MARKER = "<!-- robbie-triage -->"
+
+
+async def settle_issue(
+    repo: RepoConfig,
+    issue: IssueMeta,
+    *,
+    say: str,
+    add_label: str = "",
+    assignee: str = "",
+    dry_run: bool = False,
+) -> PublishResult:
+    """Record a triage decision on the issue and take it out of the queue.
+
+    In that order, and the queue label comes off last. A crash halfway leaves the
+    issue where a tick will read it again, which costs a duplicate comment; doing
+    it the other way round would drop a bug report silently, and nobody goes
+    looking for the one that never came back.
+
+    No close, no edit of the report, no assignee it was not configured with.
+    """
+    clears = repo.issues.clears
+    if dry_run:
+        return PublishResult(False, f"dry run: would settle #{issue.number} ({say})")
+    body = f"{TRIAGE_MARKER}\n{branding.signature()}\n\n{say}"
+    await gh(
+        "api", f"repos/{repo.slug}/issues/{issue.number}/comments",
+        "--input", "-", stdin=json.dumps({"body": body}),
+    )
+    if assignee:
+        await gh(
+            "api", f"repos/{repo.slug}/issues/{issue.number}/assignees",
+            "--input", "-", stdin=json.dumps({"assignees": [assignee]}),
+        )
+    if add_label:
+        await gh(
+            "api", f"repos/{repo.slug}/issues/{issue.number}/labels",
+            "--input", "-", stdin=json.dumps({"labels": [add_label]}),
+        )
+    await gh(
+        "api", "-X", "DELETE",
+        f"repos/{repo.slug}/issues/{issue.number}/labels/{quote(clears, safe='')}",
+    )
+    return PublishResult(True, say)
