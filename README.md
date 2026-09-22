@@ -448,10 +448,43 @@ docker compose exec robbie robbie once --repo o/r --pr 123      # force one revi
 docker compose exec robbie robbie poll --once                   # a single tick
 docker compose exec robbie robbie digest --days 7               # stuck-in-review digest
 docker compose exec robbie robbie threads --pr 123              # just the replies half
+docker compose exec robbie robbie triage --repo o/r             # decide the bug queue
 docker compose exec robbie robbie retract                       # drop vetoes a later ok undid
 docker compose exec robbie robbie --dry-run poll --once         # decide, write nothing
 docker compose exec robbie robbie --no-publish poll --once      # review for real, post nothing
 ```
+
+### triage
+
+A second queue, and a different one: not pull requests but the bug reports a
+structured issue form files. It reads the issues carrying every label in
+`issues.labels`, decides which of them an automated fix may attempt, and records
+that as a comment plus a label — or an assignee, for the ones it may not.
+
+Most of the decision costs nothing. A form's dropdowns already say whether the
+report involves money, whether anyone could reproduce it and how many people it
+hits, and `issues.rules` reads those answers directly. `require` is the polarity
+that matters: it lists the answers that pass, so an option added to the form next
+month is a no until somebody says otherwise.
+
+What the form cannot settle is the dropdown left at its default. `Not sure` is
+what the form ships selected, so reading it as "no money" clears nearly every
+report and reading it as "money" sends nearly every report to a person. Those buy
+one model call instead: the container runs without a PR, on `criteria_ref` rather
+than a checkout, and answers one line. Only an unambiguous `MONEY: no` clears an
+issue — silence, prose, a timeout and two markers disagreeing all read as money,
+because the report is quoted into that prompt and a line inside it can look
+exactly like the verdict.
+
+Nothing here writes code. There is no branch and no pull request, so it needs no
+permission the reviewer does not already have, and `issues.clears` is the whole
+of its state: an issue still carrying that label is one nothing has decided yet.
+Take the label off by hand and the issue is yours; put it back and it is robbie's
+again. Every way out that is not a decision — a failed read, a paused meter, a
+model that never answered — leaves the label on.
+
+It is a command, not part of the daemon's tick. Run it from cron, or by hand
+while the rules are still being tuned.
 
 ### retract
 

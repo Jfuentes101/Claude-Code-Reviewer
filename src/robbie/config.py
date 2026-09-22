@@ -17,6 +17,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from robbie import branding
+from robbie.triage import Rules
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,35 @@ logger = logging.getLogger(__name__)
 class _Strict(BaseModel):
     # a typo'd key in the YAML must fail at boot, not be silently ignored
     model_config = ConfigDict(extra="forbid")
+
+
+class IssueConfig(_Strict):
+    """The bug queue a fixer works from. No `labels` is the whole feature off.
+
+    `clears` is what robbie takes off once it has decided, and it has to be one of
+    the labels the queue selects on — otherwise every tick re-reads the same issue
+    and pays for the same model call again, forever.
+    """
+
+    labels: tuple[str, ...] = ()  # an issue must carry ALL of these to be a candidate
+    clears: str = ""  # ...and robbie takes this one off once it has triaged it
+    fixable_label: str = ""  # applied instead, when nothing forbids a bot trying
+    assignee: str = ""  # who gets the ones a bot may not touch. Empty = nobody
+    rules: Rules = Rules()
+    # which arm answers the money question. Same meaning as `review_models`.
+    model: str | None = None
+    via_endpoint: bool = False
+
+    @model_validator(mode="after")
+    def _clears_must_narrow_the_queue(self) -> IssueConfig:
+        if self.labels and self.clears not in self.labels:
+            raise ValueError(
+                f"issues.clears must be one of issues.labels {list(self.labels)}; "
+                "a label that does not narrow the queue leaves every issue in it"
+            )
+        if self.labels and not self.fixable_label:
+            raise ValueError("issues.fixable_label is what an attemptable issue gets")
+        return self
 
 
 class RepoConfig(_Strict):
@@ -56,6 +86,7 @@ class RepoConfig(_Strict):
     ignore_checks: tuple[str, ...] = ("CodeRabbit",)
     # CI does not run on push any more, so an approval is what pays for a build
     ci_phrase: str = "run-ci"
+    issues: IssueConfig = IssueConfig()
 
     @property
     def brake_labels(self) -> tuple[str, ...]:

@@ -13,7 +13,7 @@ import pytest
 from robbie import config as configmod
 from robbie.anchor import Anchored
 from robbie.config import Config, DockerConfig, RepoConfig, Secrets, SlackConfig
-from robbie.github import PrMeta
+from robbie.github import IssueMeta, PrMeta
 from robbie.publish import MAX_BYTES, _assemble, _truncate
 from robbie.runner import (
     TRANSCRIPT_DAYS,
@@ -58,7 +58,35 @@ def _pr(**kw) -> PrMeta:
     return PrMeta(**{**base, **kw})
 
 
+def _issue(**kw) -> IssueMeta:
+    base = dict(
+        number=12, title="t", url="https://x/12", author="cs", body="", labels=(),
+    )
+    return IssueMeta(**{**base, **kw})
+
+
 # ----- the container --------------------------------------------------------
+
+
+def test_an_issue_run_carries_no_pr_to_check_out(tmp_path):
+    """An empty PR_NUMBER is what tells the entrypoint to stay on the criteria ref.
+    Passing the issue number there would check out a pull request with that id —
+    a different, unrelated change, on a repo where both are numbered together."""
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _issue(), name="n")
+
+    assert "PR_NUMBER=" in argv
+    assert "PR_URL=https://x/12" in argv
+    assert f"BASE_REF={cfg.repos[0].criteria_ref}" in argv
+
+
+def test_a_pr_run_still_carries_its_number(tmp_path):
+    cfg = _cfg(tmp_path)
+    argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _pr(), name="n")
+
+    assert "PR_NUMBER=7" in argv
+
+
 
 
 def test_the_mirror_is_mounted_read_only(tmp_path):
