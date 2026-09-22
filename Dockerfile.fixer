@@ -1,0 +1,90 @@
+# The fix agent: the reviewer image plus enough to RUN the test it writes.
+#
+# Separate from the reviewer on purpose. A review reads a diff and needs git and
+# ripgrep; this needs a language runtime, a database and every native library the
+# repository's gems build against, which is the difference between a 400MB image
+# and several gigabytes. Reviews stay on the light one.
+#
+# Repo-specific by construction, because the gems are: build it with a named
+# context pointing at a checkout of the repo it will fix.
+#
+#   scripts/fixer-image <bare-or-checkout> [ref] [tag]
+#
+# which exports the ref, reads `.ruby-version` and builds. Do not hand it a
+# working copy as the context directly: node_modules and .git made that 11GB of
+# build context on the first repo this was tried against.
+#
+# RUBY has to be the exact patch release when the Gemfile pins one — bundler
+# refuses 3.3.12 for a Gemfile asking for 3.3.7, and the `3.3-slim` tag moves.
+#
+# Rebuild it when Gemfile.lock moves. A gem the lock has and the image does not
+# is installed at run time, which works and costs the run a few minutes.
+ARG BASE=robbie-reviewer:latest
+ARG RUBY=3.3-slim-bookworm
+
+FROM ruby:${RUBY} AS ruby
+FROM ${BASE}
+
+USER root
+
+# ----- gems, built against the whole checkout -------------------------------
+#
+# The whole checkout and not just the Gemfile: a Gemfile with `path:` gems needs
+# those directories to exist to resolve at all. It lands in a stage that is
+# thrown away, so nothing of the repository ships in the final image.
+FROM ${BASE} AS gems
+USER root
+# Headers for whatever the lock builds natively. This list is the one place the
+# image is not repo-agnostic in practice: a Gemfile with a different native gem
+# needs its -dev package here, and the build says which by name when it does.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential pkg-config \
+      libpq-dev libyaml-dev libffi-dev zlib1g-dev libssl-dev libxml2-dev libxslt1-dev \
+      libcairo2-dev libglib2.0-dev libgirepository1.0-dev libpango1.0-dev \
+      librsvg2-dev libgdk-pixbuf-2.0-dev libvips-dev libmagickwand-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=ruby /usr/local /usr/local
+ENV BUNDLE_PATH=/usr/local/bundle \
+    BUNDLE_APP_CONFIG=/usr/local/bundle \
+    GEM_HOME=/usr/local/bundle \
+    PATH=/usr/local/bundle/bin:/usr/local/bin:$PATH
+COPY --from=repo . /src
+WORKDIR /src
+# --local when the context brought its own .gem files: a Gemfile with a second
+# `source` cannot be resolved at all while that host is down, and one of them was
+RUN gem install bundler:"$(tail -1 Gemfile.lock | tr -d ' ')" \
+ && bundle config set --local without 'development' \
+ && if [ -d vendor/cache ]; then bundle install --local --jobs 4; \
+    else bundle install --jobs 4 --retry 2; fi
+
+# ----- the image a fix actually runs in -------------------------------------
+FROM ${BASE}
+USER root
+
+# postgres 15 to match CI, the client the entrypoint uses, and the shared
+# libraries the built gems link against at run time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      postgresql-15 postgresql-client-15 tzdata \
+      libyaml-0-2 libffi8 libgmp10 \
+      libpq5 libvips42 imagemagick libcairo2 libglib2.0-0 libgirepository-1.0-1 \
+      libpango-1.0-0 librsvg2-2 libgdk-pixbuf-2.0-0 libxml2 libxslt1.1 \
+      gir1.2-glib-2.0 gir1.2-gdkpixbuf-2.0 gir1.2-pango-1.0 gir1.2-rsvg-2.0 \
+      gir1.2-freedesktop \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ruby /usr/local /usr/local
+COPY --from=gems /usr/local/bundle /usr/local/bundle
+
+ENV BUNDLE_PATH=/usr/local/bundle \
+    BUNDLE_APP_CONFIG=/usr/local/bundle \
+    GEM_HOME=/usr/local/bundle \
+    PATH=/usr/lib/postgresql/15/bin:/usr/local/bundle/bin:/usr/local/bin:$PATH \
+    LANG=C.UTF-8
+
+# unprivileged at run time, so it must never need to write into either
+RUN chmod -R a+rX /usr/local/bundle \
+ && mkdir -p /work/pgdata && chown -R 1000:1000 /work
+
+USER robbie
+WORKDIR /work
+ENTRYPOINT ["review"]

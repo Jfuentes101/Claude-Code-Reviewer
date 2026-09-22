@@ -71,6 +71,32 @@ if [[ "$MODE" == "review" ]]; then
 $body"
 fi
 
+# A fix image carries a runtime and a database; the review image does not, and a
+# fix run on it still works — it just cannot run what it writes. Everything here
+# is skipped when the pieces are absent, so one entrypoint serves both.
+if [[ "$MODE" == "fix" && -n "${FIX_DB_URL:-}" ]] && command -v pg_ctl >/dev/null 2>&1; then
+  db_user="${FIX_DB_URL#*://}"; db_user="${db_user%%@*}"; db_user="${db_user%%:*}"
+  db_name="${FIX_DB_URL##*/}"; db_name="${db_name%%\?*}"
+  # -k /tmp below for the same reason: the default socket directory belongs to
+  # root and this runs unprivileged
+  export PGDATA=/work/pgdata PGHOST=127.0.0.1 PGPORT=5432 PGUSER="$db_user"
+  export DATABASE_URL="$FIX_DB_URL" RAILS_ENV=test
+  # a preloader is for a developer's second run; here every run is the first, and
+  # spring's fork dance fails outright in a container with no writable tmp of its own
+  export DISABLE_SPRING=1
+  # thrown away with the container, so trust auth on loopback is the whole of it
+  initdb --username="$db_user" --auth=trust --encoding=UTF8 >&2 \
+    && pg_ctl start -w -o "-h 127.0.0.1 -p 5432 -k /tmp" -l /work/pg.log >&2 \
+    && createdb --username="$db_user" "$db_name" >&2 \
+    || echo "entrypoint: no database this run; the fix cannot run its test" >&2
+  if [ -x bin/rails ]; then
+    # the schema the checkout carries, not a dump: a migration in trunk that has
+    # not been loaded is a test failing for a reason the fix did not cause
+    bin/rails db:test:prepare >&2 2>/dev/null \
+      || echo "entrypoint: db:test:prepare did not finish; the suite may not run" >&2
+  fi
+fi
+
 mcp="${REVIEW_MCP:-}"
 [[ -n "$mcp" ]] || mcp='{"mcpServers":{}}'
 

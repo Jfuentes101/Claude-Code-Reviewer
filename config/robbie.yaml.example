@@ -154,6 +154,15 @@ repos:
       # a tool call to the end, and an arm that manages three of those four opens
       # a draft pull request somebody has to close. Unset = the account default.
       fix_model: opus
+      # A fix runs on its own image, built FROM the reviewer's with a runtime, a
+      # database and the native libraries this repo's gems need — see
+      # Dockerfile.fixer. Leave it out and a fix still runs on the light image;
+      # it just cannot run the test it writes, and CI is the first thing that does.
+      # fix_image: robbie-fixer:latest
+      # Handed to that container as DATABASE_URL. The entrypoint reads the role
+      # and the database out of it and creates both in a throwaway postgres that
+      # dies with the container. Empty = no database is started.
+      # fix_db_url: postgres://app@localhost:5432/app_test
       rules:
         require:
           "Does this involve money?": ["No"]

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Build the fix image for one repo.
+#
+#   scripts/fixer-image <bare-or-checkout> [ref] [tag]
+#
+# The context is a `git archive` export and not the working copy on purpose: a
+# checkout carries node_modules and .git, which on the first repo this was tried
+# against was 11GB of build context for a Gemfile and a handful of gemspecs.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+SRC="${1:?usage: fixer-image <bare-or-checkout> [ref] [tag]}"
+REF="${2:-main}"
+TAG="${3:-robbie-fixer:latest}"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+echo "exporting $SRC@$REF"
+git -C "$SRC" archive --format=tar "$REF" | tar -x -C "$WORK"
+
+[ -f "$WORK/Gemfile.lock" ] || { echo "fixer-image: no Gemfile.lock at $REF" >&2; exit 1; }
+
+# Build from local .gem files when we have them. Not only for speed: a Gemfile
+# with a second `source` is hostage to that host still being up, and this one's
+# was refusing connections outright the day this was written.
+CACHE="${FIXER_GEM_CACHE:-$( (gem env home 2>/dev/null || true) )/cache}"
+if [ -d "$CACHE" ] && ls "$CACHE"/*.gem >/dev/null 2>&1; then
+  mkdir -p "$WORK/vendor/cache"
+  cp "$CACHE"/*.gem "$WORK/vendor/cache/"
+  echo "seeded vendor/cache with $(ls "$WORK/vendor/cache" | wc -l) gems from $CACHE"
+fi
+
+# the exact patch release: bundler refuses 3.3.12 for a Gemfile pinning 3.3.7,
+# and the minor-version tag moves under you
+RUBY_ARG=()
+if [ -f "$WORK/.ruby-version" ]; then
+  version="$(tr -d ' \n' < "$WORK/.ruby-version")"
+  RUBY_ARG=(--build-arg "RUBY=${version}-slim-bookworm")
+  echo "ruby ${version}"
+fi
+
+docker build -f Dockerfile.fixer -t "$TAG" \
+  "${RUBY_ARG[@]}" --build-context "repo=$WORK" .
+
+echo "built $TAG — set it as issues.fix_image"

@@ -22,6 +22,7 @@ from robbie.runner import (
     _kept,
     _stem,
     _why_it_failed,
+    image_for,
     policy_for,
     prune_transcripts,
 )
@@ -359,6 +360,40 @@ def test_a_fix_run_mounts_its_own_policy():
     cfg = _cfg(Path("/tmp")).model_copy(update={"policy_dir": Path("policy")})
     argv = _docker_argv(cfg, _secrets(), cfg.repos[0], _issue(), name="n", mode="fix")
     assert "policy/fix:/policy:ro" in argv
+
+
+def _fixing(cfg):
+    """A repo whose fixes run on their own image, with a database."""
+    repo = cfg.repos[0]
+    return repo.model_copy(update={"issues": repo.issues.model_copy(update={
+        "fix_image": "robbie-fixer:latest",
+        "fix_db_url": "postgres://app@localhost:5432/app_test",
+    })})
+
+
+def test_a_fix_runs_on_its_own_image_and_a_review_does_not():
+    """The runtime, the database and every native library the repo's gems build
+    against are the difference between a small image and a huge one, and a review
+    needs none of them."""
+    cfg = _cfg(Path("/tmp"))
+    repo = _fixing(cfg)
+
+    assert image_for(repo, "fix") == "robbie-fixer:latest"
+    assert image_for(repo, "review") == repo.image
+    assert image_for(cfg.repos[0], "fix") == repo.image, "falls back when unset"
+
+
+def test_the_database_url_only_reaches_a_fix_run():
+    cfg = _cfg(Path("/tmp"))
+    repo = _fixing(cfg)
+
+    fix = _docker_argv(cfg, _secrets(), repo, _issue(), name="n", mode="fix")
+    review = _docker_argv(cfg, _secrets(), repo, _pr(), name="n")
+
+    assert "FIX_DB_URL=postgres://app@localhost:5432/app_test" in fix
+    assert not any(a.startswith("FIX_DB_URL") for a in review)
+    assert fix[-1] == "robbie-fixer:latest"
+    assert review[-1] == repo.image
 
 
 def test_the_shipped_fix_policy_is_present_and_whole():

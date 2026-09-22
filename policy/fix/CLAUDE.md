@@ -18,17 +18,26 @@ It has to **fail before your change and pass after it**, for the reason in the
 report. A test that passes on the unfixed code is decoration, and it is worse
 than no test — it says the bug is covered when it is not.
 
-**You probably cannot run it.** This container has the repository and nothing to
-run it with: no language runtime beyond node, no database, no fixtures. CI on the
-draft pull request is what executes your test, so the see-break check is one you
-have to do by reading: take your test, mentally remove your fix, and name the
-line that raises or the assertion that fails. If you cannot name it, the test
-does not pin the bug — rewrite it until you can.
+**Find out whether you can run it, before you decide how to work.** Some fix
+images carry the language runtime and a throwaway database and some do not. Check
+once, at the start: is there a runner (`bin/rails`, `bin/rake`, `pytest`, `yarn
+test`, whatever this repo uses), and does a trivial invocation of it come back?
 
-Never write, in the summary or a comment, that you ran anything. If a command
-was available and you did run it, say which. Otherwise say the test has not been
-executed. A claim that something is verified when nobody verified it is the one
-failure mode here that costs a reviewer their trust in every future run.
+**If it runs, the see-break is not optional.** Write the test, run it, watch it
+fail for the reason in the report — not for a missing constant, not for a setup
+error, for the bug. Then apply the fix, run it again, watch it pass. Then run the
+neighbouring tests in the files you touched. A run that had a runner available and
+did not use it has thrown away the only real evidence it could have produced.
+
+**If it does not run**, do the see-break by reading: take your test, mentally
+remove your fix, and name the line that raises or the assertion that fails. If you
+cannot name it, the test does not pin the bug — rewrite it until you can. CI on
+the draft pull request is then what executes it for the first time.
+
+Either way, **never write that you ran something you did not**. Say which command
+you ran and what it printed, or say the test has not been executed and why. A
+claim of verification nobody performed is the one failure here that costs the
+reviewer their trust in every run after it.
 
 Test the **consequence a person reported**, not the line you happened to edit.
 "The page 500s for a guest with no email" is the test. "`build_guest` receives

@@ -227,6 +227,14 @@ def mcp_for(cfg: Config, mode: str) -> str:
     return cfg.fix_mcp if mode == "fix" else cfg.review_mcp
 
 
+def image_for(repo: RepoConfig, mode: str) -> str:
+    """Which image this run gets. A fix falls back to the reviewer's when none is
+    configured, which works — it just cannot run the test it writes."""
+    if mode == "fix" and repo.issues.fix_image:
+        return repo.issues.fix_image
+    return repo.image
+
+
 def policy_for(cfg: Config, mode: str) -> Path | None:
     """The standing instructions this mode gets, as a host path.
 
@@ -309,7 +317,9 @@ def _docker_argv(
         argv += ["-v", f"{secrets.claude_credentials}:/home/robbie/.claude/.credentials.json"]
     if (mcp := mcp_for(cfg, mode)):
         argv += ["-e", f"REVIEW_MCP={mcp}"]
-    argv.append(repo.image)
+    if mode == "fix" and repo.issues.fix_db_url:
+        argv += ["-e", f"FIX_DB_URL={repo.issues.fix_db_url}"]
+    argv.append(image_for(repo, mode))
     return argv
 
 
