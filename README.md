@@ -190,7 +190,10 @@ the same build and starts it themselves, and the once-per-sha guard only knows
 what robbie asked for. So an approval re-reads the head first — the meta the review
 ran on is as old as the review — and asks only if nothing is reporting. What counts
 as "reporting" is `ignore_checks`: a reviewer bot ticks every push, and counting it
-would mean never asking for a build again. Every uncertain answer asks anyway: a
+would mean never asking for a build again. A build bought a minute ago has no check
+yet, so the phrase itself counts too: an existing `run-ci` comment newer than the
+head commit is a build already paid for, whoever posted it, and one older than it
+bought a build for a sha nobody is looking at. Every uncertain answer asks anyway: a
 duplicate build costs minutes of CI, while a build nobody asked for leaves the
 approval without a verdict until someone notices.
 
@@ -395,7 +398,7 @@ Both are fine-grained tokens, **Only select repositories**, scoped to the repos 
 |---|---|---|---|
 | **Pull requests** | Read and **write** | Read-only | the queue search, `pr view`, the diff and the review threads — and posting the review, its inline comments and the thread replies |
 | **Issues** | Read and **write** | — | the conversation comments (CI note, red build, the CI trigger phrase), the review-request timeline, and the needs-work label: labels are the issues API, not the PR one |
-| **Contents** | Read-only | Read-only | the reviewer's `gh pr checkout`, and the review-criteria file read off `criteria_ref` |
+| **Contents** | Read-only | Read-only | the reviewer's `gh pr checkout`, the review-criteria file read off `criteria_ref`, and the head commit's date — which is what dates an earlier CI trigger phrase |
 | **Commit statuses** | Read-only | — | what gate 6 judges and what the CI watch follows |
 | **Metadata** | Read-only | Read-only | mandatory; GitHub ticks it for you |
 

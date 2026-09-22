@@ -473,9 +473,11 @@ async def test_a_verdict_with_no_summary_body_posts_nothing_either(orch, repo, m
 # ----- verdicts ------------------------------------------------------------
 
 
-def _build(monkeypatch, *checks) -> None:
-    """What a fresh read of the PR finds on the head commit, if anything."""
+def _build(monkeypatch, *checks, asked=False) -> None:
+    """What a fresh read of the PR finds on the head commit, if anything —
+    checks, and whether the trigger phrase is already sitting in the comments."""
     monkeypatch.setattr(orch_mod, "pr_meta", _async(pr(checks=checks)))
+    monkeypatch.setattr(orch_mod, "ci_already_asked", _async(asked))
 
 
 async def test_retract_only_touches_prs_a_later_ok_contradicted(orch, cfg, monkeypatch):
@@ -665,6 +667,21 @@ async def test_a_build_the_author_already_started_is_not_asked_for_again(
     orch.db.set_requested("acme/app", [7])  # the panel's other condition
     row = orch.db.approved_and_green(0)[0]
     assert row["ci_state"] == "waiting", "the watch has to report on somebody else's build"
+
+
+async def test_a_phrase_already_on_the_pr_is_not_posted_twice(orch, repo, monkeypatch):
+    """The build is paid for even before it has a check to show: someone else's
+    `run-ci` on this same commit is the only trace for the first minute of it."""
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(
+        publish_mod, "request_ci", lambda *a, **k: pytest.fail("asked for a second build"),
+    )
+    _build(monkeypatch, asked=True)
+    stub_run(monkeypatch, ok_run("ok"))
+
+    outcome = await orch._review(repo, pr(), KEY, REQ)
+
+    assert "CI already asked" in outcome.detail
 
 
 async def test_a_review_bot_ticking_the_commit_is_not_a_build(orch, repo, monkeypatch):

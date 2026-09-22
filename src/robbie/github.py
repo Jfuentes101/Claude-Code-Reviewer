@@ -414,6 +414,27 @@ def ci_started(meta: PrMeta, *, ignore: tuple[str, ...]) -> bool:
     return any(_check_name(check) not in ignore for check in meta.checks)
 
 
+async def ci_already_asked(repo: str, pr: int, *, phrase: str, sha: str) -> bool:
+    """Whether the trigger phrase is already sitting on the PR for THIS commit.
+
+    A check is the better answer, but a phrase posted a minute ago has not produced
+    one yet — the comment is the only trace a build was bought, and robbie's own
+    `once_per` cannot see one the author (or a robbie with a fresher database)
+    posted. Only comments newer than the head commit count: a phrase from before
+    the last push paid for a build on a sha nobody is looking at any more.
+    """
+    since = (
+        await gh("api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date")
+    ).strip()
+    if not since:
+        return False
+    bodies = await gh_json(
+        "api", f"repos/{repo}/issues/{pr}/comments?per_page=100&since={since}",
+        "--jq", "[.[].body]",
+    )
+    return any((body or "").strip() == phrase for body in bodies or [])
+
+
 def ci_outcome(meta: PrMeta, *, ignore: tuple[str, ...]) -> str:
     """`green`, `red` or `waiting` for a commit robbie already approved.
 

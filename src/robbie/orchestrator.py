@@ -36,6 +36,7 @@ from robbie.github import (
     PrMeta,
     Thread,
     authored,
+    ci_already_asked,
     ci_started,
     labeled_heads,
     last_review_request,
@@ -692,7 +693,7 @@ class Orchestrator:
         return result.detail
 
     async def _ci_already_started(self, repo: RepoConfig, meta: PrMeta) -> str | None:
-        """The build the author asked for while the review was still running, if any.
+        """The build somebody already asked for while the review was running, if any.
 
         Read fresh: the meta this review ran on was fetched before the container
         started, which for a long review is half an hour of someone else's clicks.
@@ -709,9 +710,20 @@ class Orchestrator:
             logger.warning("%s#%s: could not check for a running build: %s",
                            repo.slug, meta.number, ex)
             return None
-        if fresh.head_sha != meta.head_sha or not ci_started(fresh, ignore=repo.ignore_checks):
+        if fresh.head_sha != meta.head_sha:
             return None
-        return f"CI already running for {meta.head_sha[:8]}"
+        if ci_started(fresh, ignore=repo.ignore_checks):
+            return f"CI already running for {meta.head_sha[:8]}"
+        # a phrase posted minutes ago has no check yet: the comment is the only trace
+        try:
+            asked = await ci_already_asked(
+                repo.slug, meta.number, phrase=repo.ci_phrase, sha=meta.head_sha
+            )
+        except GhError as ex:
+            logger.warning("%s#%s: could not look for an earlier %r: %s",
+                           repo.slug, meta.number, repo.ci_phrase, ex)
+            return None
+        return f"CI already asked for {meta.head_sha[:8]}" if asked else None
 
     async def _token_login(self) -> str | None:
         if self._self_login is None:
