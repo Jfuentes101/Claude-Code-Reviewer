@@ -360,7 +360,7 @@ async def settle_issue(
     *,
     say: str,
     add_label: str = "",
-    assignee: str = "",
+    assignee: tuple[str, ...] = (),
     clears: str = "",
     dry_run: bool = False,
 ) -> PublishResult:
@@ -384,7 +384,7 @@ async def settle_issue(
     if assignee:
         await gh(
             "api", f"repos/{repo.slug}/issues/{issue.number}/assignees",
-            "--input", "-", stdin=json.dumps({"assignees": [assignee]}),
+            "--input", "-", stdin=json.dumps({"assignees": list(assignee)}),
         )
     if add_label:
         await gh(

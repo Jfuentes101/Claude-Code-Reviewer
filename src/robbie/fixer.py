@@ -137,7 +137,7 @@ async def open_pr_for(slug: str, number: int) -> str:
 async def _settle(repo: RepoConfig, issue, opened: str, reason: str) -> Fixed:
     if opened:
         say = f"Opened {opened} for this — still a draft, and it needs a human review."
-        assignee = ""
+        assignee: tuple[str, ...] = ()
     else:
         say = f"I could not fix this one, so it is back with a person.\n\n_{reason}_"
         assignee = repo.issues.assignee

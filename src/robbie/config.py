@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from robbie import branding
 from robbie.triage import Rules
@@ -38,7 +38,7 @@ class IssueConfig(_Strict):
     labels: tuple[str, ...] = ()  # an issue must carry ALL of these to be a candidate
     clears: str = ""  # ...and robbie takes this one off once it has triaged it
     fixable_label: str = ""  # applied instead, when nothing forbids a bot trying
-    assignee: str = ""  # who gets the ones a bot may not touch. Empty = nobody
+    assignee: tuple[str, ...] = ()  # who gets the ones a bot may not touch. Empty = nobody
     rules: Rules = Rules()
     # Which arm answers the money question: a classification, so a cheap one does.
     # `via` has the same meaning as in `review_models` — it picks the endpoint and
@@ -58,6 +58,13 @@ class IssueConfig(_Strict):
     # Handed to the fix container as DATABASE_URL, and what the entrypoint reads
     # to know which role and database to create. Empty = no database is started.
     fix_db_url: str = ""
+
+    @field_validator("assignee", mode="before")
+    @classmethod
+    def _one_or_many(cls, v: object) -> object:
+        if isinstance(v, str):
+            return (v,) if v else ()
+        return v
 
     @model_validator(mode="after")
     def _clears_must_narrow_the_queue(self) -> IssueConfig:

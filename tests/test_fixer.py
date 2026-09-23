@@ -111,7 +111,7 @@ def repo() -> RepoConfig:
         slug="acme/app", reviewer_login="rev", bare=Path("/srv/m/app.git"),
         issues=IssueConfig(
             labels=("bug", "needs-triage"), clears="needs-triage",
-            fixable_label="robbie-fix", assignee="a-dev", rules=RULES,
+            fixable_label="robbie-fix", assignee=("a-dev",), rules=RULES,
         ),
     )
 
@@ -148,7 +148,7 @@ def _async(value):
 def settled(monkeypatch) -> list[dict]:
     calls: list[dict] = []
 
-    async def fake(repo, issue, *, say, add_label="", assignee="", clears="", dry_run=False):
+    async def fake(repo, issue, *, say, add_label="", assignee=(), clears="", dry_run=False):
         calls.append({"say": say, "assignee": assignee, "clears": clears})
         return PublishResult(True, say)
 
@@ -210,7 +210,7 @@ async def test_a_model_claiming_fixed_with_no_pull_request_goes_to_a_person(
     done = await fix_tick(cfg, SECRETS, repo, db)
 
     assert done[0].opened == ""
-    assert settled[0]["assignee"] == "a-dev"
+    assert settled[0]["assignee"] == ("a-dev",)
 
 
 async def test_a_cannot_hands_over_the_models_own_words(cfg, db, repo, monkeypatch, settled):
@@ -233,7 +233,7 @@ async def test_a_run_that_died_goes_to_a_person(cfg, db, repo, monkeypatch, sett
     done = await fix_tick(cfg, SECRETS, repo, db)
 
     assert "timed out" in done[0].reason
-    assert settled[0]["assignee"] == "a-dev"
+    assert settled[0]["assignee"] == ("a-dev",)
 
 
 async def test_an_issue_that_already_has_a_pull_request_is_not_fixed_twice(

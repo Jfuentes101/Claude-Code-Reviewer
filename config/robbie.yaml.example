@@ -143,7 +143,7 @@ repos:
       labels: ["bug", "needs-triage"]
       clears: needs-triage
       fixable_label: robbie-fix
-      assignee: some-dev        # who gets the ones a bot may not touch
+      assignee: [some-dev]      # who gets the ones a bot may not touch
       # Which arm answers the money question. A classification, so a cheap one
       # does; `money_via_endpoint` also picks the meter the spend gate reads.
       # money_model: glm-5.3-flash:cloud

@@ -47,7 +47,7 @@ def repo() -> RepoConfig:
         slug="acme/app", reviewer_login="rev", bare=Path("/srv/m/app.git"),
         issues=IssueConfig(
             labels=("bug", "needs-triage"), clears="needs-triage",
-            fixable_label="robbie-fix", assignee="a-dev", rules=RULES,
+            fixable_label="robbie-fix", assignee=("a-dev",), rules=RULES,
         ),
     )
 
@@ -81,7 +81,7 @@ def settled(monkeypatch) -> list[dict]:
     """What the loop asked publish to write, without writing it."""
     calls: list[dict] = []
 
-    async def fake(repo, issue, *, say, add_label="", assignee="", dry_run=False):
+    async def fake(repo, issue, *, say, add_label="", assignee=(), dry_run=False):
         calls.append({"number": issue.number, "say": say, "label": add_label,
                       "assignee": assignee})
         return PublishResult(True, say)
@@ -143,7 +143,7 @@ async def test_a_report_the_form_blocks_goes_straight_to_a_person(
     out = await triage_tick(cfg, SECRETS, repo, db)
 
     assert [s.action for s in out] == ["assign"]
-    assert settled[0]["assignee"] == "a-dev"
+    assert settled[0]["assignee"] == ("a-dev",)
     assert not settled[0]["label"]
     assert "Refund" in out[0].reason
 
@@ -171,7 +171,7 @@ async def test_a_model_that_finds_money_sends_it_to_a_person(
     out = await triage_tick(cfg, SECRETS, repo, db)
 
     assert [s.action for s in out] == ["assign"]
-    assert settled[0]["assignee"] == "a-dev"
+    assert settled[0]["assignee"] == ("a-dev",)
 
 
 async def test_a_run_that_never_came_back_is_read_as_money(cfg, db, repo, monkeypatch, settled):
