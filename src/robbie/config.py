@@ -201,6 +201,8 @@ class Config(_Strict):
     repos: list[RepoConfig] = Field(min_length=1)
     backend: Literal["api", "oauth"] = "api"
     poll_interval_s: int = 600
+    # the bug queue's own clock (triage, then fix) inside `poll`. 0 = off
+    issue_interval_s: int = 900
     max_concurrent_reviews: int = 3
     # the gate phase is API calls, not containers, so it gets its own wider cap:
     # a full queue would otherwise fire three gh subprocesses per PR at once
