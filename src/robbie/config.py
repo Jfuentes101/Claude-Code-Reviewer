@@ -226,6 +226,9 @@ class Config(_Strict):
     # http://host.docker.internal:4021. Empty = no bridge; a set URL is
     # best-effort only — see src/robbie/props_bridge.py.
     props_url: str = ""
+    # Jane's unix socket (a host path, mounted into this container), to tell her
+    # when the bug queue assigns, starts a fix or opens a PR. Empty = off.
+    jane_socket: str = ""
     # Empty (the default) runs every review on the account's own model, the only
     # shape the spend gates can price. Listing arms splits reviews by weight.
     review_models: list[ReviewModel] = Field(default_factory=list)
@@ -315,6 +318,7 @@ class Secrets(_Strict):
     # repository. It never reaches a container: the fixer's patch comes back out
     # and the push happens here. Unset = the fixer does not run.
     fixer_gh_token: SecretStr | None = None
+    jane_token: SecretStr | None = None
 
 
 def load(path: str | Path | None = None) -> Config:
@@ -390,7 +394,10 @@ def load_secrets(cfg: Config) -> Secrets:
         review_api_token=_optional_secret("REVIEW_API_TOKEN"),
         model_proxy_token=_optional_secret("MODEL_PROXY_TOKEN"),
         fixer_gh_token=_optional_secret("FIXER_GH_TOKEN"),
+        jane_token=_optional_secret("JANE_TOKEN"),
     )
+    if cfg.jane_socket and s.jane_token is None:
+        raise SystemExit("jane_socket is set, so JANE_TOKEN has to be too")
     if cfg.model_proxy and s.model_proxy_token is None:
         raise SystemExit("model_proxy is set, so MODEL_PROXY_TOKEN has to be too")
     if cfg.backend == "api" and not s.anthropic_api_key:

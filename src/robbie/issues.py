@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from robbie import budget, publish
+from robbie import budget, jane, publish
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.db import Db
 from robbie.github import GhError, IssueMeta, issue_meta, issue_queue
@@ -93,6 +93,12 @@ async def _triage_one(
         result = await publish.settle_issue(
             repo, issue, say=note, assignee=repo.issues.assignee, dry_run=dry_run
         )
+        if not dry_run:
+            await jane.tell(cfg, secrets, (
+                f"Triage sent bug #{number} ({issue.title}) to "
+                f"{', '.join(repo.issues.assignee) or 'nobody'} instead of fixing it: "
+                f"{call.reason}. {issue.url}"
+            ))
     logger.info("%s#%s: %s — %s", repo.slug, number, call.action, result.detail)
     return Settled(number, call.action, call.reason)
 
