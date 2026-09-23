@@ -293,6 +293,9 @@ async def _issues(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event
     on its own; its pull request is found and settled on the next pass.
     """
     repos = [r for r in cfg.repos if r.issues.labels]
+    logger.info("bug queue on for %s, every %ds, fix %s",
+                ", ".join(r.slug for r in repos) or "no repo", cfg.issue_interval_s,
+                "on" if cfg.fix_mcp else "off (no fix_mcp)")
     while not stop.is_set():
         for repo in repos:
             try:
