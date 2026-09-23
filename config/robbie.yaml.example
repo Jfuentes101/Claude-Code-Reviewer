@@ -163,6 +163,7 @@ repos:
       # and the database out of it and creates both in a throwaway postgres that
       # dies with the container. Empty = no database is started.
       # fix_db_url: postgres://app@localhost:5432/app_test
+      # fix_timeout_s: 5400     # the fix plus up to two review_patch rounds
       rules:
         require:
           "Does this involve money?": ["No"]

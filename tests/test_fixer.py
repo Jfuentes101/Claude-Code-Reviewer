@@ -296,3 +296,13 @@ def test_the_commit_author_is_nobody_on_github(monkeypatch):
     assert s.author_email.endswith(".invalid")
     monkeypatch.setenv("FIXER_AUTHOR_EMAIL", "123+bot@users.noreply.github.com")
     assert PrSettings.from_env().author_email == "123+bot@users.noreply.github.com"
+
+
+async def test_a_fix_gets_its_own_deadline(cfg, repo, monkeypatch):
+    from robbie import runner
+
+    monkeypatch.setattr(runner, "_docker_argv", lambda *a, **k: ["sleep", "2"])
+    monkeypatch.setattr(runner, "_kill", _async(None))
+    slow = repo.model_copy(update={"issues": repo.issues.model_copy(update={"fix_timeout_s": 1})})
+    run = await runner.run_review(cfg, SECRETS, slow, ISSUE, prompt="", mode="fix")
+    assert run.error == "timed out after 1s"
