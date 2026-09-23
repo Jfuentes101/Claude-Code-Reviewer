@@ -360,12 +360,13 @@ Work in this order, and stop at the first step you cannot finish:
 4. Leave the rest of the suite alone. Do not weaken, skip or delete an existing
    test to make yours pass — if an existing test now fails, that is the answer,
    and it is `cannot`.
-5. If you have a `review_patch` tool, you must call it with issue {number} and
-   `git diff` before opening anything, plus `context`: what the change is meant to
-   do. Fix every Critical or Must-fix finding that holds up once you read the code,
-   and call it once more if you changed the patch — two calls at most. A finding
-   you decline goes in the summary with why. If it answers `review_unavailable`,
-   or there is no such tool, go straight on: that is never a reason for `cannot`.
+5. If you have a `review_patch` tool, you must use it before opening anything,
+   following the `refine` skill when you have it. Otherwise: call it with issue
+   {number}, `git diff` and a `context` saying what the change is meant to do; fix
+   the findings that hold up once you read the code; call it once more if you
+   changed the patch — two calls at most. A finding you decline goes in the summary
+   with why. If it answers `review_unavailable`, or there is no such tool, go
+   straight on: that is never a reason for `cannot`.
 6. Call the `open_pull_request` tool with issue {number}, a one-line title, a
    summary for whoever reviews it, and `git diff` as the patch.
 
