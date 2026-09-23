@@ -213,6 +213,10 @@ services:
       - FIXER_LABEL
       # the bare mirror to clone from: a HOST path, same-path rule as the rest
       - FIXER_MIRROR
+      # optional review_patch, off unless both are set. Each needs a same-path
+      # mount, which goes in docker-compose.override.yml (see .env.example)
+      - FIXER_REVIEWQ_SOCKET
+      - FIXER_REVIEW_DIR
       - MCP_ALLOWED_HOSTS=mcp-pr:8080,mcp-pr
     volumes:
       # read-only: it clones from here and pushes to GitHub, never back
