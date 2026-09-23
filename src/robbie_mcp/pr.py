@@ -60,8 +60,9 @@ class Settings:
     base: str = "main"
     label: str = "robbie-fix"
     branch_prefix: str = "fix/issue-"
-    author_name: str = "robbie"
-    author_email: str = "robbie@users.noreply.github.com"
+    # <name>@users.noreply.github.com credits that GitHub account; .invalid links to nobody
+    author_name: str = "robbie-fixer"
+    author_email: str = "robbie-fixer@noreply.invalid"
     host: str = "0.0.0.0"
     port: int = 8080
     allowed_hosts: tuple[str, ...] = ("mcp-pr:8080", "mcp-pr", "localhost:8080")
@@ -80,7 +81,8 @@ class Settings:
             mirror=Path(mirror),
             base=os.environ.get("FIXER_BASE", "main").strip() or "main",
             label=os.environ.get("FIXER_LABEL", "robbie-fix").strip() or "robbie-fix",
-            author_name=os.environ.get("FIXER_AUTHOR", "robbie").strip() or "robbie",
+            author_name=os.environ.get("FIXER_AUTHOR", "").strip() or cls.author_name,
+            author_email=os.environ.get("FIXER_AUTHOR_EMAIL", "").strip() or cls.author_email,
             host=os.environ.get("MCP_HOST", "0.0.0.0"),
             port=int(os.environ.get("MCP_PORT", "8080")),
             allowed_hosts=(

@@ -25,6 +25,7 @@ from robbie.github import IssueMeta
 from robbie.publish import PublishResult
 from robbie.runner import ReviewRun
 from robbie.triage import Rules
+from robbie_mcp.pr import Settings as PrSettings
 from robbie_mcp.pr import changed_lines, changed_paths, clean_title, refuse
 
 FIX = """\
@@ -286,3 +287,12 @@ async def test_no_arm_named_means_the_account_default(cfg, db, repo, monkeypatch
     await fix_tick(cfg, SECRETS, repo, db)
 
     assert spawned[0]["model"] is None
+
+
+def test_the_commit_author_is_nobody_on_github(monkeypatch):
+    for k, v in {"FIXER_GH_TOKEN": "t", "FIXER_REPO": "o/r", "FIXER_MIRROR": "/m"}.items():
+        monkeypatch.setenv(k, v)
+    s = PrSettings.from_env()
+    assert s.author_email.endswith(".invalid")
+    monkeypatch.setenv("FIXER_AUTHOR_EMAIL", "123+bot@users.noreply.github.com")
+    assert PrSettings.from_env().author_email == "123+bot@users.noreply.github.com"
