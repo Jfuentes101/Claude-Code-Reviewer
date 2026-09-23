@@ -165,6 +165,11 @@ migrations, that is too large, or that does not apply to a fresh checkout. Read
 the refusal — it is specific, and it is usually telling you something true about
 your patch rather than about itself.
 
+`review_patch`, when this setup has it, is a fresh agent reading your patch
+against a clean checkout. It is mandatory when present and absent on setups
+without reviewq; `review_unavailable` means carry on. Its findings are a second
+opinion, not orders: fix what holds, and say in the summary what you declined.
+
 `git diff` is what goes in `patch`: unified, with `diff --git` headers, paths
 relative to the repository root. Not a description of the diff.
 

@@ -27,6 +27,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
+import httpx2
+from mcp.client import Client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
@@ -63,6 +66,11 @@ class Settings:
     # <name>@users.noreply.github.com credits that GitHub account; .invalid links to nobody
     author_name: str = "robbie-fixer"
     author_email: str = "robbie-fixer@noreply.invalid"
+    # both or neither: reviewq's unix socket, and a directory at the SAME path on
+    # the host, since reviewq opens the workspace by path from the host side
+    review_socket: Path | None = None
+    review_dir: Path | None = None
+    review_timeout_s: int = 1500
     host: str = "0.0.0.0"
     port: int = 8080
     allowed_hosts: tuple[str, ...] = ("mcp-pr:8080", "mcp-pr", "localhost:8080")
@@ -83,6 +91,9 @@ class Settings:
             label=os.environ.get("FIXER_LABEL", "robbie-fix").strip() or "robbie-fix",
             author_name=os.environ.get("FIXER_AUTHOR", "").strip() or cls.author_name,
             author_email=os.environ.get("FIXER_AUTHOR_EMAIL", "").strip() or cls.author_email,
+            review_socket=_path_or_none("FIXER_REVIEWQ_SOCKET"),
+            review_dir=_path_or_none("FIXER_REVIEW_DIR"),
+            review_timeout_s=int(os.environ.get("FIXER_REVIEW_TIMEOUT_S", "1500")),
             host=os.environ.get("MCP_HOST", "0.0.0.0"),
             port=int(os.environ.get("MCP_PORT", "8080")),
             allowed_hosts=(
@@ -91,6 +102,11 @@ class Settings:
                 else cls.allowed_hosts
             ),
         )
+
+
+def _path_or_none(name: str) -> Path | None:
+    raw = os.environ.get(name, "").strip()
+    return Path(raw) if raw else None
 
 
 # ----- pure: what a patch is allowed to be ---------------------------------
@@ -293,11 +309,96 @@ def build_server(settings: Settings, api: Any | None = None) -> MCPServer:
         return {"ok": True, "url": url, "branch": branch,
                 "files": len(changed_paths(patch)), "lines": changed_lines(patch)}
 
+    if settings.review_socket is not None and settings.review_dir is not None:
+        register_review(mcp, settings, _guard_issue)
+
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "repo": settings.repo})
 
     return mcp
+
+
+# ----- a second opinion before the pull request -----------------------------
+
+REVIEW_POLL_S = 15
+UNAVAILABLE = "No review this time. Carry on without it and open the pull request."
+
+
+def register_review(mcp: MCPServer, settings: Settings, guard: Any) -> None:
+    """`review_patch`, only on a setup that has reviewq. Elsewhere the model never
+    sees the tool, and a reviewq that is configured but down answers
+    `review_unavailable` so the fix goes out anyway."""
+    assert settings.review_socket is not None and settings.review_dir is not None
+    sock, root = settings.review_socket, settings.review_dir
+
+    @mcp.tool(
+        description=(
+            "Have a fresh agent review your patch before you open the pull request. "
+            "Same arguments as open_pull_request's issue and patch, plus `context`: "
+            "what the change is meant to do, stated about the system. Blocks until "
+            "the review is done, which takes minutes. Returns the verdict and the "
+            "findings. `review_unavailable` means there is no review to be had: go "
+            "on and open the pull request."
+        )
+    )
+    async def review_patch(issue: int, patch: str, context: str = "") -> dict[str, Any]:
+        if (why := refuse(patch)) is not None:
+            return {"ok": False, "error": why}
+        if (why := await guard(issue)) is not None:
+            return {"ok": False, "error": why}
+        work = Path(tempfile.mkdtemp(prefix=f"issue-{issue}-", dir=root))
+        try:
+            try:
+                await _review_workspace(settings, work, issue, patch)
+            except GitError as ex:
+                return {"ok": False, "error": f"the patch did not apply: {ex}"}
+            return await asyncio.wait_for(
+                _ask_reviewq(sock, work, context), timeout=settings.review_timeout_s
+            )
+        except Exception as ex:  # noqa: BLE001 — a review is optional, the fix is not
+            logger.warning("review for #%s unavailable: %r", issue, ex)
+            return {"ok": False, "review_unavailable": True,
+                    "error": f"{type(ex).__name__}: {ex}"[:300], "note": UNAVAILABLE}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+async def _review_workspace(settings: Settings, work: Path, issue: int, patch: str) -> None:
+    """A clone that owns its objects: reviewq's container mounts this directory
+    and nothing else, so alternates into the mirror would point at nothing."""
+    repo_dir = work / "repo"
+    await _git("clone", "--quiet", "--depth", "50", "--branch", settings.base,
+               f"file://{settings.mirror}", str(repo_dir), cwd=work)
+    await _git("checkout", "--quiet", "-b", f"{settings.branch_prefix}{issue}", cwd=repo_dir)
+    (work / "fix.patch").write_text(patch if patch.endswith("\n") else patch + "\n")
+    # --index: reviewq sees tracked changes only, and a new test file is one
+    await _git("apply", "--index", "--whitespace=nowarn", str(work / "fix.patch"),
+               cwd=repo_dir)
+
+
+async def _ask_reviewq(sock: Path, work: Path, context: str) -> dict[str, Any]:
+    http = httpx2.AsyncClient(transport=httpx2.AsyncHTTPTransport(uds=str(sock)), timeout=60)
+    async with http, Client(streamable_http_client("http://reviewq/mcp", http_client=http)) as rq:
+        async def call(name: str, **args: Any) -> dict[str, Any]:
+            res = await rq.call_tool(name, args)
+            data = res.structured_content or {}
+            if res.is_error or "error" in data and not data.get("state"):
+                raise RuntimeError(f"{name}: {data.get('error') or res.content}")
+            return data
+
+        queued = await call("request_review", workspace=str(work / "repo"),
+                            context=context, base_ref="HEAD")
+        while (await call("review_status", review_id=queued["id"]))["state"] in (
+            "queued", "running",
+        ):
+            await asyncio.sleep(REVIEW_POLL_S)
+        result = await call("review_results", review_id=queued["id"])
+    if result.get("state") != "done":
+        raise RuntimeError(f"the review {result.get('state')}: {result.get('error')}")
+    return {"ok": True, **{k: result.get(k) for k in (
+        "verdict", "summary", "findings", "blocking", "should_fix", "verdict_understated",
+    )}}
 
 
 def main() -> None:
@@ -306,8 +407,9 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     settings = Settings.from_env()
-    logger.info("mcp-pr up on %s:%d repo=%s base=%s",
-                settings.host, settings.port, settings.repo, settings.base)
+    logger.info("mcp-pr up on %s:%d repo=%s base=%s review=%s",
+                settings.host, settings.port, settings.repo, settings.base,
+                settings.review_socket or "off")
     build_server(settings).run(
         transport="streamable-http",
         host=settings.host,

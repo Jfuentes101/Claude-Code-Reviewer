@@ -317,6 +317,9 @@ def _docker_argv(
         argv += ["-v", f"{secrets.claude_credentials}:/home/robbie/.claude/.credentials.json"]
     if (mcp := mcp_for(cfg, mode)):
         argv += ["-e", f"REVIEW_MCP={mcp}"]
+    if mode == "fix":
+        # review_patch blocks for a whole review; the CLI's default gives up first
+        argv += ["-e", "MCP_TOOL_TIMEOUT=1800000"]
     if mode == "fix" and repo.issues.fix_db_url:
         argv += ["-e", f"FIX_DB_URL={repo.issues.fix_db_url}"]
     argv.append(image_for(repo, mode))
