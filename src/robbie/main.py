@@ -1,6 +1,7 @@
 """CLI and process lifecycle.
 
-    robbie poll                     the daemon: a tick every poll_interval_s
+    robbie poll                     the daemon: a tick every poll_interval_s, and the
+                                    bug queue every issue_interval_s
     robbie poll --once              a single tick, for cron-style deployments
     robbie once --repo R --pr N     force one review, ignoring queue and gates
     robbie status                   what's reviewed, held, or waiting
@@ -284,6 +285,29 @@ async def _meters(
             await asyncio.to_thread(budget.poll, cfg, secrets, db)
 
 
+async def _issues(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event) -> None:
+    """Triage, then fix, on a clock of its own: a fix can hold a container for an
+    hour and a half, and the review tick must not wait behind it.
+
+    ponytail: cancelled at shutdown, and a fix container already running finishes
+    on its own; its pull request is found and settled on the next pass.
+    """
+    repos = [r for r in cfg.repos if r.issues.labels]
+    while not stop.is_set():
+        for repo in repos:
+            try:
+                for s in await triage_tick(cfg, orch.secrets, repo, orch.db):
+                    logger.info("%s#%s %s: %s", repo.slug, s.number, s.action, s.reason)
+                if cfg.fix_mcp:
+                    for f in await fix_tick(cfg, orch.secrets, repo, orch.db):
+                        logger.info("%s#%s %s", repo.slug, f.number,
+                                    f.opened or f"back to a person: {f.reason}")
+            except Exception:  # noqa: BLE001 — same rule as the review tick
+                logger.exception("%s: bug queue pass failed; continuing", repo.slug)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=cfg.issue_interval_s)
+
+
 async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = False) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -297,14 +321,19 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = Fals
         len(cfg.repos), cfg.backend, cfg.max_concurrent_reviews, cfg.poll_interval_s,
         cfg.budget.usage_poll_s,
     )
-    meters = asyncio.create_task(_meters(cfg, orch.secrets, orch.db, stop))
+    tasks = [asyncio.create_task(_meters(cfg, orch.secrets, orch.db, stop))]
+    # a quiet run writes nothing, and triage is nothing but writes
+    if cfg.issue_interval_s > 0 and not quiet:
+        tasks.append(asyncio.create_task(_issues(cfg, orch, stop)))
     try:
         return await _ticks(cfg, orch, stop, quiet=quiet)
     finally:
         stop.set()
-        meters.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await meters
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def _ticks(

@@ -14,7 +14,8 @@ from robbie.config import (
     Secrets,
     SlackConfig,
 )
-from robbie.main import _meters, _ticks, why_no_model
+from robbie import main as main_mod
+from robbie.main import _issues, _meters, _ticks, why_no_model
 from robbie.outcome import Outcome
 
 
@@ -207,3 +208,33 @@ async def test_the_meters_are_polled_on_a_clock_of_their_own(tmp_path, monkeypat
 
     assert len(polled) == 2
     assert waited == [0, 0], "its own interval, nothing to do with the tick's 600s"
+
+
+async def test_the_bug_queue_triages_then_fixes_and_survives_a_bad_pass(tmp_path, monkeypatch):
+    from robbie.config import IssueConfig
+
+    repo = RepoConfig(
+        slug="acme/app", reviewer_login="rev", bare=Path("/srv/m/app.git"),
+        issues=IssueConfig(labels=("bug", "needs-triage"), clears="needs-triage",
+                           fixable_label="robbie-fix"),
+    )
+    cfg = Config(slack=SlackConfig(owner_id="U0"), repos=[repo], state_dir=tmp_path,
+                 fix_mcp="{}", issue_interval_s=1)
+    stop, calls = asyncio.Event(), []
+
+    async def triage(*_a, **_k):
+        calls.append("triage")
+        if calls.count("triage") == 1:
+            raise RuntimeError("github fell over")
+        return []
+
+    async def fix(*_a, **_k):
+        calls.append("fix")
+        stop.set()
+        return []
+
+    monkeypatch.setattr(main_mod, "triage_tick", triage)
+    monkeypatch.setattr(main_mod, "fix_tick", fix)
+    orch = type("O", (), {"secrets": None, "db": None})()
+    await asyncio.wait_for(_issues(cfg, orch, stop), timeout=5)
+    assert calls == ["triage", "triage", "fix"]
