@@ -92,7 +92,7 @@ ENV BUNDLE_PATH=/usr/local/bundle \
 # renders a view neither builds them nor needs a registry token to.
 COPY --from=packs / /packs
 COPY --from=modules / /node_modules
-COPY --from=repo .fix-source-digest /packs-source-digest
+COPY --from=meta source-digest /packs-source-digest
 
 # unprivileged at run time, so it must never need to write into either
 RUN chmod -R a+rX /usr/local/bundle \

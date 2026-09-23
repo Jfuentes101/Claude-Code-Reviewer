@@ -76,17 +76,20 @@ fi
 # What the packs were built for. The entrypoint digests the same path in the
 # clone and tells the model when the two disagree — stale packs otherwise serve
 # an old bundle in silence, and a view test then passes on code nobody shipped.
+# own context: inside `repo` it busts the gems stage cache
+META="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$META"' EXIT
 SRC_PATH="app/javascript"
 if [ -f "$WORK/config/shakapacker.yml" ] && command -v ruby >/dev/null 2>&1; then
   SRC_PATH="$(ruby -ryaml -e 'print((YAML.unsafe_load_file(ARGV[0]).dig("test","source_path") rescue nil) || "app/javascript")' \
     "$WORK/config/shakapacker.yml" 2>/dev/null || echo app/javascript)"
 fi
 ( cd "$WORK" && find "$SRC_PATH" -type f -print0 2>/dev/null | sort -z \
-  | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d" " -f1 ) > "$WORK/.fix-source-digest"
-echo "source digest ($SRC_PATH): $(cut -c1-12 < "$WORK/.fix-source-digest")"
+  | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d" " -f1 ) > "$META/source-digest"
+echo "source digest ($SRC_PATH): $(cut -c1-12 < "$META/source-digest")"
 
 docker build -f Dockerfile.fixer -t "$TAG" \
   "${RUBY_ARG[@]}" --build-context "repo=$WORK" --build-context "packs=$PACKS" \
-  --build-context "modules=$MODULES" .
+  --build-context "modules=$MODULES" --build-context "meta=$META" .
 
 echo "built $TAG — set it as issues.fix_image"
