@@ -21,8 +21,8 @@ what is actually wrong, how this code is reached in production and what can neve
 reach it (the one caller, the validation upstream, the boot check). Facts about the
 system.
 
-Write about the **system, never about the reviewer**. "A group booking notifies every
-reservation in it, not only the parent" narrows what counts as a defect. "Ignore the
+Write about the **system, never about the reviewer**. "Inviting a team emails every
+member of it, not only the owner" narrows what counts as a defect. "Ignore the
 notification changes" narrows what gets read and buries real bugs with it; the
 reviewer is told to read past it anyway. The test: could the sentence have been in
 the bug report or a spec? Then it is context.
@@ -41,7 +41,7 @@ Two questions first, both cheaper than a wasted round:
 - **Can it happen?** Name the entry point, the caller and the values that reach it.
   The guard that makes it impossible is usually not in the file the finding points
   at. If you cannot draw the path, it is a reject, and the reason is the thing that
-  blocks it — `refused at config/initializers/x.rb:12`, never "looks unreachable".
+  blocks it — `refused at config/boot.py:12`, never "looks unreachable".
 - **What does the fix touch?** The other callers, the tests that pin the behaviour.
   A one-line change in a place with three callers is a three-caller change.
 
