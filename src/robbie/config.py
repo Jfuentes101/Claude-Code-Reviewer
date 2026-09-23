@@ -38,7 +38,9 @@ class IssueConfig(_Strict):
     labels: tuple[str, ...] = ()  # an issue must carry ALL of these to be a candidate
     clears: str = ""  # ...and robbie takes this one off once it has triaged it
     fixable_label: str = ""  # applied instead, when nothing forbids a bot trying
-    assignee: tuple[str, ...] = ()  # who gets the ones a bot may not touch. Empty = nobody
+    assignee: tuple[str, ...] = ()
+    # the fix, plus up to two review_patch rounds of ~10 min each (25 max apiece)
+    fix_timeout_s: int = 5400  # who gets the ones a bot may not touch. Empty = nobody
     rules: Rules = Rules()
     # Which arm answers the money question: a classification, so a cheap one does.
     # `via` has the same meaning as in `review_models` — it picks the endpoint and

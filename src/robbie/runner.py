@@ -65,6 +65,7 @@ async def run_review(
                         model=model, via_endpoint=via_endpoint)
 
     logger.info("spawning %s for %s#%s", name, repo.slug, meta.number)
+    deadline = repo.issues.fix_timeout_s if mode == "fix" else cfg.docker.timeout_s
     started = asyncio.get_running_loop().time()
     proc = await asyncio.create_subprocess_exec(
         *argv,
@@ -75,7 +76,7 @@ async def run_review(
     )
     try:
         out, err = await asyncio.wait_for(
-            proc.communicate(prompt.encode()), timeout=cfg.docker.timeout_s
+            proc.communicate(prompt.encode()), timeout=deadline
         )
     except TimeoutError:
         await _kill(name)
@@ -84,7 +85,7 @@ async def run_review(
         return ReviewRun(
             ok=False,
             duration_s=elapsed,
-            error=f"timed out after {cfg.docker.timeout_s}s",
+            error=f"timed out after {deadline}s",
         )
     elapsed = asyncio.get_running_loop().time() - started
 
