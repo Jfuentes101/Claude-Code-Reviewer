@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from robbie import budget, publish
+from robbie import budget, jane, publish
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.contract import fix_preamble, parse_fix
 from robbie.db import Db
@@ -83,6 +83,10 @@ async def _fix_one(
         logger.info("%s#%s: the fix waits for the meter: %s", repo.slug, number, gate.detail)
         return None
 
+    await jane.tell(cfg, secrets, (
+        f"Started an automated fix for bug #{number} ({issue.title}). "
+        f"It usually takes 10 to 45 minutes. {issue.url}"
+    ))
     run = await run_review(
         cfg, secrets, repo, issue,
         prompt=fix_preamble(number=number, title=issue.title, body=issue.body),
@@ -102,10 +106,18 @@ async def _fix_one(
                     repo.slug, number, opened,
                     repo.issues.fix_model or "the account default",
                     run.duration_s, run.cost_usd)
+        await jane.tell(cfg, secrets, (
+            f"Opened draft PR {opened} for bug #{number} ({issue.title}). "
+            "It needs a human review before anything merges."
+        ))
         return await _settle(repo, issue, opened, blocks.body or "fixed")
 
     reason = _why_not(run.ok, run.error, run.text)
     logger.info("%s#%s: no pull request — %s", repo.slug, number, reason)
+    await jane.tell(cfg, secrets, (
+        f"Could not fix bug #{number} ({issue.title}), so it is assigned to "
+        f"{', '.join(repo.issues.assignee) or 'nobody'}: {reason[:400]} {issue.url}"
+    ))
     return await _settle(repo, issue, "", reason)
 
 

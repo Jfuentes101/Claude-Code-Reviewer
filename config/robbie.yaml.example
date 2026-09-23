@@ -48,6 +48,7 @@ fix_mcp: ''
 # network. Keep `proxy` in COMPOSE_PROFILES (.env) or the sidecar never comes up
 # and robbie refuses to boot: this is a startup check, not a runtime one.
 model_proxy: http://model-proxy:8080
+# jane_socket: /home/you/.local/state/jane/sock/jane.sock   # optional: tell Jane about the bug queue; needs JANE_TOKEN and a same-path mount of the socket's directory
 
 docker:
   cpus: "2"
