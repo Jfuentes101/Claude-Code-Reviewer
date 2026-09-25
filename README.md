@@ -525,14 +525,16 @@ the first repo this was tried against made that an 11GB build context. Reviews
 stay on the light image: reading a diff needs git and ripgrep, and the difference
 is several gigabytes.
 
-Assets are copied in, never installed. A test that renders a view wants compiled
-packs and the handful of npm packages the stylesheets `@import`; it does not want
-the right to download them, and one of those packages here is a paid package
-whose licence is metered per download. So `FIXER_PACKS` and `FIXER_NODE_PACKAGES`
-bake the files that already exist on the machine doing the build, the entrypoint
-drops them into the clone and points shakapacker at a config with compilation
-off, and the container reaches no registry at all. Both land on paths the repo
-gitignores, so none of it shows up in the patch the model hands over.
+Assets are compiled in the container, from the branch the fix is on. Prebuilt
+packs served whatever the UI looked like when the image was built, and the UI
+moves faster than anyone rebuilds images. So the image carries the node from
+`.node-version` and the whole `node_modules` from `yarn.lock`, the entrypoint
+links it into the clone, and the test environment compiles on the first render:
+about a minute and a half, which is why fix runs raise the CLI's Bash timeout.
+What the lock pulls from a private or metered registry — here a paid package
+whose licence counts every download — is seeded from the host's yarn cache with
+`FIXER_YARN_SEED`, so the build never fetches it and needs no token. Rebuild
+when `yarn.lock` moves.
 
 With `fix_image` and `fix_db_url` set, the entrypoint starts a throwaway postgres
 inside the container, creates the role and database named in that URL, and runs

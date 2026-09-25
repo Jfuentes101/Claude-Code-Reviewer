@@ -10,13 +10,11 @@
 #
 #   scripts/fixer-image <bare-or-checkout> [ref] [tag]
 #
-# with, for a repo whose tests render views:
+# with, for a repo whose lock pulls from a private or metered registry:
 #
-#   FIXER_PACKS=<checkout>/public/packs-test
-#   FIXER_NODE_MODULES=<checkout>/node_modules
-#   FIXER_NODE_PACKAGES="bootstrap trix …"   # whatever the SCSS @imports
+#   FIXER_YARN_SEED='@vendor-*'   # globs in the host's yarn cache
 #
-# which exports the ref, reads `.ruby-version` and builds. Do not hand it a
+# which exports the ref, reads `.ruby-version` and `.node-version` and builds. Do not hand it a
 # working copy as the context directly: node_modules and .git made that 11GB of
 # build context on the first repo this was tried against.
 #
@@ -27,6 +25,7 @@
 # is installed at run time, which works and costs the run a few minutes.
 ARG BASE=robbie-reviewer:latest
 ARG RUBY=3.3-slim-bookworm
+ARG NODE=22
 
 FROM ruby:${RUBY} AS ruby
 FROM ${BASE}
@@ -56,12 +55,26 @@ ENV BUNDLE_PATH=/usr/local/bundle \
     PATH=/usr/local/bundle/bin:/usr/local/bin:$PATH
 COPY --from=repo . /src
 WORKDIR /src
-# --local when the context brought its own .gem files: a Gemfile with a second
-# `source` cannot be resolved at all while that host is down, and one of them was
+# --local when the context brought its own .gem files, so a private source is
+# never asked
 RUN gem install bundler:"$(tail -1 Gemfile.lock | tr -d ' ')" \
  && bundle config set --local without 'development' \
  && if [ -d vendor/cache ]; then bundle install --local --jobs 4; \
     else bundle install --jobs 4 --retry 2; fi
+
+# ----- node_modules, from the lock ------------------------------------------
+#
+# The whole tree, so the test environment compiles the packs from the branch
+# the fix is on: prebuilt ones serve whatever the UI looked like at build time.
+# The non-slim image because a native module wants a compiler. A repo without a
+# yarn.lock gets an empty tree.
+FROM node:${NODE}-bookworm AS nodemods
+COPY --from=repo . /src
+COPY --from=yarnseed / /root/.yarn/berry/cache/
+WORKDIR /src
+RUN if [ -f yarn.lock ]; then yarn install --immutable; fi \
+ && mkdir -p node_modules .yarn && touch .yarn/install-state.gz \
+ && chmod -R a+rX node_modules .yarn/install-state.gz
 
 # ----- the image a fix actually runs in -------------------------------------
 FROM ${BASE}
@@ -87,16 +100,13 @@ ENV BUNDLE_PATH=/usr/local/bundle \
     PATH=/usr/lib/postgresql/15/bin:/usr/local/bundle/bin:/usr/local/bin:$PATH \
     LANG=C.UTF-8
 
-# Prebuilt assets for the test environment. The entrypoint drops them into the
-# clone, and points shakapacker at a config with compile off, so a test that
-# renders a view neither builds them nor needs a registry token to.
-COPY --from=packs / /packs
-COPY --from=modules / /node_modules
-COPY --from=meta source-digest /packs-source-digest
+# The entrypoint links these into the clone; shakapacker compiles from there.
+COPY --from=nodemods /usr/local/bin/node /usr/local/bin/node
+COPY --from=nodemods /src/node_modules /opt/node_modules
+COPY --from=nodemods /src/.yarn/install-state.gz /opt/yarn-install-state.gz
 
 # unprivileged at run time, so it must never need to write into either
 RUN chmod -R a+rX /usr/local/bundle \
- && chmod -R a+rX /packs /node_modules /packs-source-digest \
  && mkdir -p /work/pgdata && chown -R 1000:1000 /work
 
 USER robbie
