@@ -94,11 +94,11 @@ async def _triage_one(
             repo, issue, say=note, assignee=repo.issues.assignee, dry_run=dry_run
         )
         if not dry_run:
-            await jane.tell(cfg, secrets, (
-                f"Triage sent bug #{number} ({issue.title}) to "
-                f"{', '.join(repo.issues.assignee) or 'nobody'} instead of fixing it: "
-                f"{call.reason}. {issue.url}"
-            ))
+            await jane.notify(
+                cfg, secrets, f"Triage assigned bug #{number} to a person: {issue.title}",
+                url=issue.url,
+                body=f"To {', '.join(repo.issues.assignee) or 'nobody'}: {call.reason}",
+            )
     logger.info("%s#%s: %s — %s", repo.slug, number, call.action, result.detail)
     return Settled(number, call.action, call.reason)
 

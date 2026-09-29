@@ -11,6 +11,7 @@ not Slack users, and guessing one would DM a stranger.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +29,8 @@ class Slack:
     users_file: Path
     approved_ids: tuple[str, ...] = ()
     dry_run: bool = False
+    # operator DMs go here first (Jane) and to Slack only if it says no
+    relay: Callable[[str], Awaitable[bool]] | None = None
 
     async def post(self, channel: str, text: str) -> bool:
         if self.dry_run:
@@ -50,6 +53,8 @@ class Slack:
         return True
 
     async def dm_owner(self, text: str) -> bool:
+        if self.relay is not None and not self.dry_run and await self.relay(text):
+            return True
         return await self.post(self.owner_id, text)
 
     async def dm_reviewers(self, text: str) -> bool:
@@ -58,7 +63,9 @@ class Slack:
         Falls back to the owner rather than to nobody: this line is the only trace
         an approval leaves anywhere.
         """
-        sent = [await self.post(m, text) for m in self.approved_ids or (self.owner_id,)]
+        if not self.approved_ids:
+            return await self.dm_owner(text)
+        sent = [await self.post(m, text) for m in self.approved_ids]
         return all(sent)
 
     async def dm_author(self, login: str, text: str) -> str:

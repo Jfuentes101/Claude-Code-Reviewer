@@ -158,6 +158,9 @@ takes the stored number. Lower it and the account's usage endpoint starts answer
 | `docker.cpus` / `docker.memory` | ceilings per reviewer, not reservations |
 | `review_effort` | how hard the model thinks (`high`) |
 | `stale_review_days` | `robbie digest` threshold |
+| `digest_weekday` / `digest_utc_hour` | post the digest from the daemon once a week (`0` = Monday, hour in UTC); unset = only by hand |
+| `export_interval_s` | rewrite `state_dir/export/worklist.json` and `usage.json` this often, for other processes that want the operator's plate (off by default; each pass costs a few API reads) |
+| `jane_socket` | optional: an assistant daemon's unix socket. Operator DMs and bug-queue notices go to its `/notify` first (contract in `src/robbie/jane.py`), Slack only if it does not take them. Needs `JANE_TOKEN`. Unset = Slack only, as always |
 
 ## Look at what it did
 

@@ -497,7 +497,7 @@ turns it green, and hands the patch to `open_pull_request` — a tool on the
 that can write to the repository.
 
 The model fills in a form: the issue, a title, a summary, the patch. The sidecar
-decides everything else — the branch (`fix/issue-<n>`), the base, that it is a
+decides everything else — the branch (`robbie/issue-<n>`), the base, that it is a
 draft — and refuses a patch that changes no test, that touches CI config,
 dependency manifests or migrations, that is too large, or that does not apply to
 a fresh checkout. A refusal comes back to the model as a reason it can act on,
@@ -636,7 +636,16 @@ front, not `--host 0.0.0.0`.
 `digest` is the nag for PRs parked on a standing changes-requested review that
 nobody ever re-requests — they fall out of every queue otherwise. It clocks on
 the age of the review, not on last activity, because those authors keep pushing.
-Run it weekly.
+Run it weekly — or set `digest_weekday` and the daemon posts it itself.
+
+With `export_interval_s` set (off by default), the daemon also writes the
+operator's plate to `state_dir/export/worklist.json` (schema in
+`src/robbie/export.py`) for whatever else wants it — an assistant, a board: PRs whose newest
+pass is an `ok` at the current head and still ask for review, PRs in the
+author's hands, fixer PRs not yet under the queue label, bug issues assigned to
+the operator, and the operator's own open PRs with review decision and CI. Next
+to it, `usage.json` is the last meter reading. Written whole and renamed into
+place, so a reader never sees half a file.
 
 ## Where the review criteria come from
 

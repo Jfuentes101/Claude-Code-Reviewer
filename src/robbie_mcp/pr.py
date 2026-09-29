@@ -62,7 +62,7 @@ class Settings:
     mirror: Path
     base: str = "main"
     label: str = "robbie-fix"
-    branch_prefix: str = "fix/issue-"
+    branch_prefix: str = "robbie/issue-"
     # <name>@users.noreply.github.com credits that GitHub account; .invalid links to nobody
     author_name: str = "robbie-fixer"
     author_email: str = "robbie-fixer@noreply.invalid"

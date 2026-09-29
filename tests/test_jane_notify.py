@@ -1,4 +1,4 @@
-"""jane.tell: a notice that arrives when Jane is there, and costs nothing when not."""
+"""jane.notify: a notice that arrives when Jane is there, and costs nothing when not."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import uvicorn
 from pydantic import SecretStr
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from robbie import jane
@@ -38,38 +38,40 @@ def short_dir():
 
 
 async def test_off_unless_a_socket_is_configured(tmp_path):
-    await jane.tell(_cfg(tmp_path, ""), SECRETS, "nothing happens")
+    assert await jane.notify(_cfg(tmp_path, ""), SECRETS, "nothing happens") is False
 
 
 async def test_a_jane_that_is_down_costs_a_warning(short_dir, caplog):
-    await jane.tell(_cfg(short_dir, str(short_dir / "nobody.sock")), SECRETS, "hi")
+    cfg = _cfg(short_dir, str(short_dir / "nobody.sock"))
+    assert await jane.notify(cfg, SECRETS, "hi") is False
     assert "could not tell jane" in caplog.text
 
 
 async def test_the_notice_reaches_her_with_the_token(short_dir):
     seen: dict = {}
 
-    async def chat(request: Request):
+    async def notify(request: Request):
         seen["token"] = request.headers.get("x-jane-token")
         seen["body"] = await request.json()
-
-        async def events():
-            yield b"event: delta\ndata: {\"text\": \"ok\"}\n\n"
-            seen["read_to_the_end"] = True
-
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return JSONResponse({"delivered": True, "channel": "desktop"})
 
     sock = short_dir / "jane.sock"
-    app = Starlette(routes=[Route("/chat", chat, methods=["POST"])])
+    app = Starlette(routes=[Route("/notify", notify, methods=["POST"])])
     server = uvicorn.Server(uvicorn.Config(app, uds=str(sock), log_level="warning"))
     serving = asyncio.create_task(server.serve())
     while not server.started:
         await asyncio.sleep(0.05)
     try:
-        await jane.tell(_cfg(short_dir, str(sock)), SECRETS, "opened #1")
+        sent = await jane.relay(
+            _cfg(short_dir, str(sock)), SECRETS,
+            "⚠️ <https://gh/pr/1|*#1*> held\nthe *reason*",
+        )
     finally:
         server.should_exit = True
         await serving
+    assert sent is True
     assert seen["token"] == "t0k"
-    assert seen["body"]["text"].endswith("opened #1")
-    assert seen["read_to_the_end"]
+    assert seen["body"]["title"] == "⚠️ #1 held"
+    assert seen["body"]["url"] == "https://gh/pr/1"
+    assert seen["body"]["body"] == "the reason"
+    assert seen["body"]["source"] == "robbie"

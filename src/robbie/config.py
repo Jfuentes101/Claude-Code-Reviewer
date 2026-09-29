@@ -229,6 +229,12 @@ class Config(_Strict):
     # Jane's unix socket (a host path, mounted into this container), to tell her
     # when the bug queue assigns, starts a fix or opens a PR. Empty = off.
     jane_socket: str = ""
+    # export/worklist.json + usage.json under state_dir, for whatever else wants
+    # the operator's plate (an assistant, a board). Off by default: it costs API reads
+    export_interval_s: int = 0
+    # the weekly stuck-in-review digest from the daemon: 0 = Monday. None = off
+    digest_weekday: int | None = Field(default=None, ge=0, le=6)
+    digest_utc_hour: int = Field(default=15, ge=0, le=23)
     # Empty (the default) runs every review on the account's own model, the only
     # shape the spend gates can price. Listing arms splits reviews by weight.
     review_models: list[ReviewModel] = Field(default_factory=list)

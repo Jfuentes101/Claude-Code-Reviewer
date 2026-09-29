@@ -308,21 +308,22 @@ async def test_a_fix_gets_its_own_deadline(cfg, repo, monkeypatch):
     assert run.error == "timed out after 1s"
 
 
-@pytest.mark.parametrize("pr_url, last", [("https://x/pull/99", "Opened draft PR"),
-                                          ("", "Could not fix")])
+@pytest.mark.parametrize("pr_url, last", [("https://x/pull/99", "robbie opened a draft PR"),
+                                          ("", "robbie could not fix")])
 async def test_jane_hears_the_start_and_the_end(
     cfg, db, repo, monkeypatch, settled, pr_url, last
 ):
     told: list[str] = []
 
-    async def tell(_cfg, _secrets, text):
-        told.append(text)
+    async def notify(_cfg, _secrets, title, **_):
+        told.append(title)
+        return True
 
-    monkeypatch.setattr(fixer_mod.jane, "tell", tell)
+    monkeypatch.setattr(fixer_mod.jane, "notify", notify)
     stub(monkeypatch, run=ReviewRun(ok=True, text="<<<VERDICT>>>\nfixed\n<<<END>>>"),
          pr_url=pr_url)
 
     await fix_tick(cfg, SECRETS, repo, db)
 
     assert len(told) == 2
-    assert told[0].startswith("Started an automated fix") and told[1].startswith(last)
+    assert told[0].startswith("robbie started fixing") and told[1].startswith(last)

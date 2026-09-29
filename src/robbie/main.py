@@ -26,8 +26,9 @@ import signal
 import sys
 import time
 
-from robbie import budget, dashboard
+from robbie import budget, dashboard, jane
 from robbie import config as configmod
+from robbie import export as exportmod
 from robbie.db import Db
 from robbie.digest import post_digest
 from robbie.fixer import fix_tick
@@ -155,6 +156,7 @@ async def _run(args: argparse.Namespace) -> int:
         users_file=cfg.slack.users_file,
         approved_ids=tuple(cfg.slack.approved_ids),
         dry_run=args.dry_run or args.no_publish,
+        relay=(lambda text: jane.relay(cfg, secrets, text)) if cfg.jane_socket else None,
     )
     model = getattr(args, "model", None)
     if (why := why_no_model(cfg, secrets, model)) is not None:
@@ -311,6 +313,23 @@ async def _issues(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event
             await asyncio.wait_for(stop.wait(), timeout=cfg.issue_interval_s)
 
 
+async def _exports(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event) -> None:
+    """The exported worklist and the weekly digest, on a clock of their own: a
+    tick can hold a review for an hour, and a stale plate is a wrong answer."""
+    while not stop.is_set():
+        try:
+            if cfg.export_interval_s > 0:
+                await exportmod.export_once(cfg, orch.db)
+            week = exportmod.digest_due(cfg)
+            if week is not None and orch.db.notice_once(week):
+                listed = await post_digest(cfg, orch.slack)
+                logger.info("weekly digest posted: %d PR(s)", listed)
+        except Exception:  # noqa: BLE001 — same rule as the review tick
+            logger.exception("export pass failed; continuing")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=cfg.export_interval_s or 600)
+
+
 async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = False) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -328,6 +347,8 @@ async def _loop(cfg: configmod.Config, orch: Orchestrator, *, quiet: bool = Fals
     # a quiet run writes nothing, and triage is nothing but writes
     if cfg.issue_interval_s > 0 and not quiet:
         tasks.append(asyncio.create_task(_issues(cfg, orch, stop)))
+    if (cfg.export_interval_s > 0 or cfg.digest_weekday is not None) and not quiet:
+        tasks.append(asyncio.create_task(_exports(cfg, orch, stop)))
     try:
         return await _ticks(cfg, orch, stop, quiet=quiet)
     finally:

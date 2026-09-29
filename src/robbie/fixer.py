@@ -26,7 +26,7 @@ from robbie.runner import run_review
 
 logger = logging.getLogger(__name__)
 
-BRANCH_PREFIX = "fix/issue-"
+BRANCH_PREFIX = "robbie/issue-"
 
 
 @dataclass(frozen=True)
@@ -83,10 +83,10 @@ async def _fix_one(
         logger.info("%s#%s: the fix waits for the meter: %s", repo.slug, number, gate.detail)
         return None
 
-    await jane.tell(cfg, secrets, (
-        f"Started an automated fix for bug #{number} ({issue.title}). "
-        f"It usually takes 10 to 45 minutes. {issue.url}"
-    ))
+    await jane.notify(
+        cfg, secrets, f"robbie started fixing bug #{number}: {issue.title}",
+        url=issue.url, body="Usually takes 10 to 45 minutes.", urgency="low",
+    )
     run = await run_review(
         cfg, secrets, repo, issue,
         prompt=fix_preamble(number=number, title=issue.title, body=issue.body),
@@ -106,18 +106,19 @@ async def _fix_one(
                     repo.slug, number, opened,
                     repo.issues.fix_model or "the account default",
                     run.duration_s, run.cost_usd)
-        await jane.tell(cfg, secrets, (
-            f"Opened draft PR {opened} for bug #{number} ({issue.title}). "
-            "It needs a human review before anything merges."
-        ))
+        await jane.notify(
+            cfg, secrets, f"robbie opened a draft PR for bug #{number}: {issue.title}",
+            url=opened, body="It needs your review before it goes to Code Review.",
+        )
         return await _settle(repo, issue, opened, blocks.body or "fixed")
 
     reason = _why_not(run.ok, run.error, run.text)
     logger.info("%s#%s: no pull request — %s", repo.slug, number, reason)
-    await jane.tell(cfg, secrets, (
-        f"Could not fix bug #{number} ({issue.title}), so it is assigned to "
-        f"{', '.join(repo.issues.assignee) or 'nobody'}: {reason[:400]} {issue.url}"
-    ))
+    await jane.notify(
+        cfg, secrets, f"robbie could not fix bug #{number}: {issue.title}",
+        url=issue.url,
+        body=f"Assigned to {', '.join(repo.issues.assignee) or 'nobody'}: {reason[:400]}",
+    )
     return await _settle(repo, issue, "", reason)
 
 
