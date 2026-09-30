@@ -54,8 +54,10 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
     ]
 
     async def fake_gh_json(*args):
+        if args[:2] == ("issue", "list") and "--assignee" not in args:
+            return [{"number": 90}, {"number": 91}]
         if args[:2] == ("issue", "list"):
-            assert "--assignee" in args and "needs-triage" not in args
+            assert "needs-triage" not in args
             return [{"number": 90, "title": "bug", "url": "https://gh/i/90"}]
         return open_prs
 
@@ -83,6 +85,8 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
     assert [(p["number"], p["issue"]) for p in data["fixer_prs"]] == [(4, 77)]
     assert [p["number"] for p in data["triage_assigned"]] == [90]
     assert data["mine"][0]["number"] == 6 and data["mine"][0]["ci"] == "red"
+    assert data["open_prs"] == [f"a/b#{n}" for n in range(1, 7)]
+    assert data["open_issues"] == ["a/b#90", "a/b#91"]
     assert (tmp_path / "export" / "usage.json").exists()
 
 

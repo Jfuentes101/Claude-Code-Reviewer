@@ -12,7 +12,9 @@ already asks. The worklist is the operator's plate:
 - `needs_work`: open PRs carrying the needs-work label, in the author's hands;
 - `fixer_prs`: open PRs on the fixer's branches not yet under the queue label;
 - `triage_assigned`: open bug issues assigned to the operator;
-- `mine`: the operator's own open PRs, with review decision and CI.
+- `mine`: the operator's own open PRs, with review decision and CI;
+- `open_prs` / `open_issues`: every open number as `owner/repo#N`, so a reader can
+  tell whether something it was told about is still open without asking GitHub.
 """
 
 from __future__ import annotations
@@ -133,12 +135,19 @@ async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[dict[str, An
             for i in await gh_json(*args) or []
         ]
 
+    open_issues = await gh_json(
+        "issue", "list", "--repo", repo.slug, "--state", "open", "--limit", "1000",
+        "--json", "number",
+    ) or []
+
     return {
         "awaiting_you": awaiting,
         "needs_work": needs_work,
         "fixer_prs": fixer_prs,
         "triage_assigned": assigned,
         "mine": mine,
+        "open_prs": [f"{repo.slug}#{n}" for n in sorted(by_number)],
+        "open_issues": [f"{repo.slug}#{i['number']}" for i in open_issues],
     }
 
 
