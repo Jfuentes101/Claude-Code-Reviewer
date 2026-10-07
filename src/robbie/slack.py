@@ -17,6 +17,8 @@ from pathlib import Path
 
 import httpx
 
+from robbie import branding
+
 logger = logging.getLogger(__name__)
 
 POST_URL = "https://slack.com/api/chat.postMessage"
@@ -58,10 +60,10 @@ class Slack:
         return await self.post(self.owner_id, text)
 
     async def dm_reviewers(self, text: str) -> bool:
-        """Everyone who shares the review queue, for the verdict nobody can see.
+        """Everyone who shares the review queue, for an approval.
 
-        Falls back to the owner rather than to nobody: this line is the only trace
-        an approval leaves anywhere.
+        Falls back to the owner rather than to nobody: a repo without a
+        `slack_channel` has no other Slack trace of it.
         """
         if not self.approved_ids:
             return await self.dm_owner(text)
@@ -110,14 +112,28 @@ def channel_note(pr: int, title: str, url: str, author: str, phrase: str) -> str
 
 
 def approved_note(pr: int, title: str, url: str, ci: str) -> str:
-    """An `ok` leaves no review on the PR, so this line is the whole signal."""
+    """The DM; the channel gets `approved_channel_note`, the PR its own comment."""
     return f"✅ <{url}|*#{pr}*> {title[:70]} — nothing to fix, {ci}."
+
+
+def approved_channel_note(pr: int, title: str, url: str, author: str) -> str:
+    return (
+        f"✅ <{url}|*#{pr}*> {title[:70]} by {author} — *{branding.name()} approved it "
+        "for human review*, nothing blocking. Over to the reviewers."
+    )
 
 
 def author_note(pr: int, title: str, url: str, phrase: str) -> str:
     return (
         f"🔍 <{url}|*#{pr}*> {title[:70]} — my pre-review is done: {phrase}. "
         "The findings are on the PR. 🙏"
+    )
+
+
+def approved_author_note(pr: int, title: str, url: str) -> str:
+    return (
+        f"✅ <{url}|*#{pr}*> {title[:70]} — my pre-review is done: nothing blocking. "
+        "It's approved for human review, so it's over to a reviewer now. 🙏"
     )
 
 

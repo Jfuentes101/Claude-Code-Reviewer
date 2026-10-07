@@ -290,6 +290,27 @@ async def report_red_build(
     return PublishResult(True, f"reported the red build ({', '.join(checks) or 'red'})")
 
 
+async def post_approval(
+    repo: RepoConfig, meta: PrMeta, *, dry_run: bool = False
+) -> PublishResult:
+    """Say on the PR that the pre-review passed. A comment, not an APPROVE review:
+    the sign-off is a human's, and this only hands the PR over to one."""
+    marker = f"<!-- robbie-approved sha={meta.head_sha} -->"
+    body = (
+        f"{marker}\n{branding.signature()}\n\n✅ **Approved for human review.** I found "
+        f"nothing blocking on {meta.head_sha[:8]}; the final review and the merge are "
+        "still a human's call."
+    )
+    if dry_run:
+        logger.info("DRY approval note on %s#%s:\n%s", repo.slug, meta.number, body)
+        return PublishResult(False, "dry run")
+    await gh(
+        "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
+        "--input", "-", "--jq", ".html_url", stdin=json.dumps({"body": body}),
+    )
+    return PublishResult(True, "posted the approval note")
+
+
 async def request_ci(
     repo: RepoConfig, meta: PrMeta, *, dry_run: bool = False
 ) -> PublishResult:

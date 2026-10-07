@@ -163,19 +163,19 @@ review of the same diff.
 |---|---|---|
 | `needs-work` | changes-requested review + inline comments + label | clears the review request; the PR leaves the human's queue until a re-request |
 | `comment` | plain comment + inline comments (one call each) + label | request untouched; the human still gets their own pass |
-| `ok` | the label comes off and a `ci_phrase` comment goes on | request untouched |
+| `ok` | the label comes off, a `ci_phrase` comment goes on, and a note saying it is approved for human review | request untouched |
 
 `comment` posts its inline notes individually on purpose: a submitted review
 would fulfil the human's pending request, and it shouldn't.
 
-An `ok` is the only verdict that leaves no trace on the PR, so it is the only one
-that DMs — one line, to everyone in `slack.approved_ids`, since the PR just left
-all of their queues. The others announce themselves in the channel, on the PR, and
-to the author.
+An `ok` posts no review, so its note is a plain comment — robbie hands the PR to
+a human, it does not sign it off. It goes to the team channel like the others,
+and to the author, and it is the only verdict that also DMs everyone in
+`slack.approved_ids`, since the PR just left all of their queues.
 
 That is the whole of Slack: the author hears that their review is ready, the team
-channel hears that a review was posted, and an approval is DMed to the humans who
-would otherwise never know it happened. The model writes none of it — the copy is
+channel hears that a review was posted or a PR is ready for a human, and an
+approval is DMed to the humans who share the queue. The model writes none of it — the copy is
 in `slack.py` and the numbers come from the findings.
 
 That comment is also how CI starts. Where a build no longer runs on push because

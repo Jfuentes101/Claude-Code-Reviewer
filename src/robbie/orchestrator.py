@@ -501,12 +501,12 @@ class Orchestrator:
                 key, verdict="ok", **self._pass_state("published"),
                 # nothing asked CI on a run that publishes nothing, so nothing to wait for
                 ci_state=None if self.no_publish else "waiting",
-                # an ok posts no comment at all, and saying so is what lets the
+                # an ok opens no review thread, and saying so is what lets the
                 # reply sweep skip the PR: left unwritten it reads as unknown
                 inline=0,
                 **common,
             )
-            await self._announce_approval(meta, ci)
+            await self._announce_approval(repo, meta, ci)
             await self._tell_props(meta, "posted")
             return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
 
@@ -749,19 +749,41 @@ class Orchestrator:
                 repo.slack_channel,
                 slackmod.channel_note(meta.number, meta.title, meta.url, meta.author, phrase),
             )
-        state = await self.slack.dm_author(
-            meta.author, slackmod.author_note(meta.number, meta.title, meta.url, phrase)
+        await self._dm_author(
+            meta, slackmod.author_note(meta.number, meta.title, meta.url, phrase)
         )
+
+    async def _dm_author(self, meta: PrMeta, text: str) -> None:
+        state = await self.slack.dm_author(meta.author, text)
         if state == "unmapped" and self.db.notice_once(f"nomap:{meta.author}"):
             await self.slack.dm_owner(
                 slackmod.unmapped_note(meta.author, self.cfg.slack.users_file)
             )
 
-    async def _announce_approval(self, meta: PrMeta, ci: str) -> None:
-        """An `ok` leaves no trace on the PR, so it is the only verdict that has to
-        be told — and to everyone whose queue it just left, not only the operator."""
+    async def _announce_approval(self, repo: RepoConfig, meta: PrMeta, ci: str) -> None:
+        """An `ok` posts no review, so it is told here: a note on the PR, the
+        channel the needs-work notes go to, everyone whose queue it just left, and
+        the author."""
+        try:
+            await publish.once_per(
+                self.db,
+                publish.posted_key("approved", repo, meta),
+                lambda: publish.post_approval(repo, meta, dry_run=self.no_publish),
+                quiet=self.no_publish,
+            )
+        except GhError as ex:  # the verdict is recorded and the build asked for
+            logger.warning("%s#%s: could not post the approval note: %s",
+                           repo.slug, meta.number, ex)
+        if repo.slack_channel:
+            await self.slack.post(
+                repo.slack_channel,
+                slackmod.approved_channel_note(meta.number, meta.title, meta.url, meta.author),
+            )
         await self.slack.dm_reviewers(
             slackmod.approved_note(meta.number, meta.title, meta.url, ci)
+        )
+        await self._dm_author(
+            meta, slackmod.approved_author_note(meta.number, meta.title, meta.url)
         )
 
     # ----- cold start ----------------------------------------------------

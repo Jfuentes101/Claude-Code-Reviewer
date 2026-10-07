@@ -40,8 +40,8 @@ account, and the reply sweep only sees threads opened by the *current*
 | want | set |
 |---|---|
 | holds, failures, budget warnings, unmapped authors | `slack.owner_id` (one person) |
-| the `ok` line — the one verdict that leaves no trace on the PR | `slack.approved_ids: [U…, U…]`; empty falls back to `owner_id` |
-| the team channel note on `needs-work` / `comment` | `repos[].slack_channel`; unset posts nothing. Invite the bot to it |
+| the `ok` DM | `slack.approved_ids: [U…, U…]`; empty falls back to `owner_id` |
+| the team channel note on every verdict | `repos[].slack_channel`; unset posts nothing. Invite the bot to it |
 | the DM to a PR's author | a row in `slack.users_file`: `githublogin<TAB>U01234567`. `#` comments a row out |
 
 An author with no row gets no DM and the owner is told once, per author.

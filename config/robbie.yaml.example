@@ -93,9 +93,9 @@ budget:
 slack:
   owner_id: U01234567           # gets holds, failures and operator warnings
   users_file: /etc/robbie/slack-users.tsv
-  # An `ok` is the only verdict that leaves nothing on the PR, so it is the only
-  # one that DMs. Everyone who shares the review queue wants that line; leave it
-  # out and only owner_id gets it.
+  # An `ok` posts a note on the PR and a line in the repo's slack_channel, and
+  # also DMs these ids — everyone who shares the review queue. Leave it out and
+  # only owner_id gets the DM.
   approved_ids: [U01234567, U07654321]
 
 repos:

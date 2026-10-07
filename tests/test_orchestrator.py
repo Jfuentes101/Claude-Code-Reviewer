@@ -81,6 +81,7 @@ def orch(cfg, tmp_path, monkeypatch):
     # nothing in these tests may reach GitHub; the ok path looks for a rejection
     # of ours to retract, and having none is the ordinary case
     monkeypatch.setattr(orch_mod, "standing_rejection", _async(None))
+    monkeypatch.setattr(publish_mod, "post_approval", _async(PublishResult(True, "noted")))
     yield o
     db.close()
 
@@ -568,7 +569,11 @@ async def test_a_token_that_cannot_dismiss_still_gets_the_build(orch, repo, monk
 
 async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypatch):
     _build(monkeypatch)
-    cleared, ci = [], []
+    cleared, ci, noted = [], [], []
+    monkeypatch.setattr(
+        publish_mod, "post_approval",
+        lambda *a, **k: _mark(noted, PublishResult(True, "posted the approval note")),
+    )
     monkeypatch.setattr(
         publish_mod, "clear_needs_work",
         lambda *a, **k: _mark(cleared, PublishResult(True, "cleared")),
@@ -589,7 +594,30 @@ async def test_ok_clears_the_label_asks_for_ci_and_says_so(orch, repo, monkeypat
         "✅ <https://x/7|*#7*> Add widgets — nothing to fix, asked CI to run (run-ci)."
     ], "an ok is invisible on the PR, so one line has to say it happened"
     assert orch.slack.owner == [], "not an operator alert; it goes to whoever reviews"
-    assert orch.slack.channels == [], "no review was posted, so nothing to announce"
+    assert orch.slack.channels == [(
+        "C0CHAN",
+        "✅ <https://x/7|*#7*> Add widgets by dev — *robbie approved it for human "
+        "review*, nothing blocking. Over to the reviewers.",
+    )], "the channel hears an approval like it hears a needs-work"
+    assert noted, "the PR says it is ready for a human"
+    assert orch.slack.authors == ["dev"], "the author hears the good news too"
+
+    await orch._review(repo, pr(), "forced-again", REQ)
+    assert len(noted) == 1, "one approval note per commit"
+
+
+async def test_an_approval_note_that_fails_still_reaches_slack(orch, repo, monkeypatch):
+    """The verdict is recorded and the build asked for; the note is the tidy-up."""
+    _build(monkeypatch)
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(True, "ci")))
+    monkeypatch.setattr(publish_mod, "post_approval", _boom(GhError("502 from github")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+    outcome = await orch._review(repo, pr(), KEY, REQ)
+    assert outcome.action == "review"
+    assert orch.db.get_review(KEY).verdict == "ok"
+    assert orch.slack.channels and orch.slack.reviewers
 
 
 async def test_an_approval_says_it_opened_no_threads(orch, repo, monkeypatch):
