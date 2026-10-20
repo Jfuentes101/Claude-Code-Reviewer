@@ -24,12 +24,15 @@ BADGE = {
     "should-fix": "🟠 **Should-fix**",
     "nitpick": "🔵 **Nitpick**",
 }
+RANK = {"critical": 0, "must-fix": 1, "should-fix": 2, "nitpick": 3}
 
 
 @dataclass(frozen=True)
 class Anchored:
     comments: list[dict] = field(default_factory=list)
     leftovers: str = ""
+    folded: str = ""
+    folded_count: int = 0
 
 
 def commentable(patch: str) -> set[int]:
@@ -77,11 +80,28 @@ def render(f: dict, snapped_from: int | None) -> str:
     return f"{body}\n\n{branding.signature_sub()}"
 
 
-def anchor(findings: list[dict], valid: dict[str, set[int]]) -> Anchored:
+def _rank(f: dict) -> int | None:
+    sev = str(f.get("severity", "")).strip().lower().replace(" ", "-")
+    return RANK.get({"mustfix": "must-fix", "shouldfix": "should-fix"}.get(sev, sev))
+
+
+def anchor(
+    findings: list[dict], valid: dict[str, set[int]], *, inline_min: str = "nitpick"
+) -> Anchored:
+    """`inline_min` is the lowest severity that opens a thread; anything below it is
+    folded into the summary. A thread holds the next pass until somebody answers it,
+    and a nitpick should not be able to do that. A severity robbie cannot read stays
+    inline, since folding it could bury a blocker."""
     comments: list[dict] = []
     leftovers: list[str] = []
+    folded: list[str] = []
+    floor = RANK[inline_min]
     for f in findings:
         path = f.get("path")
+        rank = _rank(f)
+        if rank is not None and rank > floor:
+            folded.append(_leftover(path, f.get("line"), f))
+            continue
         lines = valid.get(path or "", set())
         try:
             line = int(f["line"])
@@ -106,7 +126,14 @@ def anchor(findings: list[dict], valid: dict[str, set[int]]) -> Anchored:
     text = ""
     if leftovers:
         text = "**Not tied to a changed line:**\n\n" + "\n".join(leftovers)
-    return Anchored(comments=comments, leftovers=text)
+    tucked = ""
+    if folded:
+        noun = "nitpick" if len(folded) == 1 else "nitpicks"
+        tucked = (
+            f"<details><summary>{len(folded)} {noun}, kept out of the threads — "
+            "nothing to reply to</summary>\n\n" + "\n".join(folded) + "\n\n</details>"
+        )
+    return Anchored(comments=comments, leftovers=text, folded=tucked, folded_count=len(folded))
 
 
 SEVERITY_LINE = re.compile(r":\d+")

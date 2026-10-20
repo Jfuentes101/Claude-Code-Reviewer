@@ -122,6 +122,10 @@ repos:
     # posted as the whole comment body on an `ok`, to start a build that no
     # longer runs on push. Whatever listens for it may match the entire comment.
     ci_phrase: run-ci
+    # the lowest severity that opens an inline thread (critical / must-fix /
+    # should-fix / nitpick). Below it, a finding is folded into the summary: an
+    # unanswered thread holds the next pass, and a nitpick should not.
+    inline_min_severity: nitpick
 
     # The bug queue. Leave `labels` out and none of this runs.
     #

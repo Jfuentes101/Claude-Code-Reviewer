@@ -151,10 +151,23 @@ other work, so inflation makes the whole review ignorable.
 | **Critical** | Data loss or corruption; a privilege or authorization bypass; a PR bundling 2+ unrelated major features; a global mutation in tests that can break unrelated tests; a test deleted or skipped in a way that hides a real failure. |
 | **Must-fix** | A wrong result on a reachable path; money or destructive operations without a test; a bug fix with no test that fails before the fix; an assertion weakened in the same PR as the code it guarded. |
 | **Should-fix** | Avoidable complexity; a stub standing in for logic this codebase owns; an untested new branch; control flow inside a test; a linter-appeasing change with a behavior side effect. |
-| **Nitpick** | Naming, formatting, placement. Say it once and move on. |
+| **Nitpick** | Naming, formatting, placement, comment wording, copy that reads inconsistently. Say it once and move on. |
 
 If you cannot name the concrete failure — the input, the state, the wrong output
 — it is not Must-fix. Downgrade it or drop it.
+
+**Should-fix needs a cost you can name too**: the input that breaks it, the
+regression no test would catch, the second place the next change will have to
+remember. Without one it is a Nitpick, however much it bothers you: a wording or
+placement preference posted as a Should-fix still opens a thread the author has to
+answer before the next pass.
+
+## 2.1 One cause, one finding
+
+When the same mistake shows up in several places, post it **once**, at the first
+occurrence, and list the other `file:line` in its body. A misreading posted three
+times is three threads to argue and triple the cost of being wrong. Nitpicks of one kind — every narrating comment, every long line — are one
+finding, not one per line.
 
 ## 3. Engineering judgment: the cheapest change that works
 
@@ -284,8 +297,15 @@ a branch **unreachable in production** (see §1 — the branch may be dead); and
 
 ### Global state that leaks into other tests
 
-**Anything global a test mutates must be restored by the same construct that
-mutated it** — the block form, or an `ensure` / `after` / `teardown` hook. A
+**First check whether the suite already restores it.** A global `teardown` or
+`after` hook in the test helper or a support file that resets the clock, `ENV` or
+request state for every test makes a bare mutation harmless. Read the suite's
+shared setup — its test helper and support files — before calling a leak: a
+finding the helper already prevents is wrong, not cautious — §1 applies to tests
+too.
+
+Otherwise, **anything global a test mutates must be restored by the same construct
+that mutated it** — the block form, or an `ensure` / `after` / `teardown` hook. A
 restore written as a trailing line in the example body is **not** safe: a failing
 assertion above it raises, the line never runs, and every later test in that
 process is poisoned. Critical, not style: the damage lands on unrelated tests and
@@ -379,6 +399,33 @@ condition originates; if the client can set it, it is Critical.
 **Lock contention on a shared row.** A counter cache, sequence or settings row
 that every concurrent request updates serializes them behind one lock and shows up
 as a timeout, not as a deadlock.
+
+The same goes for a lock taken on purpose. One meant to serialize an operation
+should not be a row lock other writers need: `FOR UPDATE` on parent rows blocks
+every insert whose foreign key points at them, and a lock held across a long
+transaction — hundreds of records, a vendor call per row — freezes those rows for
+the whole of it. Lock the operation (an advisory lock keyed by its scope), not the
+rows everyone else writes.
+
+**Secrets and personal data leaving by a side door.** On public or
+unauthenticated surfaces — checkout, links mailed to customers, exports, mutations
+callable without a session — check: a token in a URL query string, which
+analytics, referrers and logs all read; a raw exception message returned to the
+caller; an export or a mailing that ignores opt-in or consent; a link that stands
+for a person and reveals who. Critical when it leaks a credential or personal data.
+
+**Authorization on every new entry point.** For each mutation, resolver, field or
+controller action the diff adds or changes, name the check that scopes it to the
+caller. A sibling that loads through a scoped loader is not evidence this one
+does; a new mutation copied from one that does is the usual way one slips through.
+
+**Several writes that must land together.** A save that touches more than one
+record or table with no transaction around it leaves half-written state the moment
+the second write fails — and the retry then trips over the first.
+
+**A stale async response.** In the frontend, a response to an older request
+overwriting the state a newer one already set: no request id, no abort, no
+latest-wins check. Typing fast, or a slow network, is enough to reach it.
 
 **Silently dropped options.** A framework helper that forwards only a known list
 of keys, so an option passed at the wrong nesting level does nothing and no error

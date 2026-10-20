@@ -66,6 +66,22 @@ async def test_someone_elses_pr_gets_a_real_changes_requested_review(repo, calls
     assert "requested changes" in result.detail
 
 
+async def test_a_repo_can_keep_nitpicks_out_of_the_threads(tmp_path, calls):
+    repo = RepoConfig(slug="acme/app", reviewer_login="rev", bare=tmp_path / "app.git",
+                      inline_min_severity="should-fix")
+    nit = {**FINDING, "line": 3, "severity": "Nitpick", "title": "rename it"}
+    result = await publish_mod.publish_review(
+        "needs-work", repo, pr(), body="summary", findings=[FINDING, nit], self_login="robbie-bot"
+    )
+    review = next(
+        json.loads(s) for a, s in calls if s and "pulls/7/reviews" in " ".join(a)
+    )
+    assert [c["line"] for c in review["comments"]] == [2]
+    assert "rename it" in review["body"]
+    assert result.inline == 1
+    assert "1 folded" in result.detail
+
+
 async def test_your_own_pr_falls_back_to_a_comment_instead_of_losing_the_review(repo, calls):
     result = await publish_mod.publish_review(
         "needs-work", repo, pr(author="me"), body="summary", findings=[FINDING],

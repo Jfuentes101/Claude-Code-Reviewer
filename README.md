@@ -168,6 +168,12 @@ review of the same diff.
 `comment` posts its inline notes individually on purpose: a submitted review
 would fulfil the human's pending request, and it shouldn't.
 
+Not every finding becomes a thread. `inline_min_severity` (per repo, default
+`nitpick`, i.e. all of them) is the lowest severity that does; anything below it
+goes into a collapsed section at the end of the summary instead. An unanswered
+thread holds the next pass (gate 5), and a nitpick should not be able to. A
+finding whose severity robbie cannot read always stays inline.
+
 An `ok` posts no review, so its note is a plain comment — robbie hands the PR to
 a human, it does not sign it off. It goes to the team channel like the others,
 and to the author, and it is the only verdict that also DMs everyone in
@@ -672,8 +678,10 @@ style:
    finding in the review. Includes the trap of concluding absence from a count in
    a trimmed or stale dataset.
 2. **Severity discipline** — a table plus the test "if you cannot name the input,
-   the state and the wrong output, it is not Must-fix". Inflation makes the whole
-   review ignorable, and it jams the needs-work label brake.
+   the state and the wrong output, it is not Must-fix", and its smaller sibling: a
+   Should-fix needs a cost you can name too. Inflation makes the whole review
+   ignorable, and it jams the needs-work label brake. One cause is one finding,
+   with the other locations listed in it.
 3. **Cheapest change that works** — speculative generality, hand-rolled over
    built-in, deletion missed, and the note that a change made only to satisfy a
    linter can still change behavior.
@@ -683,12 +691,16 @@ style:
    recommendation, and the exceptions that must not be flagged.
 6. **Tests** — weakened assertions in the same PR as the code they guard, stubs
    standing in for owned logic rather than boundaries, global state restored by a
-   trailing line a raised assertion skips, "no such thing as a flaky test" and its
+   trailing line a raised assertion skips — after checking the suite's own global
+   teardown, which may already restore it — "no such thing as a flaky test" and its
    inverse "do not touch a green test", coverage judged by consequence.
 7. **Recurring bug families** — check-then-act against a unique constraint
    (including the volatile-key variant that collides deterministically),
-   privilege derived from client input, shared-row lock contention, silently
-   dropped options.
+   privilege derived from client input, shared-row lock contention (and row locks
+   used where an advisory lock on the operation would do), silently dropped options,
+   secrets and personal data leaving public surfaces through URLs, error text or
+   exports, authorization on every new entry point, multi-record writes outside a
+   transaction, and stale async responses overwriting newer state.
 8. **How to write it** — lead with the verdict, cap prose, evidence in a block.
 
 **The criteria are read from `criteria_ref`, never from the checkout and never from

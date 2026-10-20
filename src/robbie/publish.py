@@ -111,7 +111,9 @@ async def publish_review(
 
     # for a human reading the PR; what stops a second post is the caller's key
     marker = f"<!-- robbie-review sha={meta.head_sha} -->"
-    anchored = anchor(findings, await diff_lines(repo.slug, meta.number))
+    anchored = anchor(
+        findings, await diff_lines(repo.slug, meta.number), inline_min=repo.inline_min_severity
+    )
     full = _assemble(marker, repo.needs_work_label, body, anchored)
 
     if dry_run:
@@ -164,6 +166,7 @@ async def publish_review(
         True,
         f"{verb} + {posted} inline"
         + (f" ({missed} rejected)" if missed else "")
+        + (f" + {anchored.folded_count} folded" if anchored.folded_count else "")
         + f" + set {repo.needs_work_label!r}",
         inline=posted,
         url=url or None,
@@ -343,6 +346,8 @@ def _assemble(marker: str, label: str, body: str, anchored: Anchored) -> str:
     ]
     if anchored.leftovers:
         parts.append("\n" + anchored.leftovers)
+    if anchored.folded:
+        parts.append("\n" + anchored.folded)
     return _truncate("\n".join(parts))
 
 

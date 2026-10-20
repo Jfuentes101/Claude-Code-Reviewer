@@ -290,6 +290,13 @@ def test_leftovers_are_appended():
     assert out.rstrip().endswith("- x")
 
 
+def test_folded_findings_close_the_body():
+    folded = "<details><summary>1 nitpick</summary>\n\n- y\n\n</details>"
+    out = _assemble("<!-- m -->", NW, "body", Anchored(leftovers="- x", folded=folded))
+    assert out.index("- x") < out.index("<details>")
+    assert out.rstrip().endswith("</details>")
+
+
 def test_a_short_body_is_untouched():
     assert _truncate("short") == "short"
 
@@ -409,8 +416,8 @@ def test_the_shipped_fix_policy_is_present_and_whole():
 def test_the_shipped_policy_is_present_and_whole():
     """policy/ is edited live on the host, so a truncation ships silently."""
     text = Path("policy/CLAUDE.md").read_text(encoding="utf-8")
-    for heading in ("Reachability", "Severity", "Comments in the diff", "PR scope",
-                    "Tests", "Recurring bug families", "Writing the review"):
+    for heading in ("Reachability", "Severity", "One cause, one finding", "Comments in the diff",
+                    "PR scope", "Tests", "Recurring bug families", "Writing the review"):
         assert heading in text, heading
     assert len(text) > 6000, "policy looks truncated"
 

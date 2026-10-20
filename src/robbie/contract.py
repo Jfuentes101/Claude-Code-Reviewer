@@ -189,13 +189,17 @@ def _where(t: Thread) -> str:
 
 def threads_block(threads: list[Thread]) -> str:
     """What the reviewer already said on this PR, and what came back."""
-    live = [t for t in threads if not t.outdated]
+    # an outdated thread nobody answered was most likely fixed by the move; one that
+    # was answered carries a reason, and losing it is how a settled point comes back
+    live = [t for t in threads if not t.outdated or t.replies]
     if not live:
         return ""
     rows: list[str] = []
     for t in live:
         where = _where(t)
         state = "RESOLVED" if t.resolved else ("ANSWERED" if t.replies else "no reply yet")
+        if t.outdated:
+            state = f"OUTDATED · {state}"
         rows.append(f"- [{state}] {where}\n    you said: {_strip(t.mine)}")
         for who, body in t.replies:
             rows.append(f"    {who} replied: {_strip(body)}")
@@ -255,6 +259,8 @@ Read them as a conversation you are continuing, not as history to ignore:
   the reply directly — never by posting a second inline comment on the same line.
 - A RESOLVED thread is closed. Reopen it only if the code changed in a way that
   brings the problem back, and say that is why.
+- An OUTDATED thread is one whose line has since moved. The reply on it still
+  settles the point: the code moving is not a reason to raise it again.
 - A thread with no reply yet is ALREADY POSTED on this PR. Do not repeat it
   inline; GitHub would show the author two identical comments. Mention it in the
   summary as still open if it still matters.

@@ -99,6 +99,44 @@ def test_an_unknown_severity_still_renders():
     assert out.comments[0]["body"].startswith("🔵 **Note**")
 
 
+# ----- what opens a thread ----------------------------------------------
+
+
+def _mixed() -> list[dict]:
+    return [
+        {"path": "a.rb", "line": 2, "severity": "Must-fix", "title": "real", "body": "b"},
+        {"path": "a.rb", "line": 3, "severity": "Nitpick", "title": "rename it", "body": "n"},
+        {"path": "a.rb", "line": 4, "severity": "nitpick", "title": "wrap it", "body": "w"},
+    ]
+
+
+def test_by_default_every_severity_opens_a_thread():
+    out = anchor(_mixed(), {"a.rb": commentable(PATCH)})
+    assert len(out.comments) == 3
+    assert out.folded == "" and out.folded_count == 0
+
+
+def test_below_the_floor_a_finding_goes_to_the_summary_instead_of_a_thread():
+    out = anchor(_mixed(), {"a.rb": commentable(PATCH)}, inline_min="should-fix")
+    assert [c["line"] for c in out.comments] == [2]
+    assert out.folded_count == 2
+    assert "a.rb:3" in out.folded and "rename it" in out.folded
+    assert "a.rb:4" in out.folded and "wrap it" in out.folded
+    assert out.folded.startswith("<details>") and out.folded.endswith("</details>")
+
+
+def test_a_folded_finding_needs_no_anchor():
+    nit = {"path": "untouched.rb", "line": 900, "severity": "Nitpick", "title": "t", "body": "b"}
+    out = anchor([nit], {"a.rb": commentable(PATCH)}, inline_min="should-fix")
+    assert out.leftovers == "" and out.folded_count == 1
+
+
+def test_a_severity_robbie_cannot_read_is_never_folded():
+    odd = {"path": "a.rb", "line": 2, "severity": "Blocking", "title": "t", "body": "b"}
+    out = anchor([odd], {"a.rb": commentable(PATCH)}, inline_min="critical")
+    assert len(out.comments) == 1 and out.folded_count == 0
+
+
 # ----- parsing the model's block ---------------------------------------
 
 

@@ -110,6 +110,9 @@ class RepoConfig(_Strict):
     ignore_checks: tuple[str, ...] = ("CodeRabbit",)
     # CI does not run on push any more, so an approval is what pays for a build
     ci_phrase: str = "run-ci"
+    # the lowest severity that opens an inline thread; below it, a finding goes in
+    # the summary, where it cannot hold the next pass the way an unanswered thread does
+    inline_min_severity: Literal["critical", "must-fix", "should-fix", "nitpick"] = "nitpick"
     issues: IssueConfig = IssueConfig()
 
     @property

@@ -146,8 +146,14 @@ def test_each_state_is_labelled_for_the_model():
     assert "[RESOLVED]" in threads_block([thread(resolved=True)])
 
 
-def test_outdated_threads_are_left_out_entirely():
+def test_an_outdated_thread_nobody_answered_is_left_out():
     assert threads_block([thread(outdated=True)]) == ""
+
+
+def test_an_outdated_thread_keeps_the_reason_it_was_given():
+    block = threads_block([thread(outdated=True, replies=(("dev", "intentional, see #12"),))])
+    assert "[OUTDATED · ANSWERED]" in block
+    assert "dev replied: intentional" in block
 
 
 def test_no_threads_means_no_block():
