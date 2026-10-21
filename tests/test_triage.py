@@ -11,6 +11,7 @@ from robbie.triage import (
     ATTEMPT,
     Rules,
     fields,
+    from_sentry,
     money_prompt,
     touches_money,
     verdict,
@@ -130,6 +131,12 @@ def test_a_body_from_the_web_form_parses_with_crlf():
     assert fields("### Environment\r\n\r\nQA\r\n") == {"Environment": "QA"}
 
 
+def test_a_body_written_with_h2_headings_parses_like_the_form():
+    assert fields("## Environment\n\nQA\n\n#### Detail\n\nx\n") == {
+        "Environment": "QA\n\n#### Detail\n\nx"
+    }
+
+
 def test_anything_before_the_first_heading_is_not_a_field():
     assert fields("free text nobody asked for\n\n### Environment\n\nQA\n") == {
         "Environment": "QA"
@@ -193,6 +200,15 @@ def test_a_report_with_no_steps_goes_to_a_human(answers):
     is the whole of what a bot has to offer here."""
     answers["Steps to reproduce"] = ""
     assert verdict(answers, RULES) == (ASSIGN, "Steps to reproduce: unanswered")
+
+
+def test_a_sentry_report_stands_in_for_steps_but_not_for_money(answers):
+    assert from_sentry("[ACME-1](https://acme.sentry.io/issues/12345/)")
+    assert not from_sentry("see sentry for details")
+    answers["Steps to reproduce"] = ""
+    assert verdict(answers, RULES, sentry=True).action == ATTEMPT
+    answers["Does it touch payments?"] = "Refund"
+    assert verdict(answers, RULES, sentry=True).action == ASSIGN
 
 
 def test_a_bug_nobody_can_reproduce_goes_to_a_human(answers):

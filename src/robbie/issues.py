@@ -28,6 +28,7 @@ from robbie.triage import (
     ATTEMPT,
     Verdict,
     fields,
+    from_sentry,
     money_prompt,
     touches_money,
     verdict,
@@ -74,7 +75,7 @@ async def _triage_one(
     if issue.state != "OPEN":
         # the search said open, but a queue read and a decision are minutes apart
         return None
-    call = verdict(fields(issue.body), repo.issues.rules)
+    call = verdict(fields(issue.body), repo.issues.rules, sentry=from_sentry(issue.body))
     if call.action == ASK:
         asked = await _ask_about_money(cfg, secrets, repo, db, issue, dry_run=dry_run)
         if asked is None:
