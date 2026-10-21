@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from robbie import budget, jane, publish
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.db import Db
-from robbie.github import GhError, IssueMeta, issue_meta, issue_queue
+from robbie.github import GhError, IssueMeta, fixing_prs, issue_meta, issue_queue
 from robbie.runner import run_review
 from robbie.triage import (
     ASK,
@@ -75,6 +75,10 @@ async def _triage_one(
     if issue.state != "OPEN":
         # the search said open, but a queue read and a decision are minutes apart
         return None
+    if prs := await fixing_prs(repo.slug, number):
+        result = await publish.point_to_fix(repo, issue, prs, dry_run=dry_run)
+        logger.info("%s#%s: linked — %s", repo.slug, number, result.detail)
+        return Settled(number, "linked", ", ".join(prs))
     call = verdict(fields(issue.body), repo.issues.rules, sentry=from_sentry(issue.body))
     if call.action == ASK:
         asked = await _ask_about_money(cfg, secrets, repo, db, issue, dry_run=dry_run)

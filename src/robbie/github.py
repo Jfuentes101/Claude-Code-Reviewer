@@ -190,6 +190,35 @@ async def issue_meta(repo: str, number: int) -> IssueMeta:
     )
 
 
+
+async def fixing_prs(repo: str, number: int) -> list[str]:
+    """Urls of the open or merged pull requests that close this issue.
+
+    Closing references only — `Fixes #12` or the Development sidebar — never
+    mentions: a PR that names four issues in its body usually closes one of them.
+    A closed, unmerged one is abandoned work, not a fix.
+    """
+    query = """
+      query($n: Int!, $owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) { issue(number: $n) {
+          closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+            nodes { url state }
+          }
+        } }
+      }
+    """
+    owner, name = repo.split("/", 1)
+    data = await gh_json(
+        "api", "graphql", "-F", f"n={number}", "-f", f"owner={owner}", "-f", f"name={name}",
+        "-f", f"query={query}",
+    )
+    issue = (((data or {}).get("data") or {}).get("repository") or {}).get("issue") or {}
+    nodes = (issue.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+    return [
+        str(n["url"]) for n in nodes
+        if n and n.get("url") and n.get("state") in ("OPEN", "MERGED")
+    ]
+
 PR_FIELDS = (
     "number,title,url,author,headRefOid,changedFiles,labels,"
     "statusCheckRollup,baseRefName,state"

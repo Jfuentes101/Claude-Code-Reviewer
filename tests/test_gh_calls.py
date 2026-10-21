@@ -148,6 +148,16 @@ async def test_an_issue_comes_back_in_the_shape_triage_reads(fake_gh):
     assert issue.body == "### Environment\n\nQA", "the body is the form; it stays raw"
 
 
+async def test_only_open_and_merged_closing_prs_count_as_a_fix(fake_gh):
+    fake_gh(
+        'echo \'{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":['
+        '{"url":"https://x/pull/1","state":"OPEN"},{"url":"https://x/pull/2","state":"CLOSED"},'
+        '{"url":"https://x/pull/3","state":"MERGED"}]}}}}}\''
+    )
+
+    assert await gh_mod.fixing_prs("acme/app", 12) == ["https://x/pull/1", "https://x/pull/3"]
+
+
 async def test_an_issue_that_does_not_come_back_is_an_error_not_an_empty_one(fake_gh):
     """An empty read is a hiccup, and a blank body would triage as a form with no
     money answer — which is a decision, taken on no information."""

@@ -157,9 +157,10 @@ def settled(monkeypatch) -> list[dict]:
 
 
 def stub(monkeypatch, *, run: ReviewRun | None = None, pr_url: str = "", before: str = "",
-         spawned: list | None = None):
+         spawned: list | None = None, fixed_by: tuple[str, ...] = ()):
     monkeypatch.setattr(fixer_mod, "issue_queue", _async([12]))
     monkeypatch.setattr(fixer_mod, "issue_meta", _async(ISSUE))
+    monkeypatch.setattr(fixer_mod, "fixing_prs", _async(list(fixed_by)))
     monkeypatch.setattr(budget_mod, "check", lambda *a, **k: Meter(True, "fine"))
     seen = iter([before, pr_url])
     monkeypatch.setattr(fixer_mod, "open_pr_for", lambda *a, **k: _async(next(seen))())
@@ -198,6 +199,19 @@ async def test_a_pull_request_is_the_proof_not_what_the_model_says(
     assert done[0].opened == "https://x/pull/99"
     assert settled[0]["clears"] == "robbie-fix"
     assert not settled[0]["assignee"], "a draft PR is not a person's problem yet"
+
+
+async def test_an_issue_someone_else_fixed_is_linked_not_fixed_again(
+    cfg, db, repo, monkeypatch, settled
+):
+    stub(monkeypatch, fixed_by=("https://x/pull/7",))
+
+    done = await fix_tick(cfg, SECRETS, repo, db)
+
+    assert done[0].opened == "https://x/pull/7"
+    assert "https://x/pull/7" in settled[0]["say"]
+    assert settled[0]["clears"] == "robbie-fix"
+    assert not settled[0]["assignee"]
 
 
 async def test_a_model_claiming_fixed_with_no_pull_request_goes_to_a_person(

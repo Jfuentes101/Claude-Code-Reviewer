@@ -21,7 +21,7 @@ from robbie import budget, jane, publish
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.contract import fix_preamble, parse_fix
 from robbie.db import Db
-from robbie.github import GhError, IssueMeta, gh_json, issue_meta, issue_queue
+from robbie.github import GhError, IssueMeta, fixing_prs, gh_json, issue_meta, issue_queue
 from robbie.runner import run_review
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,9 @@ async def _fix_one(
     if (opened := await open_pr_for(repo.slug, number)):
         # somebody's earlier run already got there; the label is all that is left
         return await _settle(repo, issue, opened, "a pull request was already open")
+    if prs := await fixing_prs(repo.slug, number):
+        await publish.point_to_fix(repo, issue, prs, clears=repo.issues.fixable_label)
+        return Fixed(number, prs[0], "someone else's pull request closes it")
 
     gate = budget.check(cfg, db, 1, via_endpoint=repo.issues.fix_via_endpoint)
     if not gate.allowed:

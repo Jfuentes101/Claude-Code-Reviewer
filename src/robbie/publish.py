@@ -422,3 +422,16 @@ async def settle_issue(
         f"repos/{repo.slug}/issues/{issue.number}/labels/{quote(clears, safe='')}",
     )
     return PublishResult(True, say)
+
+
+async def point_to_fix(
+    repo: RepoConfig, issue: IssueMeta, prs: list[str], *, clears: str = "",
+    dry_run: bool = False,
+) -> PublishResult:
+    """Someone already has a pull request closing this issue: link it, assign
+    nobody, and take the issue out of the queue."""
+    return await settle_issue(
+        repo, issue,
+        say=f"Already fixed or being fixed in {', '.join(prs)}, so I am leaving this one alone.",
+        clears=clears, dry_run=dry_run,
+    )

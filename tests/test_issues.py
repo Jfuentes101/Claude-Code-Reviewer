@@ -81,7 +81,7 @@ def settled(monkeypatch) -> list[dict]:
     """What the loop asked publish to write, without writing it."""
     calls: list[dict] = []
 
-    async def fake(repo, issue, *, say, add_label="", assignee=(), dry_run=False):
+    async def fake(repo, issue, *, say, add_label="", assignee=(), clears="", dry_run=False):
         calls.append({"number": issue.number, "say": say, "label": add_label,
                       "assignee": assignee})
         return PublishResult(True, say)
@@ -90,8 +90,9 @@ def settled(monkeypatch) -> list[dict]:
     return calls
 
 
-def stub_issue(monkeypatch, *, money="No", state="OPEN", numbers=(12,)) -> None:
+def stub_issue(monkeypatch, *, money="No", state="OPEN", numbers=(12,), fixed_by=()) -> None:
     monkeypatch.setattr(issues_mod, "issue_queue", _async(list(numbers)))
+    monkeypatch.setattr(issues_mod, "fixing_prs", _async(list(fixed_by)))
     monkeypatch.setattr(issues_mod, "issue_meta", _async(IssueMeta(
         number=12, title="[Bug]: it spins", url="https://x/12", author="cs",
         body=BODY.format(money=money), labels=("bug", "needs-triage"), state=state,
@@ -132,6 +133,19 @@ async def test_a_report_the_form_clears_is_queued_for_a_fix(cfg, db, repo, monke
     assert [s.action for s in out] == ["attempt"]
     assert settled[0]["label"] == "robbie-fix"
     assert not settled[0]["assignee"], "a fixable issue is not a person's yet"
+
+
+async def test_a_report_someone_already_has_a_pr_for_is_only_linked(
+    cfg, db, repo, monkeypatch, settled
+):
+    stub_issue(monkeypatch, money="Refund", fixed_by=("https://x/pull/7",))
+    monkeypatch.setattr(issues_mod, "run_review", lambda *a, **k: pytest.fail("asked a model"))
+
+    out = await triage_tick(cfg, SECRETS, repo, db)
+
+    assert [s.action for s in out] == ["linked"]
+    assert "https://x/pull/7" in settled[0]["say"]
+    assert not settled[0]["assignee"] and not settled[0]["label"]
 
 
 async def test_a_report_the_form_blocks_goes_straight_to_a_person(
