@@ -12,7 +12,7 @@ import pytest
 
 from robbie import budget, export
 from robbie.config import Config, RepoConfig, ReviewModel, SlackConfig
-from robbie.dashboard import _Handler, _transcript_body, render
+from robbie.dashboard import PAGES, _Handler, _transcript_body, render
 from robbie.db import Db
 
 
@@ -39,10 +39,23 @@ def db(cfg) -> Db:
 
 
 def test_an_empty_state_still_renders(cfg, db):
-    page = render(cfg, db)
+    pages = {path: render(cfg, db, path) for path in PAGES}
+    every = "".join(pages.values())
     for section in ("system", "usage", "models", "reviews", "transcripts"):
-        assert f">{section}</h2>" in page
-    assert "nothing recorded yet" in page
+        assert f">{section}</h2>" in every
+    assert "nothing recorded yet" in every
+    assert "nothing is waiting on you" in pages["/"]
+
+
+def test_an_unknown_path_is_not_a_page(cfg, db):
+    assert render(cfg, db, "/nope") is None
+
+
+def test_every_page_links_every_other(cfg, db):
+    page = render(cfg, db, "/fixes")
+    for path in PAGES:
+        assert f'href="{path}"' in page
+    assert 'href="/fixes" class=on' in page
 
 
 def test_a_recorded_review_shows_up(cfg, db):
@@ -52,15 +65,15 @@ def test_a_recorded_review_shows_up(cfg, db):
         findings=4, blocking=2, should_fix=1, inline=3, summary_findings=7, duration_s=121.0,
         tokens_out=10853,
     )
-    page = render(cfg, db)
-    assert "acme/app#7" in page
+    page = render(cfg, db, "/reviews")
+    assert ">#7</a>" in page
     assert "glm-5.2:cloud" in page
     assert "needs-work" in page
     assert "121s" in page
 
 
 def test_the_arms_show_their_configured_share(cfg, db):
-    page = render(cfg, db)
+    page = render(cfg, db, "/system")
     assert "67%" in page and "33%" in page, "two-to-one is what the weights say"
 
 
@@ -68,7 +81,7 @@ def test_a_title_from_github_cannot_inject_markup(cfg, db):
     """Everything on this page came from a PR, a model or a filename."""
     db.start_review(key="k", repo="acme/app", pr=7, head_sha="abc", requested_at="t")
     db.finish_review("k", state="held", hold_reason="<script>alert(1)</script>")
-    page = render(cfg, db)
+    page = render(cfg, db, "/reviews")
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;" in page
 
@@ -100,7 +113,8 @@ def test_the_panel_shows_the_stored_meter_without_asking_the_provider(cfg, db, m
     cfg.backend = "oauth"
     db.write_meter(budget.PLAN, pct=42.0, note="2026-08-04T19:10:00Z")
 
-    assert "5h window at 42%" in render(cfg, db)
+    assert "5h window at 42%" in render(cfg, db, "/system")
+    assert "5h window at 42%" in render(cfg, db), "the summary card shows it too"
 
 
 def test_it_answers_over_http(cfg, db):
@@ -117,6 +131,7 @@ def test_it_answers_over_http(cfg, db):
         (cfg.transcript_dir / "app-7-abc.md").write_text("hello", encoding="utf-8")
         assert "hello" in httpx.get(base + "/transcript?name=app-7-abc.md", timeout=10).text
         assert httpx.get(base + "/transcript?name=../robbie.db", timeout=10).status_code == 404
+        assert httpx.get(base + "/fixes", timeout=10).status_code == 200
         assert httpx.get(base + "/nope", timeout=10).status_code == 404
     finally:
         httpd.shutdown()
@@ -126,15 +141,15 @@ def test_it_answers_over_http(cfg, db):
 def test_the_pr_cells_link_to_github(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=10389, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok", model="sonnet")
-    page = render(cfg, db)
+    page = render(cfg, db, "/reviews")
     assert '<a href="https://github.com/acme/app/pull/10389"' in page
-    assert ">acme/app#10389</a>" in page
+    assert '>#10389</a>' in page and 'title="acme/app"' in page
 
 
 def test_a_held_pr_links_too(cfg, db):
     db.record_hold(key="h", repo="acme/app", pr=42, head_sha="abc",
                    requested_at="t", reason="nothing new pushed")
-    assert 'href="https://github.com/acme/app/pull/42"' in render(cfg, db)
+    assert 'href="https://github.com/acme/app/pull/42"' in render(cfg, db, "/reviews")
 
 
 def test_an_approval_shows_who_made_it_and_what_ci_said(cfg, db):
@@ -145,7 +160,7 @@ def test_an_approval_shows_who_made_it_and_what_ci_said(cfg, db):
         db.start_review(key=key, repo="acme/app", pr=pr_num, head_sha="abc", requested_at="t")
         db.finish_review(key, state="published", verdict="ok", model=model, ci_state=state)
     db.set_requested("acme/app", (1, 2, 3))
-    page = render(cfg, db)
+    page = render(cfg, db, "/approved")
     assert "ready for a human" in page
     assert "waiting on the build" in page and "build went red" in page
     assert "glm-5.2:cloud" in page and "sonnet" in page
@@ -157,13 +172,13 @@ def test_a_third_party_approval_is_marked_as_such(cfg, db):
     db.finish_review("k", state="published", verdict="ok",
                      model="glm-5.2:cloud", ci_state="green")
     db.set_requested("acme/app", [1])
-    assert "3rd-party" in render(cfg, db)
+    assert "3rd-party" in render(cfg, db, "/approved")
 
 
 def test_an_account_approval_is_not_marked(cfg, db):
     db.start_review(key="k", repo="acme/app", pr=1, head_sha="abc", requested_at="t")
     db.finish_review("k", state="published", verdict="ok", model="sonnet", ci_state="green")
-    assert "3rd-party" not in render(cfg, db)
+    assert "3rd-party" not in render(cfg, db, "/approved")
 
 
 async def test_the_panel_process_never_opens_a_writable_connection(tmp_path, monkeypatch):
@@ -204,16 +219,41 @@ def test_the_fixes_and_assigned_issues_come_from_the_export(cfg, db):
                             {"repo": "acme/app", "number": 90, "title": "<b>x</b>",
                              "labels": [], "updated_at": 0, "prs": []}],
     })
-    page = render(cfg, db)
+    page = render(cfg, db, "/fixes")
     assert 'href="https://github.com/acme/app/pull/117"' in page
     assert 'href="https://github.com/acme/app/issues/116"' in page
+    page = render(cfg, db, "/issues")
     assert 'href="https://github.com/acme/app/issues/65"' in page
     assert 'href="https://github.com/acme/app/pull/66"' in page
-    assert "code review" in page and "bug, robbie-fix" in page and "no pr" in page
+    assert "code review" in page and "bug, robbie-fix" in page and ">none<" in page
     assert "<b>x</b>" not in page
 
 
 def test_without_an_export_the_sections_say_how_to_get_one(cfg, db):
+    assert "export_interval_s" in render(cfg, db, "/fixes")
+    assert "export_interval_s" in render(cfg, db, "/issues")
+    assert "export_interval_s" in render(cfg, db)
+
+
+def test_the_summary_lists_what_waits_on_the_operator(cfg, db):
+    """A green approval and a fix draft both need a human; a red build does not yet."""
+    for n, state in ((1, "green"), (2, "red")):
+        db.start_review(key=f"k{n}", repo="acme/app", pr=n, head_sha="abc", requested_at="t")
+        db.finish_review(f"k{n}", state="published", verdict="ok", ci_state=state)
+    db.set_requested("acme/app", (1, 2))
+    export.write_json(export.export_dir(cfg) / "worklist.json", {
+        "written_at": 0,
+        "awaiting_you": [{"repo": "acme/app", "number": 1, "title": "the approved one"}],
+        "fixes": [
+            {"repo": "acme/app", "number": 3, "issue": 9, "title": "the draft",
+             "status": "draft", "opened_at": 0},
+            {"repo": "acme/app", "number": 4, "issue": 8, "title": "in review",
+             "status": "code review", "opened_at": 0},
+        ],
+        "triage_assigned": [],
+    })
     page = render(cfg, db)
-    assert ">open fixes</h2>" in page and ">issues assigned to you</h2>" in page
-    assert "export_interval_s" in page
+    waiting = page.split("waiting on you</h2>")[1]
+    assert "the approved one" in waiting and "fix draft for #9" in waiting
+    assert ">#2</a>" not in waiting and "in review" not in waiting
+    assert 'href="/fixes"' in page and "1 draft(s) to look at" in page
