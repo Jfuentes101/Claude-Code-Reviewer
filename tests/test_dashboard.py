@@ -10,7 +10,7 @@ from http.server import ThreadingHTTPServer
 import httpx
 import pytest
 
-from robbie import budget
+from robbie import budget, export
 from robbie.config import Config, RepoConfig, ReviewModel, SlackConfig
 from robbie.dashboard import _Handler, _transcript_body, render
 from robbie.db import Db
@@ -191,3 +191,29 @@ async def test_the_panel_process_never_opens_a_writable_connection(tmp_path, mon
     assert await main_mod._run(args) == 0
     assert served == [1]
     assert not (tmp_path / "state" / "robbie.db").exists(), "the panel created the DB"
+
+
+def test_the_fixes_and_assigned_issues_come_from_the_export(cfg, db):
+    export.write_json(export.export_dir(cfg) / "worklist.json", {
+        "written_at": 0,
+        "fixes": [{"repo": "acme/app", "number": 117, "issue": 116, "title": "a fix",
+                   "status": "draft", "ci": "pending", "opened_at": 0}],
+        "triage_assigned": [{"repo": "acme/app", "number": 65, "title": "a bug",
+                             "labels": ["bug", "robbie-fix"], "updated_at": 0,
+                             "prs": [{"number": 66, "status": "code review"}]},
+                            {"repo": "acme/app", "number": 90, "title": "<b>x</b>",
+                             "labels": [], "updated_at": 0, "prs": []}],
+    })
+    page = render(cfg, db)
+    assert 'href="https://github.com/acme/app/pull/117"' in page
+    assert 'href="https://github.com/acme/app/issues/116"' in page
+    assert 'href="https://github.com/acme/app/issues/65"' in page
+    assert 'href="https://github.com/acme/app/pull/66"' in page
+    assert "code review" in page and "bug, robbie-fix" in page and "no pr" in page
+    assert "<b>x</b>" not in page
+
+
+def test_without_an_export_the_sections_say_how_to_get_one(cfg, db):
+    page = render(cfg, db)
+    assert ">open fixes</h2>" in page and ">issues assigned to you</h2>" in page
+    assert "export_interval_s" in page

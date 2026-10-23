@@ -3,7 +3,8 @@
 stdlib `http.server` on purpose: one page, no JavaScript, no framework, nothing new
 in the image. Everything it shows comes out of the same SQLite the daemon writes —
 including the usage meters, which it reads rather than polls, so a browser left
-open cannot spend the rate limit the gate depends on.
+open cannot spend the rate limit the gate depends on. The fixes and the assigned
+issues come from the daemon's export file, for the same reason.
 
 There is no auth, so it binds to localhost unless told otherwise and the compose
 service publishes it on 127.0.0.1 only. Everything it shows — diffs quoted in
@@ -13,6 +14,7 @@ transcripts, PR titles, spend — is private to the team.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import shutil
 import sqlite3
@@ -23,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from robbie import branding, budget
+from robbie import branding, budget, export
 from robbie.config import Config
 from robbie.db import SCHEMA_VERSION, Db
 
@@ -71,12 +73,20 @@ def _esc(value: object) -> str:
     return html.escape(str(value if value is not None else "—"))
 
 
-def _pr_link(repo: str, pr: int) -> str:
+def _pr_link(repo: str, pr: int, kind: str = "pull") -> str:
     """github.com is the only host robbie speaks to, so the URL is derivable."""
     return (
-        f'<a href="https://github.com/{_esc(repo)}/pull/{int(pr)}" '
+        f'<a href="https://github.com/{_esc(repo)}/{kind}/{int(pr)}" '
         f'target="_blank" rel="noopener">{_esc(f"{repo}#{pr}")}</a>'
     )
+
+
+TONE = {"green": "ok", "approved": "ok", "red": "bad", "needs work": "bad",
+        "pending": "warn", "draft": "warn"}
+
+
+def _tag(word: str | None) -> str:
+    return f'<span class="{TONE.get(word or "", "")}">{_esc(word)}</span>'
 
 
 def _card(value: object, label: str, tone: str = "") -> str:
@@ -121,6 +131,7 @@ def render(cfg: Config, db: Db) -> str:
         f"tick {cfg.poll_interval_s}s · refreshed "
         f"{datetime.now(UTC):%H:%M:%S} UTC</p>",
         _ready(cfg, db),
+        *_plate(cfg),
         _system(cfg, db),
         _meters(cfg, db),
         _arms(cfg, db),
@@ -180,6 +191,52 @@ def _ready(cfg: Config, db: Db) -> str:
         "<p class='sub'>an `ok` asks CI to run; this is what came back</p>"
         + _table(["pr", "state", "approved by", "commit", "last seen"], rows, numeric={4})
     )
+
+
+def _plate(cfg: Config) -> list[str]:
+    """The fixer's open PRs and the issues assigned to the operator, as the
+    daemon's last export saw them. The panel never asks GitHub itself."""
+    heads = ("<h2>open fixes</h2>", "<h2>issues assigned to you</h2>")
+    try:
+        work = json.loads((export.export_dir(cfg) / "worklist.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        off = "<p class='sub'>set <code>export_interval_s</code> to fill this</p>"
+        return [h + off for h in heads]
+    sub = f"<p class='sub'>as of the export {_ago(work.get('written_at', 0) * 1000)}</p>"
+    fixes = [
+        [
+            _pr_link(f["repo"], f["number"]),
+            _pr_link(f["repo"], f["issue"], "issues") if f.get("issue") else "—",
+            _esc(f["title"]),
+            _tag(f.get("status")),
+            _tag(f.get("ci")),
+            _esc(_ago(f.get("opened_at", 0) * 1000)),
+        ]
+        for f in work.get("fixes", [])
+    ]
+    issues = [
+        [
+            _pr_link(i["repo"], i["number"], "issues"),
+            _esc(i["title"]),
+            _esc(", ".join(i.get("labels", [])) or "—"),
+            " ".join(
+                f'{_pr_link(i["repo"], p["number"])} {_tag(p["status"])}'
+                for p in i.get("prs", [])
+            ) or '<span class="dim">no pr</span>',
+            _esc(_ago(i.get("updated_at", 0) * 1000)),
+        ]
+        for i in work.get("triage_assigned", [])
+    ]
+    return [
+        heads[0] + sub + _table(
+            ["pr", "issue", "title", "state", "ci", "opened"], fixes,
+            numeric={5}, wide={2},
+        ),
+        heads[1] + sub + _table(
+            ["issue", "title", "labels", "pull requests", "updated"], issues,
+            numeric={4}, wide={1},
+        ),
+    ]
 
 
 def _system(cfg: Config, db: Db) -> str:

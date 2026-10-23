@@ -58,7 +58,13 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
             return [{"number": 90}, {"number": 91}]
         if args[:2] == ("issue", "list"):
             assert "needs-triage" not in args
-            return [{"number": 90, "title": "bug", "url": "https://gh/i/90"}]
+            return [{"number": 90, "title": "bug", "url": "https://gh/i/90",
+                     "labels": [{"name": "bug"}], "updatedAt": "2026-09-29T10:00:00Z",
+                     "closedByPullRequestsReferences": [
+                         {"number": 4, "url": "https://github.com/a/b/pull/4"},
+                         {"number": 8, "url": "https://github.com/a/b/pull/8"},
+                         {"number": 9, "url": "https://github.com/x/y/pull/9"},
+                     ]}]
         return open_prs
 
     async def fake_meta(repo, n):
@@ -83,7 +89,13 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
     assert [p["number"] for p in data["awaiting_you"]] == [1]
     assert [p["number"] for p in data["needs_work"]] == [3]
     assert [(p["number"], p["issue"]) for p in data["fixer_prs"]] == [(4, 77)]
+    assert [(p["number"], p["status"]) for p in data["fixes"]] == [
+        (4, "draft"), (5, "code review")]
     assert [p["number"] for p in data["triage_assigned"]] == [90]
+    assert data["triage_assigned"][0]["prs"] == [
+        {"number": 4, "url": "https://github.com/a/b/pull/4", "status": "draft"},
+        {"number": 8, "url": "https://github.com/a/b/pull/8", "status": "closed"},
+    ]
     assert data["mine"][0]["number"] == 6 and data["mine"][0]["ci"] == "red"
     assert data["open_prs"] == [f"a/b#{n}" for n in range(1, 7)]
     assert data["open_issues"] == ["a/b#90", "a/b#91"]

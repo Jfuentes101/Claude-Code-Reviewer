@@ -1,6 +1,6 @@
 """What robbie knows, as files other processes read — an assistant, a board.
 
-Off unless `export_interval_s` is set; nothing in robbie reads these back.
+Off unless `export_interval_s` is set; inside robbie only the panel reads them back.
 
 `export/worklist.json` and `export/usage.json` under `state_dir`, rewritten whole
 (temp file + rename) every `export_interval_s`, so a reader never sees half a
@@ -11,7 +11,9 @@ already asks. The worklist is the operator's plate:
   is still requested — the panel's "ready for a human" rows;
 - `needs_work`: open PRs carrying the needs-work label, in the author's hands;
 - `fixer_prs`: open PRs on the fixer's branches not yet under the queue label;
-- `triage_assigned`: open bug issues assigned to the operator;
+- `fixes`: every open PR on the fixer's branches, with `status` and `ci`;
+- `triage_assigned`: open bug issues assigned to the operator, with labels and
+  the same-repo PRs that close them (`prs`, each with its `status`);
 - `mine`: the operator's own open PRs, with review decision and CI;
 - `open_prs` / `open_issues`: every open number as `owner/repo#N`, so a reader can
   tell whether something it was told about is still open without asking GitHub.
@@ -72,6 +74,18 @@ def _labels(pr: dict[str, Any]) -> list[str]:
     return [lbl.get("name", "") for lbl in pr.get("labels") or []]
 
 
+def _status(repo: RepoConfig, pr: dict[str, Any]) -> str:
+    """Where an open PR stands, in the words the queue's labels use."""
+    labels = _labels(pr)
+    if repo.needs_work_label in labels:
+        return "needs work"
+    if pr.get("isDraft"):
+        return "draft"
+    if pr.get("reviewDecision") == "APPROVED":
+        return "approved"
+    return "code review" if repo.label in labels else "open"
+
+
 def _brief(repo: RepoConfig, pr: dict[str, Any]) -> dict[str, Any]:
     return {
         "repo": repo.slug,
@@ -98,25 +112,31 @@ async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[Any]]:
         awaiting.append({**_brief(repo, pr), "head": row["head_sha"], "ci": row["ci_state"]})
 
     prefixes = (fixer.BRANCH_PREFIX, *LEGACY_FIX_PREFIXES)
-    fixer_prs = []
+    fixes = []
     for pr in open_prs:
         branch = pr.get("headRefName") or ""
         prefix = next((p for p in prefixes if branch.startswith(p)), None)
-        if prefix is None or repo.label in _labels(pr):
+        if prefix is None:
             continue
         suffix = branch[len(prefix):]
-        fixer_prs.append({
+        fixes.append({
             **_brief(repo, pr),
             "issue": int(suffix) if suffix.isdigit() else None,
             "opened_at": _epoch(pr.get("createdAt")),
             "draft": bool(pr.get("isDraft")),
+            "labels": _labels(pr),
+            "status": _status(repo, pr),
         })
+    fixer_prs = [f for f in fixes if repo.label not in f["labels"]]
 
     needs_work = [
         _brief(repo, pr) for pr in open_prs if repo.needs_work_label in _labels(pr)
     ]
     mine = [await _mine(repo, pr) for pr in open_prs
             if (pr.get("author") or {}).get("login") == repo.reviewer_login]
+    ci = {p["number"]: p["ci"] for p in mine}
+    for f in fixes:
+        f["ci"] = ci.get(f["number"])  # read only for the operator's own PRs
     live = {(repo.slug, p["number"], p["head"]) for p in mine}
     for key in [k for k in _CI if k[0] == repo.slug and k not in live]:
         del _CI[key]
@@ -126,12 +146,14 @@ async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[Any]]:
     if bug_labels:
         args = ["issue", "list", "--repo", repo.slug, "--state", "open",
                 "--assignee", repo.reviewer_login, "--limit", "50",
-                "--json", "number,title,url"]
+                "--json", "number,title,url,labels,updatedAt,closedByPullRequestsReferences"]
         for label in bug_labels:
             args += ["--label", label]
         assigned = [
             {"repo": repo.slug, "number": i["number"], "title": i.get("title") or "",
-             "url": i.get("url") or ""}
+             "url": i.get("url") or "", "labels": _labels(i),
+             "updated_at": _epoch(i.get("updatedAt")),
+             "prs": _closing(repo, i, by_number)}
             for i in await gh_json(*args) or []
         ]
 
@@ -144,11 +166,28 @@ async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[Any]]:
         "awaiting_you": awaiting,
         "needs_work": needs_work,
         "fixer_prs": fixer_prs,
+        "fixes": fixes,
         "triage_assigned": assigned,
         "mine": mine,
         "open_prs": [f"{repo.slug}#{n}" for n in sorted(by_number)],
         "open_issues": [f"{repo.slug}#{i['number']}" for i in open_issues],
     }
+
+
+def _closing(
+    repo: RepoConfig, issue: dict[str, Any], by_number: dict[int, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The PRs that close an issue, with where each stands. ponytail: one in
+    another repo is left out, since its status would need a read of that repo."""
+    own = f"https://github.com/{repo.slug}/pull/"
+    out = []
+    for ref in issue.get("closedByPullRequestsReferences") or []:
+        if not (ref.get("url") or "").startswith(own):
+            continue
+        pr = by_number.get(int(ref["number"]))
+        out.append({"number": int(ref["number"]), "url": ref["url"],
+                    "status": _status(repo, pr) if pr else "closed"})
+    return out
 
 
 async def _mine(repo: RepoConfig, pr: dict[str, Any]) -> dict[str, Any]:
