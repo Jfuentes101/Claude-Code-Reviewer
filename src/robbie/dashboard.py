@@ -51,9 +51,10 @@ header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.75r
          padding-bottom: .9rem; border-bottom: 1px solid var(--line); }
 h1 { font-size: 1rem; margin: 0; }
 nav { display: flex; flex-wrap: wrap; gap: .25rem 1.1rem; }
-nav a { color: var(--dim); text-decoration: none; }
-nav a:hover, nav a.on { color: var(--fg); }
-nav a.on { font-weight: 600; }
+nav a, .filters a { color: var(--dim); text-decoration: none; }
+nav a:hover, nav a.on, .filters a:hover, .filters a.on { color: var(--fg); }
+nav a.on, .filters a.on { font-weight: 600; }
+.filters { display: flex; gap: 1.1rem; margin: 0 0 .75rem; font-size: .85rem; }
 header .meta { margin-left: auto; color: var(--dim); font-size: .8rem; }
 h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em;
      color: var(--dim); font-weight: 600; margin: 2rem 0 .4rem; }
@@ -218,7 +219,7 @@ CI_TONE = {"green": ("green", "ready for a human"), "red": ("red", "build went r
            "waiting": ("waiting", "waiting on the build")}
 
 
-def _summary(cfg: Config, db: Db) -> str:
+def _summary(cfg: Config, db: Db, q: dict[str, str]) -> str:
     work = _worklist(cfg)
     titles = _titles(work)
     approved = _approvals(db) or []
@@ -273,7 +274,7 @@ def _summary(cfg: Config, db: Db) -> str:
     )
 
 
-def _approved(cfg: Config, db: Db) -> str:
+def _approved(cfg: Config, db: Db, q: dict[str, str]) -> str:
     head = f"<h2>approved by {_esc(branding.name())}</h2>"
     approved = _approvals(db)
     if approved is None:
@@ -299,7 +300,7 @@ def _approved(cfg: Config, db: Db) -> str:
     )
 
 
-def _fixes(cfg: Config, db: Db) -> str:
+def _fixes(cfg: Config, db: Db, q: dict[str, str]) -> str:
     head = "<h2>open fixes</h2>"
     work = _worklist(cfg)
     if work is None:
@@ -321,11 +322,23 @@ def _fixes(cfg: Config, db: Db) -> str:
     )
 
 
-def _issues(cfg: Config, db: Db) -> str:
+def _issues(cfg: Config, db: Db, q: dict[str, str]) -> str:
     head = "<h2>issues assigned to you</h2>"
     work = _worklist(cfg)
     if work is None:
         return head + NO_EXPORT
+    assigned = work.get("triage_assigned", [])
+    show = q.get("pr") if q.get("pr") in ("with", "without") else ""
+    counts = {
+        "": len(assigned),
+        "with": sum(1 for i in assigned if i.get("prs")),
+        "without": sum(1 for i in assigned if not i.get("prs")),
+    }
+    filters = "".join(
+        f'<a href="/issues{f"?pr={key}" if key else ""}"{" class=on" if key == show else ""}>'
+        f"{label} {counts[key]}</a>"
+        for key, label in (("", "all"), ("with", "with a pull request"), ("without", "without"))
+    )
     # every row carries the queue's own labels, so they say nothing here
     quiet = {lbl for repo in cfg.repos for lbl in repo.issues.labels}
     rows = [
@@ -339,15 +352,16 @@ def _issues(cfg: Config, db: Db) -> str:
             ) or '<span class="dim">none</span>',
             _esc(_ago(i.get("updated_at", 0) * 1000)),
         ]
-        for i in work.get("triage_assigned", [])
+        for i in assigned
+        if not show or bool(i.get("prs")) == (show == "with")
     ]
-    return head + _as_of(work) + _table(
+    return head + _as_of(work) + f"<p class='filters'>{filters}</p>" + _table(
         ["issue", "title", "labels", "pull requests", "updated"], rows,
         numeric={4}, wide={1}, empty="nothing is assigned to you",
     )
 
 
-def _reviews(cfg: Config, db: Db) -> str:
+def _reviews(cfg: Config, db: Db, q: dict[str, str]) -> str:
     queue = [
         [
             _pr_link(r["repo"], r["pr"]),
@@ -386,7 +400,7 @@ def _reviews(cfg: Config, db: Db) -> str:
     )
 
 
-def _system(cfg: Config, db: Db) -> str:
+def _system(cfg: Config, db: Db, q: dict[str, str]) -> str:
     running, published, total = db.counts()
     spent = db.spend_since(budget.midnight_ms(), cfg.endpoint_models)
     usage = shutil.disk_usage(cfg.state_dir)
@@ -441,7 +455,7 @@ def _arms(cfg: Config, db: Db) -> str:
     )
 
 
-def _transcripts(cfg: Config, db: Db) -> str:
+def _transcripts(cfg: Config, db: Db, q: dict[str, str]) -> str:
     try:
         files = sorted(
             cfg.transcript_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True
@@ -459,7 +473,7 @@ def _transcripts(cfg: Config, db: Db) -> str:
     return "<h2>transcripts</h2>" + _table(["file", "size", "written"], rows, {1, 2})
 
 
-PAGES: dict[str, tuple[str, Callable[[Config, Db], str]]] = {
+PAGES: dict[str, tuple[str, Callable[[Config, Db, dict[str, str]], str]]] = {
     "/": ("summary", _summary),
     "/approved": ("approved", _approved),
     "/fixes": ("fixes", _fixes),
@@ -488,12 +502,14 @@ def _shell(current: str, body: str, title: str = "", refresh: bool = True) -> st
     )
 
 
-def render(cfg: Config, db: Db, path: str = "/") -> str | None:
+def render(
+    cfg: Config, db: Db, path: str = "/", q: dict[str, str] | None = None
+) -> str | None:
     """One page of the panel, or None for a path that is not one."""
     if path not in PAGES:
         return None
     label, build = PAGES[path]
-    return _shell(path, build(cfg, db), "" if path == "/" else label)
+    return _shell(path, build(cfg, db, q or {}), "" if path == "/" else label)
 
 
 def _transcript_body(cfg: Config, name: str) -> str | None:
@@ -535,9 +551,10 @@ class _Handler(BaseHTTPRequestHandler):
             logger.warning("dashboard could not open %s: %s", self.cfg.db_path, ex)
             self._send(f"cannot read robbie's state: {ex}", 503, "text/plain")
             return
+        q = {k: v[0] for k, v in parse_qs(url.query).items()}
         try:
             if url.path == "/transcript":
-                name = (parse_qs(url.query).get("name") or [""])[0]
+                name = q.get("name", "")
                 body = _transcript_body(self.cfg, name)
                 if body is None:
                     self._send("no such transcript", 404, "text/plain")
@@ -547,7 +564,7 @@ class _Handler(BaseHTTPRequestHandler):
                         f"<h2>{_esc(name)}</h2><pre>{_esc(body)}</pre>",
                         name, refresh=False,
                     ))
-            elif (page := render(self.cfg, db, url.path)) is not None:
+            elif (page := render(self.cfg, db, url.path, q)) is not None:
                 self._send(page)
             else:
                 self._send("not found", 404, "text/plain")

@@ -257,3 +257,24 @@ def test_the_summary_lists_what_waits_on_the_operator(cfg, db):
     assert "the approved one" in waiting and "fix draft for #9" in waiting
     assert ">#2</a>" not in waiting and "in review" not in waiting
     assert 'href="/fixes"' in page and "1 draft(s) to look at" in page
+
+
+def test_the_issues_filter_on_whether_a_pull_request_closes_them(cfg, db):
+    export.write_json(export.export_dir(cfg) / "worklist.json", {
+        "written_at": 0,
+        "triage_assigned": [
+            {"repo": "acme/app", "number": 1, "title": "has one", "labels": [],
+             "updated_at": 0, "prs": [{"number": 2, "status": "draft"}]},
+            {"repo": "acme/app", "number": 3, "title": "has none", "labels": [],
+             "updated_at": 0, "prs": []},
+        ],
+    })
+    every = render(cfg, db, "/issues")
+    assert "has one" in every and "has none" in every
+    assert ">all 2</a>" in every and ">with a pull request 1</a>" in every
+    with_pr = render(cfg, db, "/issues", {"pr": "with"})
+    assert "has one" in with_pr and "has none" not in with_pr
+    assert 'href="/issues?pr=with" class=on' in with_pr
+    without = render(cfg, db, "/issues", {"pr": "without"})
+    assert "has none" in without and "has one" not in without
+    assert "has none" in render(cfg, db, "/issues", {"pr": "junk"}), "unknown means all"
