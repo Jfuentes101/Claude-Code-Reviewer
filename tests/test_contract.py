@@ -72,6 +72,11 @@ def test_ok_is_never_publishable_because_nothing_gets_posted():
     assert not b.publishable
 
 
+def test_an_end_with_the_next_marker_glued_on_still_closes_the_verdict():
+    b = parse_blocks("Verdict: ok\n\n<<<VERDICT>>>\nok\n<<<END>>><<<INLINE>>>\n[]\n<<<END>>>")
+    assert b.verdict == "ok"
+
+
 def test_only_the_first_end_closes_a_block():
     b = parse_blocks(FULL)
     assert "<<<END>>>" not in b.github

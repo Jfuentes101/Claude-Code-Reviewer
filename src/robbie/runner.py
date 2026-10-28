@@ -27,7 +27,7 @@ import httpx
 from pydantic import SecretStr
 
 from robbie.config import Config, RepoConfig, Secrets
-from robbie.contract import Blocks, parse_blocks
+from robbie.contract import REPAIR, Blocks, parse_blocks
 from robbie.github import IssueMeta, PrMeta
 
 logger = logging.getLogger(__name__)
@@ -277,6 +277,8 @@ def _docker_argv(
         "-e", f"CRITERIA_REF={repo.criteria_ref}",
         "-e", f"REVIEW_MODE={mode}",
     ]
+    if mode == "review":
+        argv += ["-e", f"REVIEW_REPAIR={REPAIR}"]
     # A fix run gets no GitHub credential at all. It reads the mirror and hands
     # its patch to the PR tool, which is where the only token that can write
     # lives — so a poisoned report has nothing in reach to write with.

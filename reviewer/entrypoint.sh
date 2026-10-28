@@ -119,7 +119,24 @@ cmd=(claude -p
   --setting-sources user
   --strict-mcp-config --mcp-config "$mcp"
   --effort "${REVIEW_EFFORT:-high}"
-  --no-session-persistence
   "${model[@]}")
 
-exec "${cmd[@]}" <<<"$preamble$body"
+[[ -n "${REVIEW_REPAIR:-}" ]] || exec "${cmd[@]}" --no-session-persistence <<<"$preamble$body"
+
+# robbie parses only the final message; when it carries no verdict block, one more
+# turn in the same session asks for the blocks, and the envelope bills both turns
+rc=0
+out="$("${cmd[@]}" <<<"$preamble$body")" || rc=$?
+if (( rc == 0 )) && result="$(jq -er '.result' <<<"$out" 2>/dev/null)" \
+  && ! grep -qxE '<<<VERDICT>>>[[:space:]]*' <<<"$result" \
+  && again="$("${cmd[@]}" --resume "$(jq -r '.session_id' <<<"$out")" <<<"$REVIEW_REPAIR")" \
+  && merged="$(jq -s '.[1] + {
+       total_cost_usd: (map(.total_cost_usd // 0) | add),
+       usage: (.[1].usage + {input_tokens: (map(.usage.input_tokens // 0) | add),
+                             output_tokens: (map(.usage.output_tokens // 0) | add)})
+     }' <<<"$out$again")"; then
+  echo "entrypoint: no verdict block in the final message; asked once more" >&2
+  out="$merged"
+fi
+printf '%s\n' "$out"
+exit "$rc"

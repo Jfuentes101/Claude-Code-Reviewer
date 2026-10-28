@@ -21,6 +21,16 @@ from robbie.github import CheckSummary, Thread
 MARKERS = ("VERDICT", "GITHUB", "INLINE")
 VERDICTS = ("needs-work", "comment", "ok")
 
+# sent into the same session when the final message carries no verdict block:
+# some models end on prose, a mangled marker, or "the blocks are above"
+REPAIR = (
+    "Your last message did not end with the delimited blocks, so nothing can be "
+    "posted. Reply with ONLY the blocks for the review you just did: <<<VERDICT>>>, "
+    "then <<<GITHUB>>> and <<<INLINE>>> as the format asked, each marker on its own "
+    "line and each block closed by <<<END>>> on its own line. Do not investigate "
+    "further and add no other text."
+)
+
 
 @dataclass(frozen=True)
 class Blocks:
@@ -48,7 +58,8 @@ def parse_blocks(text: str) -> Blocks:
 def _block(text: str, name: str) -> str:
     """The LAST block of this name. A PR's files can carry these markers and a
     reviewer quotes the code it judges, so an echoed one must not win the parse."""
-    found = re.findall(rf"^<<<{name}>>>\s*$(.*?)^<<<END>>>\s*$", text, re.S | re.M)
+    # END may have the next marker glued on: `<<<END>>><<<INLINE>>>`
+    found = re.findall(rf"^<<<{name}>>>\s*$(.*?)^<<<END>>>", text, re.S | re.M)
     return found[-1].strip() if found else ""
 
 
