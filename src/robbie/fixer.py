@@ -21,7 +21,7 @@ from robbie import budget, jane, publish
 from robbie.config import Config, RepoConfig, Secrets
 from robbie.contract import fix_preamble, parse_fix
 from robbie.db import Db
-from robbie.github import GhError, gh_json, issue_meta, issue_queue
+from robbie.github import GhError, IssueMeta, gh_json, issue_meta, issue_queue
 from robbie.runner import run_review
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ async def open_pr_for(slug: str, number: int) -> str:
     return (rows or [{}])[0].get("url", "") if rows else ""
 
 
-async def _settle(repo: RepoConfig, issue, opened: str, reason: str) -> Fixed:
+async def _settle(repo: RepoConfig, issue: IssueMeta, opened: str, reason: str) -> Fixed:
     if opened:
         say = f"Opened {opened} for this — still a draft, and it needs a human review."
         assignee: tuple[str, ...] = ()

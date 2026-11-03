@@ -82,7 +82,7 @@ def _brief(repo: RepoConfig, pr: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[dict[str, Any]]]:
+async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[Any]]:
     open_prs = await gh_json(
         "pr", "list", "--repo", repo.slug, "--state", "open", "--limit", "200",
         "--json", OPEN_FIELDS,
@@ -192,7 +192,7 @@ def usage(db: Db) -> dict[str, Any]:
 
 
 async def export_once(cfg: Config, db: Db) -> None:
-    lists: dict[str, list[dict[str, Any]]] = {}
+    lists: dict[str, list[Any]] = {}
     for repo in cfg.repos:
         try:
             part = await repo_worklist(repo, db)

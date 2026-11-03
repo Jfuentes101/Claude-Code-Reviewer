@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 from robbie import budget
+from robbie import main as main_mod
 from robbie.config import (
     BudgetConfig,
     Config,
@@ -14,7 +15,6 @@ from robbie.config import (
     Secrets,
     SlackConfig,
 )
-from robbie import main as main_mod
 from robbie.main import _issues, _meters, _ticks, why_no_model
 from robbie.outcome import Outcome
 

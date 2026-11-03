@@ -89,7 +89,9 @@ async def test_the_review_sees_the_patch_and_comes_back(mirror: Path, short_dir:
     fake = MCPServer(name="reviewq")
 
     @fake.tool()
-    async def request_review(workspace: str, context: str = "", base_ref: str = "") -> dict[str, Any]:
+    async def request_review(
+        workspace: str, context: str = "", base_ref: str = ""
+    ) -> dict[str, Any]:
         seen["diff"] = subprocess.run(
             ["git", "-C", workspace, "diff", "--cached", base_ref],
             capture_output=True, text=True, check=True,

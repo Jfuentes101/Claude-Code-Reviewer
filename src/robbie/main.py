@@ -212,8 +212,9 @@ async def _run(args: argparse.Namespace) -> int:
                 f for r in repos
                 for f in await fix_tick(cfg, secrets, r, db, dry_run=args.dry_run)
             ]
-            for one in done:
-                logger.info("#%s %s", one.number, one.opened or f"back to a person: {one.reason}")
+            for fixed in done:
+                logger.info("#%s %s", fixed.number,
+                            fixed.opened or f"back to a person: {fixed.reason}")
             if not done:
                 logger.info("nothing is waiting for a fix")
             return 0
