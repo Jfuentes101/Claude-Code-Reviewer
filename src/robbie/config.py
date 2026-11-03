@@ -173,7 +173,7 @@ class Choice:
 
 class BudgetConfig(_Strict):
     daily_usd: float = 20.0  # backend=api
-    stop_pct: int = 70  # backend=oauth: pause at this % of the 5h window
+    stop_pct: int = 70  # backend=oauth: pause at this % of the plan's usage window
     # Held back per review in flight: the gate reads what has been spent, and a
     # running container has not finished spending. Erring high costs idle quota,
     # erring low costs the cutoff, so these are deliberately generous.

@@ -353,3 +353,85 @@ def test_a_token_that_is_simply_expired_says_so_instead_of_a_401_url(tmp_path, m
     monkeypatch.setattr(budget.httpx, "get", fake_get)
     with pytest.raises(RuntimeError, match="run `claude` on the host"):
         budget._fetch_plan(sec)
+
+
+# ── a plan with no five-hour window ──────────────────────────────────────────
+#
+# `five_hour` comes back as null rather than missing on plans that do not have
+# that window, so `data["five_hour"]["utilization"]` raised and every poll stored
+# the TypeError. The gate reads a stored error as "unreadable" and allows, so it
+# stopped gating without failing.
+#
+# Both payloads below are the real shapes, trimmed: a Max account that still has
+# the five-hour window, and an Ultra one that does not.
+
+MAX_USAGE = {
+    "five_hour": {"utilization": 24.0, "resets_at": "2026-11-03T20:10:00+00:00"},
+    "seven_day": {"utilization": 51.0, "resets_at": "2026-11-09T20:00:00+00:00"},
+    "limits": [
+        {"kind": "session", "group": "session", "percent": 24, "is_active": False},
+        {"kind": "weekly_all", "group": "weekly", "percent": 51, "is_active": True},
+    ],
+}
+
+ULTRA_USAGE = {
+    "five_hour": None,
+    "seven_day": {"utilization": 6.0, "resets_at": "2026-11-09T14:00:00.384847+00:00"},
+    "limits": [
+        {"kind": "weekly_all", "group": "weekly", "percent": 6, "is_active": True},
+        {"kind": "weekly_scoped", "group": "weekly", "percent": 0, "is_active": False},
+    ],
+}
+
+
+def usage_answers(monkeypatch, payload: dict) -> None:
+    monkeypatch.setattr(
+        budget.httpx, "get",
+        lambda url, **k: FakeResponse({"limits": {}} if "/api/usage" in url else payload),
+    )
+
+
+def test_a_plan_without_a_five_hour_window_reads_the_weekly_one(tmp_path, db, monkeypatch):
+    usage_answers(monkeypatch, ULTRA_USAGE)
+    budget.poll(cfg(tmp_path), secrets(tmp_path), db)
+    v = budget.check(cfg(tmp_path), db)
+    assert v.allowed
+    assert "6%" in v.detail
+    assert "unreadable" not in v.detail
+
+
+def test_a_plan_that_still_has_the_five_hour_window_keeps_using_it(tmp_path, db, monkeypatch):
+    """The regression that matters: `seven_day` is present here and HIGHER.
+
+    Reading the worst window instead of the five-hour one would move the gate to
+    a window that resets in days rather than hours, and `reserve_pct` is sized
+    for the short one.
+    """
+    usage_answers(monkeypatch, MAX_USAGE)
+    budget.poll(cfg(tmp_path), secrets(tmp_path), db)
+    v = budget.check(cfg(tmp_path), db)
+    assert "24%" in v.detail, "the five-hour window wins while the plan has one"
+    assert "51%" not in v.detail
+
+
+def test_the_note_stays_iso_so_a_pause_is_announced_once(tmp_path, db, monkeypatch):
+    """`_minute_key` falls back to the CURRENT minute on anything unparseable, so
+    a note that is not a timestamp gives every tick of a pause its own key — and
+    the owner a DM for each one.
+    """
+    usage_answers(monkeypatch, ULTRA_USAGE)
+    budget.poll(cfg(tmp_path), secrets(tmp_path), db)
+    conf = cfg(tmp_path)
+    conf.budget.stop_pct = 1  # force the refusal branch
+    v = budget.check(conf, db)
+    assert not v.allowed
+    assert v.notice_key == "budget:2026-11-09T14:00"
+
+
+def test_neither_window_present_is_an_error_that_names_what_was_there(tmp_path, db, monkeypatch):
+    usage_answers(monkeypatch, {"five_hour": None, "seven_day": None, "limits": []})
+    budget.poll(cfg(tmp_path), secrets(tmp_path), db)
+    v = budget.check(cfg(tmp_path), db)
+    assert v.allowed, "an unreadable meter warns and keeps going"
+    assert "no five_hour or seven_day window" in v.detail
+    assert "limits" in v.detail, "the keys that WERE there, so the next shape change is diagnosable"
