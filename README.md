@@ -818,7 +818,8 @@ SELECT repo, pr, verdict, cost_usd, duration_s FROM reviews ORDER BY created_at 
 ```
 
 `backend: oauth` reuses a `claude login` session instead and gates on the plan's
-5-hour window (`budget.stop_pct`). It works, but the token refresh writes back to
+usage window (`budget.stop_pct`) — the 5-hour one where the plan has it, the
+weekly one where it does not. It works, but the token refresh writes back to
 the credentials file, which concurrent reviewers can race on. Prefer `api` unless
 you have a reason.
 
