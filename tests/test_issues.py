@@ -190,14 +190,24 @@ async def test_a_model_that_finds_money_sends_it_to_a_person(
 
 async def test_a_run_that_never_came_back_is_read_as_money(cfg, db, repo, monkeypatch, settled):
     """A timeout is not a clearance. The issue leaves the queue with a person on
-    it, because a report that keeps timing out would otherwise be retried forever."""
+    it, because a report that keeps timing out would otherwise be retried forever.
+    The error goes to the operator, never onto the issue."""
+    told: list[str] = []
+
+    async def notify(_cfg, _secrets, _title, *, body="", **_):
+        told.append(body)
+        return True
+
+    monkeypatch.setattr(issues_mod.jane, "notify", notify)
     stub_issue(monkeypatch, money="Not sure")
-    stub_run(monkeypatch, ReviewRun(ok=False, error="timed out after 1800s"))
+    stub_run(monkeypatch, ReviewRun(ok=False, error="429 · you (someone-personal) hit a limit"))
 
     out = await triage_tick(cfg, SECRETS, repo, db)
 
     assert [s.action for s in out] == ["assign"]
-    assert "timed out" in out[0].reason
+    assert "could not finish" in settled[0]["say"]
+    assert "someone-personal" not in settled[0]["say"]
+    assert "someone-personal" in told[0]
 
 
 async def test_what_the_run_cost_is_recorded_even_when_it_failed(

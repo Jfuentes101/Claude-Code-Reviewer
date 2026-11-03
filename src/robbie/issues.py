@@ -80,11 +80,12 @@ async def _triage_one(
         logger.info("%s#%s: linked — %s", repo.slug, number, result.detail)
         return Settled(number, "linked", ", ".join(prs))
     call = verdict(fields(issue.body), repo.issues.rules, sentry=from_sentry(issue.body))
+    error = ""
     if call.action == ASK:
         asked = await _ask_about_money(cfg, secrets, repo, db, issue, dry_run=dry_run)
         if asked is None:
             return None
-        call = asked
+        call, error = asked
     if call.action == ATTEMPT:
         note = (
             "Nothing in this report puts it out of an automated fix's reach, so it is "
@@ -102,7 +103,8 @@ async def _triage_one(
             await jane.notify(
                 cfg, secrets, f"Triage assigned bug #{number} to a person: {issue.title}",
                 url=issue.url,
-                body=f"To {', '.join(repo.issues.assignee) or 'nobody'}: {call.reason}",
+                body=f"To {', '.join(repo.issues.assignee) or 'nobody'}: {call.reason}"
+                + (f" ({error})" if error else ""),
             )
     logger.info("%s#%s: %s — %s", repo.slug, number, call.action, result.detail)
     return Settled(number, call.action, call.reason)
@@ -111,8 +113,9 @@ async def _triage_one(
 async def _ask_about_money(
     cfg: Config, secrets: Secrets, repo: RepoConfig, db: Db, issue: IssueMeta,
     *, dry_run: bool,
-) -> Verdict | None:
-    """The one question the form left open. None means ask again next tick.
+) -> tuple[Verdict, str] | None:
+    """The one question the form left open, and the run's error for the operator
+    alone. None means ask again next tick.
 
     Which arm answered is logged with the answer it gave, from the first issue
     onwards: the choice of model here is a guess until there are real reports to
@@ -143,11 +146,12 @@ async def _ask_about_money(
     if not run.ok:
         logger.warning("%s#%s: the money question did not come back (%s)",
                        repo.slug, issue.number, run.error)
-        return Verdict(ASSIGN, f"the money check could not finish ({run.error})")
+        # the reason is posted on the issue; a provider's error can name the billed account
+        return Verdict(ASSIGN, "the money check could not finish"), run.error or ""
 
     money = touches_money(run.text)
     logger.info("%s#%s: money=%s from %s in %.0fs costing %s",
                 repo.slug, issue.number, money, arm, run.duration_s, run.cost_usd)
     if money:
-        return Verdict(ASSIGN, f"{arm} found a money path in the code this report lands in")
-    return Verdict(ATTEMPT, f"{arm} found no money path in the code this report lands in")
+        return Verdict(ASSIGN, f"{arm} found a money path in the code this report lands in"), ""
+    return Verdict(ATTEMPT, f"{arm} found no money path in the code this report lands in"), ""

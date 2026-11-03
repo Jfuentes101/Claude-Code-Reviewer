@@ -115,22 +115,23 @@ async def _fix_one(
         )
         return await _settle(repo, issue, opened, blocks.body or "fixed")
 
-    reason = _why_not(run.ok, run.error, run.text)
-    logger.info("%s#%s: no pull request — %s", repo.slug, number, reason)
+    reason = _why_not(run.ok, run.text)
+    private = f"{reason} ({run.error})" if run.error else reason
+    logger.info("%s#%s: no pull request — %s", repo.slug, number, private)
     await jane.notify(
         cfg, secrets, f"robbie could not fix bug #{number}: {issue.title}",
         url=issue.url,
-        body=f"Assigned to {', '.join(repo.issues.assignee) or 'nobody'}: {reason[:400]}",
+        body=f"Assigned to {', '.join(repo.issues.assignee) or 'nobody'}: {private[:400]}",
     )
     return await _settle(repo, issue, "", reason)
 
 
-def _why_not(ok: bool, error: str | None, text: str) -> str:
+def _why_not(ok: bool, text: str) -> str:
     """What to tell the person who picks this up. The model's own words when it
     has them, because "I could not write a failing test for this" is the single
-    most useful thing it can hand over."""
+    most useful thing it can hand over. Posted on the issue, so never the run's error."""
     if not ok:
-        return f"the fix run could not finish ({error})"
+        return "the fix run could not finish"
     said = parse_fix(text)
     if said.body.strip():
         return said.body.strip()

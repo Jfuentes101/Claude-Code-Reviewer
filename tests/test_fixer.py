@@ -242,11 +242,20 @@ async def test_a_cannot_hands_over_the_models_own_words(cfg, db, repo, monkeypat
 
 
 async def test_a_run_that_died_goes_to_a_person(cfg, db, repo, monkeypatch, settled):
-    stub(monkeypatch, run=ReviewRun(ok=False, error="timed out after 1800s"))
+    told: list[str] = []
+
+    async def notify(_cfg, _secrets, _title, *, body="", **_):
+        told.append(body)
+        return True
+
+    monkeypatch.setattr(fixer_mod.jane, "notify", notify)
+    stub(monkeypatch, run=ReviewRun(ok=False, error="429 · you (someone-personal) hit a limit"))
 
     done = await fix_tick(cfg, SECRETS, repo, db)
 
-    assert "timed out" in done[0].reason
+    assert "could not finish" in done[0].reason
+    assert "someone-personal" not in settled[0]["say"]
+    assert "someone-personal" in told[-1]
     assert settled[0]["assignee"] == ("a-dev",)
 
 
