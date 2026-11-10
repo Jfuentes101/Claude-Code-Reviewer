@@ -178,7 +178,7 @@ repos:
         block_if:
           "How often?": ["Cannot reproduce"]
           "Who is affected?": ["Everyone"]
-    # Cleanup a change left behind on purpose: the same keys as `issues`, and the
+    # Cleanup that a change left behind on purpose: the same keys as `issues`, and the
     # same triage and fix, but held until the event its form names. `wait` takes
     # the form's exact strings, like `rules`. While the event has not happened
     # nothing is written; once it has, the card moves to `ready_status` on `board`

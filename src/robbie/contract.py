@@ -380,8 +380,8 @@ Work in this order, and stop at the first step you cannot finish:
 """
 
 _FOLLOW_UP_HEAD = """\
-You are doing one follow-up in this repository: cleanup a change left behind
-on purpose. The issue is at the bottom.
+You are doing one follow-up in this repository: cleanup that a change left
+behind on purpose. The issue is at the bottom.
 
 Work in this order, and stop at the first step you cannot finish:
 

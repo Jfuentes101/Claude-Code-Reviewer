@@ -152,7 +152,7 @@ class RepoConfig(_Strict):
     # the summary, where it cannot hold the next pass the way an unanswered thread does
     inline_min_severity: Literal["critical", "must-fix", "should-fix", "nitpick"] = "nitpick"
     issues: IssueConfig = IssueConfig()
-    # Cleanup a change left behind on purpose. Same shape as `issues`, read by the
+    # Cleanup that a change left behind on purpose. Same shape as `issues`, read by the
     # same triage and fix ticks; it only waits for its event before deciding.
     follow_ups: IssueConfig = IssueConfig()
 

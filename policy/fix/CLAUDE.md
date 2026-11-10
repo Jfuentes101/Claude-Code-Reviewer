@@ -68,7 +68,7 @@ back to a person.
 
 ## A follow-up that only removes code
 
-Some runs are follow-ups, not bugs: cleanup a change left behind on purpose.
+Some runs are follow-ups, not bugs: cleanup that a change left behind on purpose.
 When the patch only removes code there is no bug for a test to fail on, and the
 prompt says so. What makes it reviewable then is the search: say in the summary
 what you looked for and where, the dynamic references included, and which tests
