@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from robbie import budget, jane, publish
 from robbie.config import Config, RepoConfig, Secrets
@@ -33,6 +34,7 @@ from robbie.triage import (
     touches_money,
     verdict,
 )
+from robbie.wait import wait_over
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,23 @@ async def _triage_one(
         result = await publish.point_to_fix(repo, issue, prs, dry_run=dry_run)
         logger.info("%s#%s: linked — %s", repo.slug, number, result.detail)
         return Settled(number, "linked", ", ".join(prs))
-    call = verdict(fields(issue.body), repo.issues.rules, sentry=from_sentry(issue.body))
+    answers = fields(issue.body)
+    call: Verdict | None = None
+    waited = ""
+    if repo.issues.wait.field:
+        wait = await wait_over(repo.slug, answers, repo.issues.wait,
+                               today=datetime.now(UTC).date())
+        if wait.over is False:
+            logger.debug("%s#%s: still waiting — %s", repo.slug, number, wait.reason)
+            return None
+        if wait.over is None:
+            call = Verdict(ASSIGN, f"robbie cannot tell when it may start — {wait.reason}")
+        else:
+            waited = f"Its wait is over: {wait.reason}.\n\n"
+            moved = await publish.move_card(repo, issue, dry_run=dry_run)
+            log = logger.info if moved.posted or dry_run else logger.warning
+            log("%s#%s: %s", repo.slug, number, moved.detail)
+    call = call or verdict(answers, repo.issues.rules, sentry=from_sentry(issue.body))
     error = ""
     if call.action == ASK:
         asked = await _ask_about_money(cfg, secrets, repo, db, issue, dry_run=dry_run)
@@ -87,7 +105,7 @@ async def _triage_one(
             return None
         call, error = asked
     if call.action == ATTEMPT:
-        note = (
+        note = waited + (
             "Nothing in this report puts it out of an automated fix's reach, so it is "
             f"queued for one. A person reviews whatever comes out of that.\n\n_{call.reason}._"
         )
@@ -95,13 +113,14 @@ async def _triage_one(
             repo, issue, say=note, add_label=repo.issues.fixable_label, dry_run=dry_run
         )
     else:
-        note = f"Over to a human.\n\n_{call.reason}._"
+        note = f"{waited}Over to a human.\n\n_{call.reason}._"
         result = await publish.settle_issue(
             repo, issue, say=note, assignee=repo.issues.assignee, dry_run=dry_run
         )
         if not dry_run:
             await jane.notify(
-                cfg, secrets, f"Triage assigned bug #{number} to a person: {issue.title}",
+                cfg, secrets,
+                f"Triage assigned {repo.issues.noun} #{number} to a person: {issue.title}",
                 url=issue.url,
                 body=f"To {', '.join(repo.issues.assignee) or 'nobody'}: {call.reason}"
                 + (f" ({error})" if error else ""),

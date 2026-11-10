@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -25,6 +26,31 @@ logger = logging.getLogger(__name__)
 class _Strict(BaseModel):
     # a typo'd key in the YAML must fail at boot, not be silently ignored
     model_config = ConfigDict(extra="forbid")
+
+
+class WaitConfig(_Strict):
+    """Which answers on the form say when an issue may start. No `field` = no wait.
+
+    The exact strings of the repo's form, like `rules`: the dropdown naming the
+    event, the answer naming the pull requests (as `#1234`), and a YYYY-MM-DD date
+    that holds any event back until it has passed.
+    """
+
+    field: str = ""
+    waiting_on: str = ""
+    not_before: str = ""
+    now: tuple[str, ...] = ()
+    merged: tuple[str, ...] = ()
+    deployed: tuple[str, ...] = ()
+    dated: tuple[str, ...] = ()
+    # the tags a production deploy cuts; the newest by name is what is live
+    deploy_tag: str = ""
+
+    @field_validator("deploy_tag")
+    @classmethod
+    def _compiles(cls, v: str) -> str:
+        re.compile(v)
+        return v
 
 
 class IssueConfig(_Strict):
@@ -60,6 +86,18 @@ class IssueConfig(_Strict):
     # Handed to the fix container as DATABASE_URL, and what the entrypoint reads
     # to know which role and database to create. Empty = no database is started.
     fix_db_url: str = ""
+    # Set by `RepoConfig.issue_queues`, never in the YAML: which prompt the fix
+    # gets, and whether triage waits for the issue's `Can start` event first.
+    kind: Literal["bug", "follow_up"] = "bug"
+    # `owner/number` of the org project whose Status a follow-up moves to
+    # `ready_status` once its wait is over. Empty = no board is touched.
+    board: str = Field(default="", pattern=r"^([A-Za-z0-9-]+/\d+)?$")
+    ready_status: str = "Ready"
+    wait: WaitConfig = WaitConfig()
+
+    @property
+    def noun(self) -> str:
+        return "follow-up" if self.kind == "follow_up" else "bug"
 
     @field_validator("assignee", mode="before")
     @classmethod
@@ -114,6 +152,18 @@ class RepoConfig(_Strict):
     # the summary, where it cannot hold the next pass the way an unanswered thread does
     inline_min_severity: Literal["critical", "must-fix", "should-fix", "nitpick"] = "nitpick"
     issues: IssueConfig = IssueConfig()
+    # Cleanup a change left behind on purpose. Same shape as `issues`, read by the
+    # same triage and fix ticks; it only waits for its event before deciding.
+    follow_ups: IssueConfig = IssueConfig()
+
+    def issue_queues(self) -> list[RepoConfig]:
+        """One copy of this repo per configured queue, each with that queue as
+        its `issues`, so every tick reads one queue the way it always has."""
+        queues = [self] if self.issues.labels else []
+        if self.follow_ups.labels:
+            follow_ups = self.follow_ups.model_copy(update={"kind": "follow_up"})
+            queues.append(self.model_copy(update={"issues": follow_ups}))
+        return queues
 
     @property
     def brake_labels(self) -> tuple[str, ...]:

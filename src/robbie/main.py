@@ -193,8 +193,8 @@ async def _run(args: argparse.Namespace) -> int:
             if not repos:
                 raise SystemExit(f"{args.repo} is not a configured repo")
             settled = [
-                s for r in repos
-                for s in await triage_tick(cfg, secrets, r, db, dry_run=args.dry_run)
+                s for r in repos for q in r.issue_queues()
+                for s in await triage_tick(cfg, secrets, q, db, dry_run=args.dry_run)
             ]
             for one in settled:
                 logger.info("#%s %s: %s", one.number, one.action, one.reason)
@@ -209,8 +209,8 @@ async def _run(args: argparse.Namespace) -> int:
             if not cfg.fix_mcp:
                 raise SystemExit("fix_mcp is unset, so no fix can get out of a container")
             done = [
-                f for r in repos
-                for f in await fix_tick(cfg, secrets, r, db, dry_run=args.dry_run)
+                f for r in repos for q in r.issue_queues()
+                for f in await fix_tick(cfg, secrets, q, db, dry_run=args.dry_run)
             ]
             for fixed in done:
                 logger.info("#%s %s", fixed.number,
@@ -295,9 +295,10 @@ async def _issues(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event
     ponytail: cancelled at shutdown, and a fix container already running finishes
     on its own; its pull request is found and settled on the next pass.
     """
-    repos = [r for r in cfg.repos if r.issues.labels]
-    logger.info("bug queue on for %s, every %ds, fix %s",
-                ", ".join(r.slug for r in repos) or "no repo", cfg.issue_interval_s,
+    repos = [q for r in cfg.repos for q in r.issue_queues()]
+    logger.info("issue queues on for %s, every %ds, fix %s",
+                ", ".join(f"{q.slug} ({q.issues.noun}s)" for q in repos) or "no repo",
+                cfg.issue_interval_s,
                 "on" if cfg.fix_mcp else "off (no fix_mcp)")
     while not stop.is_set():
         for repo in repos:
@@ -309,7 +310,8 @@ async def _issues(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event
                         logger.info("%s#%s %s", repo.slug, f.number,
                                     f.opened or f"back to a person: {f.reason}")
             except Exception:  # noqa: BLE001 — same rule as the review tick
-                logger.exception("%s: bug queue pass failed; continuing", repo.slug)
+                logger.exception("%s: %s queue pass failed; continuing",
+                                 repo.slug, repo.issues.noun)
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=cfg.issue_interval_s)
 

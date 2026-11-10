@@ -62,6 +62,8 @@ class Settings:
     mirror: Path
     base: str = "main"
     label: str = "robbie-fix"
+    # an issue carrying this may skip the test, when its patch only removes code
+    no_test_label: str = ""
     branch_prefix: str = "robbie/issue-"
     # <name>@users.noreply.github.com credits that GitHub account; .invalid links to nobody
     author_name: str = "robbie-fixer"
@@ -89,6 +91,7 @@ class Settings:
             mirror=Path(mirror),
             base=os.environ.get("FIXER_BASE", "main").strip() or "main",
             label=os.environ.get("FIXER_LABEL", "robbie-fix").strip() or "robbie-fix",
+            no_test_label=os.environ.get("FIXER_NO_TEST_LABEL", "").strip(),
             author_name=os.environ.get("FIXER_AUTHOR", "").strip() or cls.author_name,
             author_email=os.environ.get("FIXER_AUTHOR_EMAIL", "").strip() or cls.author_email,
             review_socket=_path_or_none("FIXER_REVIEWQ_SOCKET"),
@@ -135,11 +138,24 @@ def changed_lines(patch: str) -> int:
     )
 
 
-def refuse(patch: str) -> str | None:
+def removes_more_than_it_adds(patch: str) -> bool:
+    added = sum(1 for ln in patch.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in patch.splitlines() if ln.startswith("-") and not ln.startswith("---"))
+    return removed > added
+
+
+def refuse(patch: str, *, removal_may_skip_test: bool = False) -> str | None:
     """Why this patch may not become a pull request, or None if it may.
 
     Deterministic and first-match: the model is told these rules in its prompt,
     but being told is not the check — this is.
+
+    `removal_may_skip_test` comes from the issue's labels, read by this server,
+    never from the model. Even then the patch has to remove more than it adds.
+
+    ponytail: "removes more than it adds" stands in for "adds no behaviour"; a
+    patch can pass it and still add a branch. The human review on the draft is
+    the check for that one.
     """
     if not patch.strip():
         return "the patch is empty"
@@ -155,7 +171,13 @@ def refuse(patch: str) -> str | None:
             if path == banned or path.startswith(banned):
                 return f"{path} is off limits to an automated fix"
     if not any(part in path for path in paths for part in TEST_DIRS):
-        return "the patch changes no test, so CI cannot show the bug was fixed"
+        if not removal_may_skip_test:
+            return "the patch changes no test, so CI cannot show the bug was fixed"
+        if not removes_more_than_it_adds(patch):
+            return (
+                "the patch changes no test and adds as much as it removes; only a "
+                "patch that removes code may go without one"
+            )
     if len(paths) > MAX_FILES:
         return f"the patch touches {len(paths)} files, over the limit of {MAX_FILES}"
     if (lines := changed_lines(patch)) > MAX_LINES:
@@ -212,20 +234,24 @@ def build_server(settings: Settings, api: Any | None = None) -> MCPServer:
         ),
     )
 
-    async def _guard_issue(issue: int) -> str | None:
+    async def _check_issue(issue: int) -> tuple[str | None, set[str]]:
+        """Why this issue may not get a fix, or None; and its labels either way."""
         resp = await client.get(f"/repos/{settings.repo}/issues/{issue}")
         if resp.status_code != 200:
-            return f"issue #{issue} could not be read ({resp.status_code})"
+            return f"issue #{issue} could not be read ({resp.status_code})", set()
         data = resp.json()
-        if data.get("state") != "open":
-            return f"issue #{issue} is not open"
         labels = {lbl.get("name") for lbl in data.get("labels") or []}
+        if data.get("state") != "open":
+            return f"issue #{issue} is not open", labels
         if settings.label not in labels:
             return (
                 f"issue #{issue} does not carry the {settings.label!r} label, so it "
                 "is not one an automated fix was asked for"
-            )
-        return None
+            ), labels
+        return None, labels
+
+    async def _guard_issue(issue: int) -> str | None:
+        return (await _check_issue(issue))[0]
 
     @mcp.tool(
         description=(
@@ -245,9 +271,11 @@ def build_server(settings: Settings, api: Any | None = None) -> MCPServer:
     async def open_pull_request(
         issue: int, title: str, summary: str, patch: str
     ) -> dict[str, Any]:
-        if (why := refuse(patch)) is not None:
+        why, labels = await _check_issue(issue)
+        if why is not None:
             return {"ok": False, "error": why}
-        if (why := await _guard_issue(issue)) is not None:
+        may_skip = bool(settings.no_test_label) and settings.no_test_label in labels
+        if (why := refuse(patch, removal_may_skip_test=may_skip)) is not None:
             return {"ok": False, "error": why}
 
         branch = f"{settings.branch_prefix}{issue}"

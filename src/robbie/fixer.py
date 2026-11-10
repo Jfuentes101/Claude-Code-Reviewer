@@ -87,12 +87,13 @@ async def _fix_one(
         return None
 
     await jane.notify(
-        cfg, secrets, f"robbie started fixing bug #{number}: {issue.title}",
+        cfg, secrets, f"robbie started fixing {repo.issues.noun} #{number}: {issue.title}",
         url=issue.url, body="Usually takes 10 to 45 minutes.", urgency="low",
     )
     run = await run_review(
         cfg, secrets, repo, issue,
-        prompt=fix_preamble(number=number, title=issue.title, body=issue.body),
+        prompt=fix_preamble(number=number, title=issue.title, body=issue.body,
+                            follow_up=repo.issues.kind == "follow_up"),
         mode="fix",
         model=repo.issues.fix_model,
         via_endpoint=repo.issues.fix_via_endpoint,
@@ -110,7 +111,8 @@ async def _fix_one(
                     repo.issues.fix_model or "the account default",
                     run.duration_s, run.cost_usd)
         await jane.notify(
-            cfg, secrets, f"robbie opened a draft PR for bug #{number}: {issue.title}",
+            cfg, secrets,
+            f"robbie opened a draft PR for {repo.issues.noun} #{number}: {issue.title}",
             url=opened, body="It needs your review before it goes to Code Review.",
         )
         return await _settle(repo, issue, opened, blocks.body or "fixed")
@@ -119,7 +121,7 @@ async def _fix_one(
     private = f"{reason} ({run.error})" if run.error else reason
     logger.info("%s#%s: no pull request — %s", repo.slug, number, private)
     await jane.notify(
-        cfg, secrets, f"robbie could not fix bug #{number}: {issue.title}",
+        cfg, secrets, f"robbie could not fix {repo.issues.noun} #{number}: {issue.title}",
         url=issue.url,
         body=f"Assigned to {', '.join(repo.issues.assignee) or 'nobody'}: {private[:400]}",
     )

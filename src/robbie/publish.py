@@ -435,3 +435,67 @@ async def point_to_fix(
         say=f"Already fixed or being fixed in {', '.join(prs)}, so I am leaving this one alone.",
         clears=clears, dry_run=dry_run,
     )
+
+
+_CARD_QUERY = """
+query($org: String!, $board: Int!, $owner: String!, $name: String!, $issue: Int!) {
+  organization(login: $org) {
+    projectV2(number: $board) {
+      id
+      field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }
+    }
+  }
+  repository(owner: $owner, name: $name) { issue(number: $issue) { id } }
+}
+"""
+_ADD_CARD = """
+mutation($board: ID!, $issue: ID!) {
+  addProjectV2ItemById(input: {projectId: $board, contentId: $issue}) { item { id } }
+}
+"""
+_SET_STATUS = """
+mutation($board: ID!, $item: ID!, $field: ID!, $option: String!) {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: $board, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}
+  }) { projectV2Item { id } }
+}
+"""
+
+
+async def move_card(repo: RepoConfig, issue: IssueMeta, *, dry_run: bool = False) -> PublishResult:
+    """Put the issue's card on `issues.board` in `issues.ready_status`.
+
+    Best effort, and never a reason to stop: the labels are the record, the board
+    is a view of it. A token without the project permission, a renamed column or
+    a deleted board all come back as a failed result for the log, and the triage
+    that follows goes ahead.
+
+    Adding an item already on the board returns the one that is there, so this
+    is also what puts a card on a board whose auto-add missed it.
+    """
+    board, status = repo.issues.board, repo.issues.ready_status
+    if not board:
+        return PublishResult(False, "no board configured")
+    if dry_run:
+        return PublishResult(False, f"dry run: would move #{issue.number} to {status} on {board}")
+    org, number = board.split("/", 1)
+    try:
+        found = await gh_json(
+            "api", "graphql", "-f", f"query={_CARD_QUERY}", "-f", f"org={org}",
+            "-F", f"board={number}", "-f", f"owner={repo.owner}", "-f", f"name={repo.name}",
+            "-F", f"issue={issue.number}",
+        )
+        project = found["data"]["organization"]["projectV2"]
+        option = next(o["id"] for o in project["field"]["options"] if o["name"] == status)
+        added = await gh_json(
+            "api", "graphql", "-f", f"query={_ADD_CARD}", "-f", f"board={project['id']}",
+            "-f", f"issue={found['data']['repository']['issue']['id']}",
+        )
+        await gh(
+            "api", "graphql", "-f", f"query={_SET_STATUS}", "-f", f"board={project['id']}",
+            "-f", f"item={added['data']['addProjectV2ItemById']['item']['id']}",
+            "-f", f"field={project['field']['id']}", "-f", f"option={option}",
+        )
+    except (GhError, KeyError, TypeError, StopIteration) as ex:
+        return PublishResult(False, f"could not move #{issue.number} on {board}: {ex}")
+    return PublishResult(True, f"#{issue.number} is {status} on {board}")

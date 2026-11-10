@@ -211,6 +211,8 @@ services:
       - FIXER_REPO
       - FIXER_BASE
       - FIXER_LABEL
+      # an issue with this label may skip the test when its patch only removes code
+      - FIXER_NO_TEST_LABEL
       # the bare mirror to clone from: a HOST path, same-path rule as the rest
       - FIXER_MIRROR
       # optional review_patch, off unless both are set. Each needs a same-path
