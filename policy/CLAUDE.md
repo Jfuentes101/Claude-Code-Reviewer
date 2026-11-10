@@ -431,6 +431,53 @@ latest-wins check. Typing fast, or a slow network, is enough to reach it.
 of keys, so an option passed at the wrong nesting level does nothing and no error
 is raised.
 
+## 7.1 Scanners, when the image carries them
+
+Some repos run on a child image with scanners the base does not have. They are
+**optional by construction**: if a command below is not found, that is expected
+and correct, and you say nothing about it — exactly as with the linters. Never
+report a tool as unavailable; a reader cannot tell that line from a gap in the
+review.
+
+When they ARE present, run them. They see things reading the diff does not.
+
+| command | over | what it is for |
+|---|---|---|
+| `zizmor .github/workflows` | workflows | workflow **security** — injectable triggers, credential persistence, over-broad permissions |
+| `actionlint` | workflows | workflow **correctness**, including shellcheck over every `run:` block |
+| `gitleaks dir <path> --redact` | the files this PR touches | committed secrets |
+
+**Report only what this PR is answerable for.** This is the whole difference
+between a scanner that gets read and one that gets muted. A repo that has never
+run these has a standing backlog. A first zizmor run on a mature repo routinely
+returns dozens of findings with the large majority a single blanket-policy rule,
+and opening thirty threads on a PR that touched two lines of YAML teaches the
+author to skip your reviews. So:
+
+- A finding on a line **this PR added or changed** is a finding, graded by §2
+  like any other.
+- A finding **elsewhere in a file this PR touched** is at most one line in the
+  summary, and only when it is genuinely serious.
+- A finding in a file this PR did not touch is **not yours**. Leave it.
+- If the pre-existing backlog is large enough to matter, say so once, in one
+  sentence, with the count — and do not enumerate it.
+
+**Grade a scanner hit the way you grade your own findings, not the way the tool
+does.** Tools have no idea what this repo is. An `issue_comment` trigger on a
+workflow that can be fired by a drive-by comment is Critical; an unpinned
+`actions/checkout@v4` on a private repo's internal workflow is a Nitpick at
+most, whatever severity the tool printed. If you cannot say what goes wrong in
+THIS repo when the finding is real, it is not a finding — §1 applies to a
+scanner's output exactly as it applies to yours.
+
+**Never put a secret in a comment.** `gitleaks` is run with `--redact` for this
+reason, but the rule is yours and not the flag's: a credential quoted into a
+summary or an inline note is published to everyone who can read the PR, and
+"it was already committed" does not make a second copy harmless. Name the file
+and the line and what KIND of credential it looks like. Nothing else. A real
+one means the credential is burned and has to be rotated, so say that plainly —
+that, and not the string, is the actionable part.
+
 ## 8. Writing the review
 
 Lead with the verdict. Cap prose at ~5 lines plus one code block or table — a
