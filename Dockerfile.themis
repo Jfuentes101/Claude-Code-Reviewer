@@ -1,0 +1,77 @@
+# Themis — the mechanical layer, as a child of the review image.
+#
+# The base image's own header says repos wanting local tooling should build a
+# child FROM it and point `image:` at that, which is what this is. It is NOT a
+# second service: the queue, the publish path, the dedupe, the budget and the
+# Slack copy all already exist one layer down, and a sibling would rebuild every
+# one of them to run four binaries.
+#
+# WHAT GOES IN HERE IS DECIDED BY WHO ELSE IS LOOKING, not by what a scanner
+# catalogue offers. Measured against a large private Rails + JS monorepo whose
+# CI runs rubocop and eslint and whose dependencies are on Dependabot:
+#
+#   rubocop, eslint        CI runs them. Re-running costs the whole Ruby/Node
+#                          toolchain plus a bundle install per branch to learn
+#                          what the build already said. Out.
+#   dependency CVEs        Dependabot already owns them. A second scanner here
+#                          reported hundreds of findings against the lockfiles,
+#                          every one a second opinion on a system already
+#                          running: noise, not coverage. Out. (A pile of open
+#                          advisories is a merge problem, not a tooling gap.)
+#   workflow security      Nobody was looking. zizmor earns its place on the
+#                          first run of any repo with workflows — and most of
+#                          what it finds the first time is a standing backlog
+#                          rather than anything this PR did, which is what
+#                          policy §7.1 is about.
+#   workflow correctness   Nobody was looking. actionlint is cheap alongside it
+#                          and reads the shell inside `run:` blocks, which no
+#                          other tool here does.
+#   secrets                Nobody was looking. In REGARDLESS of what it finds
+#                          today: a preventive control justifies itself at zero
+#                          findings, because its value is the one that would
+#                          have landed next quarter. (Analysis scanners are the
+#                          other way round and have to earn their runtime,
+#                          which is why brakeman and semgrep are not here yet.)
+#
+# Both workflow tools read .github/ only, so they cost about two seconds. A
+# secret scan is scoped to the files the PR touched, which on a monorepo is the
+# difference between 300ms and not finishing.
+FROM robbie-reviewer:latest
+
+USER root
+
+# Pinned, and bumped deliberately: a scanner that silently changes what it
+# considers high would change every verdict here without a commit.
+ARG ACTIONLINT=1.7.12
+ARG ZIZMOR=1.32.0
+ARG GITLEAKS=8.30.1
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) al=amd64; gl=x64;   zz=x86_64-unknown-linux-gnu ;; \
+      arm64) al=arm64; gl=arm64; zz=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported arch $arch" >&2; exit 1 ;; \
+    esac; \
+    cd /tmp; \
+    curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT}/actionlint_${ACTIONLINT}_linux_${al}.tar.gz" \
+      | tar -xz actionlint && mv actionlint /usr/local/bin/; \
+    curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS}/gitleaks_${GITLEAKS}_linux_${gl}.tar.gz" \
+      | tar -xz gitleaks && mv gitleaks /usr/local/bin/; \
+    curl -fsSL "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR}/zizmor-${zz}.tar.gz" \
+      | tar -xz && mv zizmor*/zizmor /usr/local/bin/ 2>/dev/null || mv zizmor /usr/local/bin/; \
+    chmod +x /usr/local/bin/actionlint /usr/local/bin/gitleaks /usr/local/bin/zizmor; \
+    rm -rf /tmp/*
+
+# actionlint shells out to shellcheck for `run:` blocks and says nothing at all
+# about them when it is missing — an absence that reads exactly like a clean pass.
+RUN apt-get update && apt-get install -y --no-install-recommends shellcheck \
+ && rm -rf /var/lib/apt/lists/*
+
+USER robbie
+WORKDIR /work
+
+# Proves the layer rather than trusting it: a child image whose tools are not on
+# PATH for the review user would fail silently, and the review would report
+# "no scanner findings" — the all-clear and the could-not-look, identical again.
+RUN actionlint --version && zizmor --version && gitleaks version && shellcheck --version | head -2
