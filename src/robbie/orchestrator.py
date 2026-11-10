@@ -411,6 +411,7 @@ class Orchestrator:
             ci=summarize_checks(meta),
             threads=threads_block(await self._prior_threads(repo, meta)),
             history=self._pass_history(repo, meta),
+            walkthrough=repo.walkthrough,
         )
 
         # the gate ruled minutes ago, behind however many reviews queued here
@@ -480,7 +481,7 @@ class Orchestrator:
             "summary_findings": summary_findings(blocks.github),
         }
 
-        if (bad := _unusable(blocks)) is not None:
+        if (bad := _unusable(blocks, summary_on_ok=repo.walkthrough)) is not None:
             self.db.finish_review(
                 key, verdict=blocks.verdict, **self._pass_state("held", bad.reason), **common
             )
@@ -497,6 +498,27 @@ class Orchestrator:
             await publish.clear_needs_work(repo, meta.number, dry_run=self.no_publish)
             await self._retract_rejection(repo, meta)
             ci = await self._request_ci(repo, meta)
+            # Last, and never fatal. The label is already off and the rejection
+            # already retracted, so a failure here costs the comment and nothing
+            # else — it must not take down an `ok` that has done its irreversible
+            # work. It is named in the outcome either way: a walkthrough that
+            # silently did not post would look exactly like one that was never
+            # asked for.
+            walked = ""
+            if repo.walkthrough:
+                try:
+                    done = await publish.once_per(
+                        self.db,
+                        publish.posted_key("walkthrough", repo, meta),
+                        lambda: publish.publish_walkthrough(
+                            repo, meta, body=blocks.github, dry_run=self.no_publish
+                        ),
+                        quiet=self.no_publish,
+                    )
+                    walked = " + walkthrough" if done and done.posted else ""
+                except Exception:  # noqa: BLE001 — cosmetic; see above
+                    logger.exception("walkthrough failed for %s#%s", repo.slug, meta.number)
+                    walked = " + walkthrough FAILED"
             self.db.finish_review(
                 key, verdict="ok", **self._pass_state("published"),
                 # nothing asked CI on a run that publishes nothing, so nothing to wait for
@@ -508,7 +530,7 @@ class Orchestrator:
             )
             await self._announce_approval(repo, meta, ci)
             await self._tell_props(meta, "posted")
-            return Outcome(repo.slug, meta.number, "review", f"ok — {ci}")
+            return Outcome(repo.slug, meta.number, "review", f"ok — {ci}{walked}")
 
         # recorded as judged either way: retrying a permanent publish failure
         # would burn a full review every tick
@@ -867,11 +889,24 @@ class _Unusable(NamedTuple):
     detail: str  # what the Outcome carries
 
 
-def _unusable(blocks: Blocks) -> _Unusable | None:
+def _unusable(blocks: Blocks, *, summary_on_ok: bool = False) -> _Unusable | None:
     """Why a finished run cannot be published, if it cannot. Held rather than
-    failed: the row keeps no verdict, so the PR comes back on its own."""
+    failed: the row keeps no verdict, so the PR comes back on its own.
+
+    `summary_on_ok` follows the repo's `walkthrough` setting. With it off an `ok`
+    is allowed to carry no body, because nothing was going to be posted anyway;
+    with it on the body IS the output, so a missing one is the same contract
+    breach as a needs-work with no summary, and is held the same way rather than
+    passing silently as a review nobody can see.
+    """
     if blocks.verdict is None:
         return _Unusable("run gave no verdict", "couldn't parse a verdict", "no verdict")
+    if blocks.verdict == "ok" and summary_on_ok and not blocks.github.strip():
+        return _Unusable(
+            "ok verdict without a walkthrough",
+            "got an ok verdict with no walkthrough, and this repo asks for one",
+            "no walkthrough",
+        )
     if blocks.verdict != "ok" and not blocks.publishable:
         return _Unusable(
             "verdict without a summary body",

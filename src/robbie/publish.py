@@ -173,6 +173,38 @@ async def publish_review(
     )
 
 
+async def publish_walkthrough(
+    repo: RepoConfig, meta: PrMeta, *, body: str, dry_run: bool = False
+) -> PublishResult:
+    """Post the summary of a review that found nothing blocking.
+
+    Deliberately NOT `publish_review` with a third verdict. That function sets the
+    needs-work label on its way out and prints a footer telling the author to take
+    the label off for another pass — both exactly wrong here, where the label was
+    just cleared and there is nothing to come back for. It also opens inline
+    threads, and an `ok` must not: the reply sweep skips a PR whose row says no
+    thread was opened, so a thread on a clean pass would hold the next one forever.
+
+    A plain comment, no label, no threads.
+    """
+    if not body.strip():
+        return PublishResult(False, "no walkthrough body; posting nothing")
+    marker = f"<!-- robbie-walkthrough sha={meta.head_sha} -->"
+    full = _truncate("\n".join([marker, f"{branding.signature()}\n", body.rstrip()]))
+    if dry_run:
+        logger.info(
+            "DRY walkthrough on %s#%s (%d bytes)\n%s",
+            repo.slug, meta.number, len(full.encode()), full,
+        )
+        return PublishResult(False, "dry run")
+    url = (await gh(
+        "api", f"repos/{repo.slug}/issues/{meta.number}/comments",
+        "--input", "-", "--jq", ".html_url",
+        stdin=json.dumps({"body": full}),
+    )).strip()
+    return PublishResult(True, "posted the walkthrough", url=url or None)
+
+
 DISMISS_MESSAGE = (
     "Superseded by a later pass on a newer commit that found nothing blocking. "
     "Retracting this so it stops holding the PR; the approval itself is not mine to give."

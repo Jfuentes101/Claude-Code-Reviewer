@@ -174,6 +174,39 @@ goes into a collapsed section at the end of the summary instead. An unanswered
 thread holds the next pass (gate 5), and a nitpick should not be able to. A
 finding whose severity robbie cannot read always stays inline.
 
+A finding may also carry **`category`** and **`effort`**, which ride beside the
+severity badge: `🔴 **Must-fix** · Security & Privacy · Quick win — …`. Severity
+says how much a finding matters; these say what kind of problem it is and how
+big the fix is, which is what lets an author pick off the three they can do
+before lunch. Both are optional — the model is told to leave one out rather than
+guess, and a finding without them renders exactly as it always did.
+
+## The walkthrough (`walkthrough`, per repo, default off)
+
+An `ok` posts nothing on the PR. The label comes off, the rejection is retracted,
+the build is asked for — and to anyone reading the pull request, that is
+indistinguishable from robbie never having run. The record of a clean pass lives
+in Slack and the panel, which is to say it lives where operators look and not
+where reviewers do.
+
+Turn `walkthrough` on and the summary is owed on **every** verdict, led by a
+description of the change written for somebody who has not read the diff: what
+the PR does and why, one line per area it touches, and the risk areas it lands
+near. On an `ok` that summary goes up as a plain comment — no label, no threads,
+and deliberately not through the review path, whose footer tells the author to
+take the needs-work label off for another pass. There is no label here and
+nothing to come back for.
+
+It is off by default because it changes what lands on a pull request, and with
+it off the prompt is byte-for-byte the one that shipped. On, a missing summary on
+an `ok` is held the same way a missing summary on a `needs-work` is: with it on
+the summary *is* the output, so losing it silently would be a review nobody can
+see.
+
+A failure to post it never takes down the `ok` — by then the label is already off
+and the build already asked for — but it is named in the outcome, because a
+walkthrough that quietly failed looks exactly like one nobody asked for.
+
 An `ok` posts no review, so its note is a plain comment — robbie hands the PR to
 a human, it does not sign it off. It goes to the team channel like the others,
 and to the author, and it is the only verdict that also DMs everyone in

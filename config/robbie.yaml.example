@@ -127,6 +127,12 @@ repos:
     # unanswered thread holds the next pass, and a nitpick should not.
     inline_min_severity: nitpick
 
+    # post a summary on EVERY review, including `ok`, led by a walkthrough of
+    # the change — what it does, the areas it touches, the risks it lands near.
+    # Off by default: today an `ok` posts nothing at all, so a clean pass leaves
+    # no trace on the PR itself. On, that summary goes up as a plain comment.
+    walkthrough: false
+
     # The bug queue. Leave `labels` out and none of this runs.
     #
     # An issue is a candidate while it carries EVERY label in `labels`. robbie

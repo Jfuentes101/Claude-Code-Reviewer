@@ -218,12 +218,17 @@ def threads_block(threads: list[Thread]) -> str:
 
 
 def preamble(
-    *, author: str, ci: CheckSummary | None = None, threads: str = "", history: str = ""
+    *, author: str, ci: CheckSummary | None = None, threads: str = "", history: str = "",
+    walkthrough: bool = False,
 ) -> str:
     """The instructions wrapped around the repo's own review command.
 
     Takes the summary itself, not the line it renders to, so asking what is failing
     cannot drift out of step with how it is worded.
+
+    `walkthrough` asks for the summary on EVERY verdict, led by a description of the
+    change. Off, this returns exactly what it always did: an `ok` emits no summary and
+    the wrapper posts nothing, which is why a clean pass leaves no trace on the PR.
     """
     failing = bool(ci and ci.failing)
     nothing_ran = bool(ci and ci.empty)
@@ -278,6 +283,35 @@ Read them as a conversation you are continuing, not as history to ignore:
 - Where an earlier finding is genuinely fixed, say so in one line. Credit is
   cheap and it tells the author the loop is working.
 """ if threads else (f"\n{history}" if history else "")
+    terse = f"""\
+Then, ONLY IF the verdict is needs-work or comment, the summary that heads the review \
+for {author} — short, because the findings themselves are posted inline on the diff. \
+Real GitHub markdown, first person (you are robbie), addressed to the author: direct and \
+warm, never scolding. One line on what the PR does, one line on CI and linters — from the \
+CI state given above, never from a guess — then an index of the findings, one line each: \
+severity — file:line — what. No repeating the explanations that go inline. If the verdict \
+is needs-work, close with one line on what you would need to see to consider it ready; if \
+it is comment, open by saying plainly that none of this blocks the merge."""
+    walked = f"""\
+Then — ALWAYS, whatever the verdict, including ok — the summary that heads the review for \
+{author}. Real GitHub markdown, first person (you are robbie), addressed to the author: \
+direct and warm, never scolding.
+
+Open with a WALKTHROUGH written for somebody who has not read the diff: two or three \
+sentences on what this PR does and why, then one line per area it touches naming the \
+files, then the risk areas it lands near — payments, auth, migrations, anything \
+irreversible — or say plainly that it lands near none. **The walkthrough is owed even \
+when you found nothing.** It is the part a reader comes back for, and on a clean pass it \
+is the only thing this review leaves behind.
+
+Then one line on CI and linters — from the CI state given above, never from a guess.
+
+Then, when there are findings, an index of them, one line each: severity — file:line — \
+what. No repeating the explanations that go inline. If the verdict is needs-work, close \
+with one line on what you would need to see to consider it ready; if it is comment, say \
+plainly that none of this blocks the merge; if it is ok, say plainly that you found \
+nothing blocking and leave the index out."""
+    summary_spec = walked if walkthrough else terse
     return f"""\
 You are running NON-INTERACTIVELY from a scheduler. Do NOT ask any questions, do \
 NOT offer to fix anything, and do NOT post anything to GitHub yourself — a wrapper \
@@ -299,14 +333,7 @@ Exactly one of these three words, nothing else:
   comment    — no Critical or Must-fix, but at least one Should-fix
   ok         — nothing above a nitpick or a suggestion
 
-Then, ONLY IF the verdict is needs-work or comment, the summary that heads the review \
-for {author} — short, because the findings themselves are posted inline on the diff. \
-Real GitHub markdown, first person (you are robbie), addressed to the author: direct and \
-warm, never scolding. One line on what the PR does, one line on CI and linters — from the \
-CI state given above, never from a guess — then an index of the findings, one line each: \
-severity — file:line — what. No repeating the explanations that go inline. If the verdict \
-is needs-work, close with one line on what you would need to see to consider it ready; if \
-it is comment, open by saying plainly that none of this blocks the merge.
+{summary_spec}
 <<<GITHUB>>>
 <the summary>
 <<<END>>>
@@ -314,16 +341,23 @@ it is comment, open by saying plainly that none of this blocks the merge.
 Then the findings themselves, as a JSON array, one object per finding — each becomes an \
 inline comment anchored to that line of the diff:
 <<<INLINE>>>
-[{{"path": "app/models/foo.rb", "line": 42, "severity": "Must-fix", "title": "one \
-imperative line", "body": "two to four sentences: what is wrong, why it matters, what to \
-change. Add a ```suggestion fenced block when the fix is a concrete edit to that line."}}]
+[{{"path": "app/models/foo.rb", "line": 42, "severity": "Must-fix", "category": \
+"Security & Privacy", "effort": "Quick win", "title": "one imperative line", "body": "two \
+to four sentences: what is wrong, why it matters, what to change. Add a ```suggestion \
+fenced block when the fix is a concrete edit to that line."}}]
 <<<END>>>
 Rules for that array: valid JSON, [] when there is nothing to say. "path" is the \
 repo-relative path exactly as the diff spells it. "line" is a line number in the NEW file \
 that this PR actually touches — an added or context line inside a diff hunk; anything \
 outside the diff cannot be anchored and gets demoted into the summary, so pick the closest \
 line the PR really changed. "start_line" is optional, for a range. "severity" is one of \
-Critical / Must-fix / Should-fix / Nitpick. Say each thing once: a finding lives either \
+Critical / Must-fix / Should-fix / Nitpick. "category" and "effort" are optional and \
+answer two questions severity cannot: what KIND of problem this is — one of Functional \
+Correctness / Security & Privacy / Stability & Availability / Data Integrity & \
+Integration / Performance / Maintainability — and how big the fix is: "Quick win" when it \
+is confined to the lines under discussion, "Bigger change" when it needs work elsewhere. \
+Leave either out rather than guessing; a wrong label is worse than none. Say each \
+thing once: a finding lives either \
 inline or in the summary, never both. Write each body so it stands alone next to that \
 line, without the reader having scrolled the summary.
 

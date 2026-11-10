@@ -7,6 +7,7 @@ from robbie.anchor import (
     anchor,
     commentable,
     parse_findings,
+    render,
     severity_count,
     summary_findings,
 )
@@ -191,3 +192,37 @@ def test_prose_naming_a_severity_is_not_a_finding():
 
 def test_no_summary_counts_nothing():
     assert summary_findings("") == 0
+
+
+# ----- the two axes severity cannot carry ----------------------------------
+
+
+def _head(f: dict) -> str:
+    return render(f, None).splitlines()[0]
+
+
+def test_category_and_effort_ride_the_badge():
+    head = _head({
+        "severity": "must-fix", "category": "Security & Privacy",
+        "effort": "Quick win", "title": "Scrub the password", "body": "b",
+    })
+    assert head == "🔴 **Must-fix** · Security & Privacy · Quick win — Scrub the password"
+
+
+def test_either_one_alone_still_renders():
+    assert _head({"severity": "nitpick", "category": "Maintainability", "title": "t",
+                  "body": "b"}) == "🔵 **Nitpick** · Maintainability — t"
+    assert _head({"severity": "nitpick", "effort": "Bigger change", "title": "t",
+                  "body": "b"}) == "🔵 **Nitpick** · Bigger change — t"
+
+
+def test_a_finding_without_them_renders_exactly_as_it_always_did():
+    """Both axes are optional, so every model that ignores them is unaffected."""
+    assert _head({"severity": "must-fix", "title": "t", "body": "b"}) == "🔴 **Must-fix** — t"
+    assert _head({"severity": "must-fix", "body": "b"}) == "🔴 **Must-fix**"
+
+
+def test_blank_and_missing_are_the_same_thing():
+    """A model that emits the keys with empty strings must not get " ·  · "."""
+    assert _head({"severity": "must-fix", "category": "", "effort": "   ",
+                  "title": "t", "body": "b"}) == "🔴 **Must-fix** — t"
