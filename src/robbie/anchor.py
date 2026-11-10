@@ -70,10 +70,23 @@ def parse_findings(raw: str) -> list[dict]:
     return [f for f in parsed if isinstance(f, dict)]
 
 
+def _tags(f: dict) -> str:
+    """The two optional axes, in the order they are read: what kind, how big.
+
+    Both are free text from the model and both are optional, so this renders what
+    is there and nothing when neither is. Severity alone answers "how much does
+    this matter"; these answer "what kind of problem" and "how big is the fix",
+    which is what lets an author pick the three they can do before lunch.
+    """
+    bits = [str(f.get(k) or "").strip() for k in ("category", "effort")]
+    return "".join(f" · {b}" for b in bits if b)
+
+
 def render(f: dict, snapped_from: int | None) -> str:
     badge = BADGE.get(str(f.get("severity", "")).strip().lower(), "🔵 **Note**")
     title = str(f.get("title") or "").strip()
-    head = f"{badge} — {title}" if title else badge
+    head = f"{badge}{_tags(f)}"
+    head = f"{head} — {title}" if title else head
     body = f"{head}\n\n{str(f.get('body', '')).strip()}"[:MAX_BODY]
     if snapped_from:
         body += f"\n\n<sub>reported for line {snapped_from}</sub>"

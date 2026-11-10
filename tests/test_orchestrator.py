@@ -1291,3 +1291,89 @@ async def test_a_quiet_run_tells_the_board_nothing(orch, repo, monkeypatch):
     ))
     await orch._review(repo, pr(), KEY, REQ)
     assert told == [], "--no-publish posts nothing anywhere, the board included"
+
+
+def _creds_file(orch, tmp_path, expires_in_min: float):
+    import json as _json
+    import time as _time
+
+    f = tmp_path / "creds.json"
+    f.write_text(_json.dumps({"claudeAiOauth": {
+        "accessToken": "t",
+        "expiresAt": (_time.time() + expires_in_min * 60) * 1000,
+    }}))
+    orch.cfg.backend = "oauth"  # the gate only applies to the oauth backend
+    orch.secrets = orch.secrets.model_copy(update={"claude_credentials": f})
+    return f
+
+
+def _ok_plumbing(monkeypatch):
+    """Everything an `ok` touches on its way out, stubbed. The walkthrough is
+    the one call under test, so it is deliberately NOT stubbed here."""
+    _build(monkeypatch)
+    monkeypatch.setattr(orch_mod, "standing_rejection", _async(""))
+    monkeypatch.setattr(publish_mod, "clear_needs_work", _async(PublishResult(True, "c")))
+    monkeypatch.setattr(publish_mod, "request_ci", _async(PublishResult(True, "ci")))
+    stub_run(monkeypatch, ok_run("ok"))
+
+
+async def test_an_ok_posts_nothing_on_the_pr_by_default(orch, repo, monkeypatch):
+    """The shipped behaviour: a clean pass is invisible to a reader of the PR."""
+    _ok_plumbing(monkeypatch)
+    posted = []
+    monkeypatch.setattr(
+        publish_mod, "publish_walkthrough",
+        lambda *a, **k: _mark(posted, PublishResult(True, "posted")),
+    )
+    assert repo.walkthrough is False
+    out = await orch._review(repo, pr(), KEY, REQ)
+    assert posted == [], "nothing is owed when the repo did not ask for one"
+    assert "walkthrough" not in out.detail
+
+
+async def test_an_ok_posts_the_walkthrough_when_the_repo_asks(orch, repo, monkeypatch):
+    _ok_plumbing(monkeypatch)
+    posted = []
+
+    def _capture(_repo, _meta, *, body, dry_run=False):
+        return _mark(posted, PublishResult(True, f"posted {body}"))
+
+    monkeypatch.setattr(publish_mod, "publish_walkthrough", _capture)
+    out = await orch._review(repo.model_copy(update={"walkthrough": True}), pr(), KEY, REQ)
+    assert len(posted) == 1, "the summary the model wrote is what goes up"
+    assert "walkthrough" in out.detail
+
+
+async def test_a_walkthrough_that_fails_does_not_take_down_the_ok(orch, repo, monkeypatch):
+    """The label is already off and the build already asked for by this point.
+    Losing the comment must not lose the approval — but it must be SAID, or a
+    walkthrough that never posted looks exactly like one nobody asked for."""
+    _ok_plumbing(monkeypatch)
+    monkeypatch.setattr(
+        publish_mod, "publish_walkthrough", _boom(GhError("HTTP 403: not accessible")),
+    )
+    out = await orch._review(repo.model_copy(update={"walkthrough": True}), pr(), KEY, REQ)
+    assert out.detail.startswith("ok —"), "the review still stands"
+    assert "FAILED" in out.detail
+
+
+async def test_the_repos_setting_is_what_reaches_the_prompt(orch, repo, monkeypatch):
+    """The wiring, not the prompt text: `preamble` is tested on its own, but a
+    flag read off the wrong object would leave both halves passing and the
+    feature dead."""
+    _ok_plumbing(monkeypatch)
+    sent = []
+    monkeypatch.setattr(
+        publish_mod, "publish_walkthrough", lambda *a, **k: _mark([], PublishResult(True, "p")),
+    )
+
+    async def _capture(cfg, secrets, r, meta, *, prompt, model, via_endpoint):
+        sent.append(prompt)
+        return ok_run("ok")
+
+    monkeypatch.setattr(orch_mod, "run_review", _capture)
+    await orch._review(repo, pr(), KEY, REQ)
+    await orch._review(repo.model_copy(update={"walkthrough": True}), pr(), KEY, REQ)
+    off, on = sent
+    assert "WALKTHROUGH" not in off
+    assert "WALKTHROUGH" in on

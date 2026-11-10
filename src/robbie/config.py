@@ -113,6 +113,12 @@ class RepoConfig(_Strict):
     # the lowest severity that opens an inline thread; below it, a finding goes in
     # the summary, where it cannot hold the next pass the way an unanswered thread does
     inline_min_severity: Literal["critical", "must-fix", "should-fix", "nitpick"] = "nitpick"
+    # Post a summary on EVERY review, including `ok`, led by a walkthrough of the
+    # change. Off by default because it changes what lands on a PR: today an `ok`
+    # posts nothing at all, so the only trace of a clean pass is in Slack and the
+    # panel. On, robbie is visible on a PR he had no findings on — which is what
+    # a reader of the PR, rather than an operator, actually sees.
+    walkthrough: bool = False
     issues: IssueConfig = IssueConfig()
 
     @property
