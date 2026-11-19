@@ -42,7 +42,9 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
     db.finish_review("k1", state="published", verdict="ok", ci_state="green")
     db.start_review(key="k2", repo="a/b", pr=2, head_sha="old", requested_at="t")
     db.finish_review("k2", state="published", verdict="ok", ci_state="green")
-    db.set_requested("a/b", [1, 2])
+    db.start_review(key="k7", repo="a/b", pr=7, head_sha="h7", requested_at="t")
+    db.finish_review("k7", state="published", verdict="ok", ci_state="waiting")
+    db.set_requested("a/b", [1, 2, 7])
 
     open_prs = [
         _pr(1, head="h1"),
@@ -51,6 +53,7 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
         _pr(4, branch="robbie/issue-77", draft=True),
         _pr(5, branch="fix/issue-78", labels=["Code Review"]),  # already in CR
         _pr(6, author="me", head="m6"),
+        _pr(7, head="h7"),  # approved, build not green yet: not on the plate
     ]
 
     async def fake_gh_json(*args):
@@ -97,7 +100,7 @@ async def test_worklist_sorts_the_plate(tmp_path, monkeypatch):
         {"number": 8, "url": "https://github.com/a/b/pull/8", "status": "closed"},
     ]
     assert data["mine"][0]["number"] == 6 and data["mine"][0]["ci"] == "red"
-    assert data["open_prs"] == [f"a/b#{n}" for n in range(1, 7)]
+    assert data["open_prs"] == [f"a/b#{n}" for n in range(1, 8)]
     assert data["open_issues"] == ["a/b#90", "a/b#91"]
     assert (tmp_path / "export" / "usage.json").exists()
 

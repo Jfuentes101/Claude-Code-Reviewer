@@ -107,7 +107,8 @@ async def repo_worklist(repo: RepoConfig, db: Db) -> dict[str, list[Any]]:
     awaiting = []
     for row in db.approved_and_green(since):
         pr = by_number.get(int(row["pr"]))
-        if row["repo"] != repo.slug or pr is None or pr.get("headRefOid") != row["head_sha"]:
+        if (row["repo"] != repo.slug or pr is None or pr.get("headRefOid") != row["head_sha"]
+                or row["ci_state"] != "green"):
             continue
         awaiting.append({**_brief(repo, pr), "head": row["head_sha"], "ci": row["ci_state"]})
 
