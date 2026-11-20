@@ -112,6 +112,27 @@ def stub_run(monkeypatch, run: ReviewRun) -> list[dict]:
     return spawned
 
 
+async def test_a_refused_endpoint_hands_the_money_question_to_the_account(
+    cfg, db, repo, monkeypatch, settled
+):
+    armed = repo.model_copy(update={
+        "issues": repo.issues.model_copy(update={
+            "money_model": "glm-5.3-flash:cloud", "money_via_endpoint": True,
+            "money_fallback_model": "haiku",
+        })
+    })
+    stub_issue(monkeypatch, money="Not sure")
+    spawned = stub_run(monkeypatch, ReviewRun(ok=True, text="MONEY: no"))
+    monkeypatch.setattr(
+        budget_mod, "check",
+        lambda *a, via_endpoint=False, **k: Meter(not via_endpoint, "endpoint 429"),
+    )
+
+    await triage_tick(cfg, SECRETS, armed, db)
+
+    assert (spawned[0]["model"], spawned[0]["via_endpoint"]) == ("haiku", False)
+
+
 async def test_the_feature_is_off_until_a_queue_is_configured(cfg, db, monkeypatch, repo):
     """No labels means no read at all — not an empty queue read every tick."""
     def boom(*a, **k):

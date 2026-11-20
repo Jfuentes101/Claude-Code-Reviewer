@@ -258,6 +258,16 @@ def test_an_unreadable_endpoint_says_so_rather_than_guessing(tmp_path, db, monke
     assert v.allowed and v.notice_key.startswith("budget:endpoint-unreadable")
 
 
+def test_a_usage_page_without_limits_is_unreadable_not_zero(tmp_path, db, monkeypatch):
+    conf = endpoint_cfg(tmp_path)
+    page = {"range": "7d", "totals": {"request_count": 7565}}
+    monkeypatch.setattr(budget.httpx, "get", lambda *a, **k: FakeResponse(page))
+    budget.poll(conf, secrets(tmp_path), db)
+    v = budget.check(conf, db, via_endpoint=True)
+    assert v.allowed and v.notice_key.startswith("budget:endpoint-unreadable")
+    assert "limits" in v.detail
+
+
 def test_one_meter_failing_does_not_cost_the_other_its_reading(tmp_path, db, monkeypatch):
     """They are different providers; the account's is the one that rate-limits."""
     conf = endpoint_cfg(tmp_path, stop_pct=90, endpoint_stop_pct=80)

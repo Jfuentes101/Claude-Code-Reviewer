@@ -147,6 +147,9 @@ the only thing that decides how often a provider is asked — every other reader
 takes the stored number. Lower it and the account's usage endpoint starts answering
 429; a reading is trusted for 15 minutes either way.
 
+An endpoint arm is also asked for one token right before its container starts. A 429
+there closes the arm like a full meter would, and the review goes to the other side.
+
 ## Change the pace
 
 | | |

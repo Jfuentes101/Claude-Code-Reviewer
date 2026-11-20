@@ -153,6 +153,9 @@ repos:
       # does; `money_via_endpoint` also picks the meter the spend gate reads.
       # money_model: glm-5.3-flash:cloud
       # money_via_endpoint: true
+      # The account's model that answers instead when the endpoint has no room.
+      # Unset = the question waits for the endpoint.
+      # money_fallback_model: haiku
       # And which one writes the fix. Deliberately NOT part of `review_models`:
       # a review can be split between arms to compare them, a fix cannot — it has
       # to find the code, write a test that fails, keep the change small and drive

@@ -81,7 +81,10 @@ async def _fix_one(
         await publish.point_to_fix(repo, issue, prs, clears=repo.issues.fixable_label)
         return Fixed(number, prs[0], "someone else's pull request closes it")
 
-    gate = budget.check(cfg, db, 1, via_endpoint=repo.issues.fix_via_endpoint)
+    gate = await budget.room(
+        cfg, secrets, db, 1,
+        via_endpoint=repo.issues.fix_via_endpoint, model=repo.issues.fix_model,
+    )
     if not gate.allowed:
         logger.info("%s#%s: the fix waits for the meter: %s", repo.slug, number, gate.detail)
         return None

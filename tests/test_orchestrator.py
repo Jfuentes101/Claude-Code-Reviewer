@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from robbie import ci_watch as ci_mod
@@ -375,6 +376,22 @@ async def test_a_room_to_spare_arm_is_never_asked(orch, cfg, monkeypatch):
     asked = _meters(monkeypatch, account=True, endpoint=True)
     await orch._admit("k1")
     assert len(asked) == 1, "the second meter is only read when the first says no"
+
+
+async def test_an_endpoint_that_refuses_one_token_never_gets_the_container(
+    orch, cfg, monkeypatch
+):
+    _arms(cfg)
+    orch.secrets = orch.secrets.model_copy(update={"review_base_url": "https://endpoint.example"})
+    refusal = {"error": {"message": "you have reached your weekly usage limit, upgrade"}}
+    monkeypatch.setattr(
+        orch_mod.budget.httpx, "post", lambda *a, **k: httpx.Response(429, json=refusal)
+    )
+    key = next(k for k in (f"k{n}" for n in range(50)) if cfg.choose_model(k).via_endpoint)
+    choice, verdict = await orch._admit(key)
+    assert verdict.allowed
+    assert (choice.model, choice.via_endpoint) == ("sonnet", False)
+    assert "weekly usage limit" in orch.db.read_meter("endpoint")["note"]
 
 
 async def test_nothing_configured_has_nothing_to_fall_back_to(orch, monkeypatch):

@@ -73,6 +73,9 @@ class IssueConfig(_Strict):
     # the meter the spend gate reads.
     money_model: str | None = None
     money_via_endpoint: bool = False
+    # the account's model that answers instead when the endpoint has no room.
+    # None = the question waits for the endpoint
+    money_fallback_model: str | None = None
     # And which one writes the fix. Not a classification: it has to find the code,
     # write a test that fails, keep the change small and drive a tool call to the
     # end, which is where a cheap arm stops being cheap. None = the account default.

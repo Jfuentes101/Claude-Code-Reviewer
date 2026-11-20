@@ -10,7 +10,8 @@ Two backends, one question ("may I start another review?"):
 An unreadable budget is never treated as "unlimited": it warns once and keeps
 going, so a broken metrics endpoint degrades loudly instead of silently.
 
-Nothing here calls a provider except `poll`. It runs on its own clock in the
+Nothing here calls a provider except `poll`, and `probe` for the one request a
+review is about to make anyway. `poll` runs on its own clock in the
 daemon and leaves the numbers in SQLite; the gate, the panel and any second
 process read that row. The meters rate-limit, and robbie is more than one
 process, so how often they are asked cannot be left to how often they are read.
@@ -18,6 +19,7 @@ process, so how often they are asked cannot be left to how often they are read.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -109,6 +111,17 @@ def check(cfg: Config, db: Db, inflight: int = 0, *, via_endpoint: bool = False)
     if cfg.backend == "api":
         return _check_api(cfg, db, inflight)
     return _check_oauth(cfg, db, inflight)
+
+
+async def room(
+    cfg: Config, secrets: Secrets, db: Db, inflight: int = 0,
+    *, via_endpoint: bool = False, model: str | None = None,
+) -> Verdict:
+    """`check`, and for a run headed to the endpoint the endpoint's own word on top."""
+    verdict = check(cfg, db, inflight, via_endpoint=via_endpoint)
+    if verdict.allowed and via_endpoint and await asyncio.to_thread(probe, secrets, db, model):
+        verdict = check(cfg, db, inflight, via_endpoint=True)
+    return verdict
 
 
 def _check_api(cfg: Config, db: Db, inflight: int) -> Verdict:
@@ -216,17 +229,52 @@ def _fetch_plan(secrets: Secrets) -> tuple[float, str]:
         raise
 
 
+def _endpoint_auth(secrets: Secrets) -> dict[str, str]:
+    token = secrets.review_api_token.get_secret_value() if secrets.review_api_token else ""
+    return {"Authorization": f"Bearer {token}"}
+
+
+def probe(secrets: Secrets, db: Db, model: str | None) -> bool:
+    """Ask the endpoint for one token; True when it said no, stored as a full meter.
+
+    The usage page is a number about the door and this is the door, so it is asked
+    last, per review. Any other failure is the review's own to report.
+    """
+    if not secrets.review_base_url:
+        return False
+    try:
+        resp = httpx.post(
+            f"{secrets.review_base_url.rstrip('/')}/v1/messages",
+            headers={**_endpoint_auth(secrets), "anthropic-version": "2023-06-01"},
+            json={"model": model, "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "."}]},
+            timeout=15,
+        )
+    except httpx.HTTPError as ex:
+        logger.warning("endpoint probe failed: %s", ex)
+        return False
+    if resp.status_code != 429:
+        return False
+    try:
+        said = str(resp.json()["error"]["message"])
+    except (ValueError, KeyError, TypeError):
+        said = resp.text
+    # ponytail: a burst 429 closes the arm like a spent week does, until the next
+    # good poll or USAGE_STALE_S. Tell them apart if that costs reviews worth having
+    db.write_meter(ENDPOINT, pct=100.0, note=f"429: {said.split(',')[0][:120]}")
+    return True
+
+
 def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:
     resp = httpx.get(
         f"{(secrets.review_base_url or '').rstrip('/')}/api/usage",
-        headers={
-            "Authorization": "Bearer "
-            + (secrets.review_api_token.get_secret_value() if secrets.review_api_token else "")
-        },
+        headers=_endpoint_auth(secrets),
         timeout=15,
     )
     resp.raise_for_status()
-    limits = resp.json().get("limits") or {}
+    limits = resp.json().get("limits")
+    if not limits:
+        raise RuntimeError("/api/usage answered without `limits`")
     shares = {
         name: float((limits.get(name) or {}).get("usage") or 0.0)
         for name in ("session", "weekly")

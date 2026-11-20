@@ -372,13 +372,13 @@ class Orchestrator:
         named on the CLI is never substituted — that was a request.
         """
         first = self._choice(key)
-        verdict = self._meter(via_endpoint=first.via_endpoint)
+        verdict = await self._room(first)
         if verdict.allowed or self.model:
             return first, verdict
         other = self.cfg.fallback_for(first)
         if other is None:
             return first, verdict
-        spare = self._meter(via_endpoint=other.via_endpoint)
+        spare = await self._room(other)
         if not spare.allowed:
             return first, verdict
         logger.info(
@@ -386,6 +386,12 @@ class Orchestrator:
             key, first.model or "the account", verdict.detail, other.model,
         )
         return other, spare
+
+    async def _room(self, choice: Choice) -> budget.Verdict:
+        return await budget.room(
+            self.cfg, self.secrets, self.db, self._inflight,
+            via_endpoint=choice.via_endpoint, model=choice.model,
+        )
 
     async def _dm_owner_once(self, key: str, text: str) -> None:
         """One DM per key, ever — and a quiet run must not spend the key, or the

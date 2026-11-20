@@ -140,12 +140,19 @@ async def _ask_about_money(
     onwards: the choice of model here is a guess until there are real reports to
     replay it against, and a guess nobody wrote down stays one.
     """
-    arm = repo.issues.money_model or "the account default"
+    model, via_endpoint = repo.issues.money_model, repo.issues.money_via_endpoint
+    arm = model or "the account default"
     if dry_run:
         logger.info("%s#%s: dry run: would ask %s the money question",
                     repo.slug, issue.number, arm)
         return None
-    gate = budget.check(cfg, db, 1, via_endpoint=repo.issues.money_via_endpoint)
+    gate = await budget.room(cfg, secrets, db, 1, via_endpoint=via_endpoint, model=model)
+    if not gate.allowed and via_endpoint and repo.issues.money_fallback_model:
+        logger.info("%s#%s: %s has no room (%s), asking %s", repo.slug, issue.number,
+                    arm, gate.detail, repo.issues.money_fallback_model)
+        arm = model = repo.issues.money_fallback_model
+        via_endpoint = False
+        gate = budget.check(cfg, db, 1)
     if not gate.allowed:
         logger.info("%s#%s: the money question waits for the meter: %s",
                     repo.slug, issue.number, gate.detail)
@@ -155,8 +162,8 @@ async def _ask_about_money(
         cfg, secrets, repo, issue,
         prompt=money_prompt(issue.title, issue.body),
         mode="money",
-        model=repo.issues.money_model,
-        via_endpoint=repo.issues.money_via_endpoint,
+        model=model,
+        via_endpoint=via_endpoint,
     )
     db.record_spend(
         repo=repo.slug, pr=issue.number, kind="money",
