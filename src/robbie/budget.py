@@ -166,7 +166,7 @@ def _check_oauth(cfg: Config, db: Db, inflight: int) -> Verdict:
 def _check_endpoint(cfg: Config, db: Db, inflight: int) -> Verdict:
     """The review endpoint's own limits, which the account's meters know nothing of.
 
-    Gated on `limits.*.usage` and not on `activity.cost`, which only fills in after
+    Gated on `/api/balance` and not on `activity.cost`, which only fills in after
     a review has been paid for. The worse of session and weekly wins.
     """
     reading = _stored(db, ENDPOINT)
@@ -267,24 +267,20 @@ def probe(secrets: Secrets, db: Db, model: str | None) -> bool:
 
 def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:
     resp = httpx.get(
-        f"{(secrets.review_base_url or '').rstrip('/')}/api/usage",
+        f"{(secrets.review_base_url or '').rstrip('/')}/api/balance",
         headers=_endpoint_auth(secrets),
         timeout=15,
     )
     resp.raise_for_status()
-    limits = resp.json().get("limits")
-    if not limits:
-        raise RuntimeError("/api/usage answered without `limits`")
-    shares = {
-        name: float((limits.get(name) or {}).get("usage") or 0.0)
-        for name in ("session", "weekly")
+    included = resp.json().get("included") or {}
+    used = {
+        name: 100.0 - float(included[name]["remaining_percent"])
+        for name in ("session", "weekly") if name in included
     }
-    worst = max(shares.values(), default=0.0)
-    if worst > 1.0:
-        # a share is meant to be 0..1; anything else means this field is not that
-        logger.warning("endpoint usage %r is not a 0-1 share; the gate may be wrong", shares)
-    note = " · ".join(f"{name} {share * 100:.1f}%" for name, share in shares.items())
-    return worst * 100, note
+    if not used:
+        raise RuntimeError("/api/balance answered without session or weekly limits")
+    note = " · ".join(f"{name} {pct:.1f}%" for name, pct in used.items())
+    return max(used.values()), note
 
 
 def midnight_ms() -> int:

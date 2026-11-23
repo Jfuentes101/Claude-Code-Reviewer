@@ -62,10 +62,11 @@ class FakeResponse:
 def answers(monkeypatch, pct: float, *, session: float = 0.0, weekly: float = 0.0) -> None:
     """Both meters answer, dispatched on the URL like the real ones are."""
     plan = {"five_hour": {"utilization": pct, "resets_at": "2026-08-04T19:10:00Z"}}
-    endpoint = {"limits": {"session": {"usage": session}, "weekly": {"usage": weekly}}}
+    endpoint = {"included": {name: {"remaining_percent": 100 - share * 100}
+                             for name, share in (("session", session), ("weekly", weekly))}}
     monkeypatch.setattr(
         budget.httpx, "get",
-        lambda url, **k: FakeResponse(endpoint if "/api/usage" in url else plan),
+        lambda url, **k: FakeResponse(endpoint if "/api/balance" in url else plan),
     )
 
 
@@ -124,7 +125,7 @@ def test_the_api_backend_polls_no_plan_meter(tmp_path, db, monkeypatch):
     asked = []
     monkeypatch.setattr(
         budget.httpx, "get",
-        lambda url, **k: asked.append(url) or FakeResponse({"limits": {}}),
+        lambda url, **k: asked.append(url) or FakeResponse({}),
     )
     budget.poll(cfg(tmp_path, backend="api"), secrets(tmp_path), db)
     assert budget.USAGE_URL not in asked
@@ -274,7 +275,7 @@ def test_one_meter_failing_does_not_cost_the_other_its_reading(tmp_path, db, mon
     plan = {"five_hour": {"utilization": 10, "resets_at": "x"}}
 
     def half_broken(url, **kw):
-        if "/api/usage" in url:
+        if "/api/balance" in url:
             raise RuntimeError("429 Too Many Requests")
         return FakeResponse(plan)
 
