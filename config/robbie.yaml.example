@@ -73,7 +73,7 @@ docker:
 
 budget:
   daily_usd: 20.0       # backend=api: measured from each run's reported cost
-  stop_pct: 70          # backend=oauth: pause at this % of the 5h window
+  stop_pct: 70          # backend=oauth: pause at this % of the plan's usage window
   # the endpoint's own session/weekly allowance, as a percentage of it. Its cost
   # cannot be gated in dollars: the CLI reports a price from its own table for a
   # model it does not price, and that number is not the third party's bill.

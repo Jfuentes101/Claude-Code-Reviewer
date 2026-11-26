@@ -4,8 +4,9 @@ Two backends, one question ("may I start another review?"):
 
 - **api**: sum today's recorded cost from SQLite against `budget.daily_usd`. The
   reviewer reports `total_cost_usd` per run, so this is measured, not estimated.
-- **oauth**: read the plan's 5-hour window and pause at `budget.stop_pct`, so
-  robbie can't eat a human's own headroom on a shared plan.
+- **oauth**: read the plan's usage window and pause at `budget.stop_pct`, so
+  robbie can't eat a human's own headroom on a shared plan. That is the 5-hour
+  window where a plan has one, and the weekly window where it does not.
 
 An unreadable budget is never treated as "unlimited": it warns once and keeps
 going, so a broken metrics endpoint degrades loudly instead of silently.
@@ -36,7 +37,7 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 UNREADABLE = "unreadable"
 USAGE_STALE_S = 900  # how old the poller's number may be before the gate drops it
 
-PLAN = "plan"  # the account's five-hour window, backend=oauth
+PLAN = "plan"  # the account's usage window, backend=oauth
 ENDPOINT = "endpoint"  # REVIEW_BASE_URL's own limits
 
 
@@ -140,10 +141,10 @@ def _check_oauth(cfg: Config, db: Db, inflight: int) -> Verdict:
         )
     (pct, resets_at), held = reading, (inflight + 1) * cfg.budget.reserve_pct
     if pct + held <= cfg.budget.stop_pct:
-        return Verdict(True, f"5h window at {pct:.0f}% (+{held:.0f}% held back)")
+        return Verdict(True, f"plan window at {pct:.0f}% (+{held:.0f}% held back)")
     return Verdict(
         False,
-        f"5h window at {pct:.0f}% +{held:.0f}% held for {inflight} running + 1 "
+        f"plan window at {pct:.0f}% +{held:.0f}% held for {inflight} running + 1 "
         f"(cutoff {cfg.budget.stop_pct}%); resumes around {resets_at}",
         # resets_at jitters by ~1s between calls, so key on the rounded minute
         notice_key=f"budget:{_minute_key(resets_at)}",
@@ -186,11 +187,17 @@ def _read_usage(token: str) -> tuple[float, str]:
     )
     resp.raise_for_status()
     data = resp.json()
-    return float(data["five_hour"]["utilization"]), str(data["five_hour"]["resets_at"])
+    # A plan without a five-hour window reports it as null, not missing; the
+    # weekly window is what is left there. `resets_at` stays ISO so the pause's
+    # `_minute_key` still keys on the reset and not on the current minute.
+    window = data.get("five_hour") or data.get("seven_day")
+    if not window or window.get("utilization") is None:
+        raise RuntimeError(f"usage has no five_hour or seven_day window: {sorted(data)}")
+    return float(window["utilization"]), str(window["resets_at"])
 
 
 def _fetch_plan(secrets: Secrets) -> tuple[float, str]:
-    """Read the account's five-hour window.
+    """Read the account's usage window.
 
     Nothing here refreshes the access token — the host's own CLI rewrites the file when it
     rotates one, and re-reading is how that arrives. The rotation is therefore a live race:
