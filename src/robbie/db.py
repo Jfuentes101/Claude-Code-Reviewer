@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_spend_created ON spend(created_at DESC);
 -- every process reads it, so the request rate is the poll interval and not
 -- "once per gate, times however many robbie processes are up"
 CREATE TABLE IF NOT EXISTS meters (
-    name     TEXT PRIMARY KEY,   -- plan | endpoint
+    name     TEXT PRIMARY KEY,   -- plan | endpoint, and "<name>:<window>" for the export
     pct      REAL,
     note     TEXT,
     read_at  INTEGER,            -- of the last SUCCESSFUL read; null = never

@@ -287,6 +287,24 @@ def test_one_meter_failing_does_not_cost_the_other_its_reading(tmp_path, db, mon
     assert "429" in budget.check(conf, db, via_endpoint=True).detail
 
 
+
+def test_each_window_reaches_the_export_beside_the_gate_number(tmp_path, db, monkeypatch):
+    from robbie import export
+
+    conf = endpoint_cfg(tmp_path)
+    plan = {"five_hour": {"utilization": 40, "resets_at": "x"},
+            "seven_day": {"utilization": 70, "resets_at": "y"}}
+    balance = {"included": {"session": {"remaining_percent": 90},
+                            "weekly": {"remaining_percent": 20}}}
+    monkeypatch.setattr(budget.httpx, "get", lambda url, **k: FakeResponse(
+        balance if "/api/balance" in url else plan))
+    budget.poll(conf, secrets(tmp_path), db)
+
+    out = export.usage(db)
+    assert out["plan"]["pct"] == 40, "the gate stays on the five-hour window"
+    assert out["plan"]["windows"] == {"session": 40, "weekly": 70}
+    assert out["endpoint"]["windows"] == {"session": 10, "weekly": 80}
+
 # ----- api: dollars ------------------------------------------------------
 
 
@@ -350,7 +368,7 @@ def test_a_token_rotated_mid_read_is_retried_rather_than_failing(tmp_path, monke
         return FakeResponse({"five_hour": {"utilization": 12, "resets_at": "x"}})
 
     monkeypatch.setattr(budget.httpx, "get", fake_get)
-    pct, _ = budget._fetch_plan(sec)
+    pct, *_ = budget._fetch_plan(sec)
     assert pct == 12
 
 

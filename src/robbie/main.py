@@ -90,6 +90,7 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("status", help="show the queue")
+    sub.add_parser("usage", help="read every meter now and rewrite export/usage.json")
 
     th = sub.add_parser("threads", help="act on replies to my own review threads")
     th.add_argument("--repo", default=None)
@@ -158,6 +159,10 @@ async def _run(args: argparse.Namespace) -> int:
         dry_run=args.dry_run or args.no_publish,
         relay=(lambda text: jane.relay(cfg, secrets, text)) if cfg.jane_socket else None,
     )
+    if args.command == "usage":
+        await asyncio.to_thread(budget.poll, cfg, secrets, db)
+        print(json.dumps(exportmod.write_usage(cfg, db), indent=1))
+        return 0
     model = getattr(args, "model", None)
     if (why := why_no_model(cfg, secrets, model)) is not None:
         raise SystemExit(why)
@@ -286,6 +291,8 @@ async def _meters(
             await asyncio.wait_for(stop.wait(), timeout=cfg.budget.usage_poll_s)
         if not stop.is_set():
             await asyncio.to_thread(budget.poll, cfg, secrets, db)
+            if cfg.export_interval_s > 0:
+                exportmod.write_usage(cfg, db)
 
 
 async def _issues(cfg: configmod.Config, orch: Orchestrator, stop: asyncio.Event) -> None:

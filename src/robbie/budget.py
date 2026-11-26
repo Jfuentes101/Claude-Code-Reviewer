@@ -60,12 +60,14 @@ def poll(cfg: Config, secrets: Secrets, db: Db) -> None:
         if not _wanted(name, cfg, secrets):
             continue
         try:
-            pct, note = fetch()
+            pct, note, windows = fetch()
         except Exception as ex:  # noqa: BLE001 — any failure is "unknown", handled below
             db.meter_failed(name, str(ex))
             logger.warning("%s usage unreadable: %s", name, ex)
         else:
             db.write_meter(name, pct=pct, note=note)
+            for window, share in windows.items():  # for the export; the gate reads `name`
+                db.write_meter(f"{name}:{window}", pct=share, note="")
             logger.debug("%s meter at %.1f%% (%s)", name, pct, note)
 
 
@@ -191,7 +193,7 @@ def _oauth(secrets: Secrets) -> dict:
     return json.loads(secrets.claude_credentials.read_text())["claudeAiOauth"]  # type: ignore[union-attr]
 
 
-def _read_usage(token: str) -> tuple[float, str]:
+def _read_usage(token: str) -> tuple[float, str, dict[str, float]]:
     resp = httpx.get(
         USAGE_URL,
         headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"},
@@ -199,10 +201,13 @@ def _read_usage(token: str) -> tuple[float, str]:
     )
     resp.raise_for_status()
     data = resp.json()
-    return float(data["five_hour"]["utilization"]), str(data["five_hour"]["resets_at"])
+    windows = {name: float(data[key]["utilization"])
+               for name, key in (("session", "five_hour"), ("weekly", "seven_day"))
+               if data.get(key)}
+    return float(data["five_hour"]["utilization"]), str(data["five_hour"]["resets_at"]), windows
 
 
-def _fetch_plan(secrets: Secrets) -> tuple[float, str]:
+def _fetch_plan(secrets: Secrets) -> tuple[float, str, dict[str, float]]:
     """Read the account's five-hour window.
 
     Nothing here refreshes the access token — the host's own CLI rewrites the file when it
@@ -265,7 +270,7 @@ def probe(secrets: Secrets, db: Db, model: str | None) -> bool:
     return True
 
 
-def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:
+def _fetch_endpoint(secrets: Secrets) -> tuple[float, str, dict[str, float]]:
     resp = httpx.get(
         f"{(secrets.review_base_url or '').rstrip('/')}/api/balance",
         headers=_endpoint_auth(secrets),
@@ -280,7 +285,7 @@ def _fetch_endpoint(secrets: Secrets) -> tuple[float, str]:
     if not used:
         raise RuntimeError("/api/balance answered without session or weekly limits")
     note = " · ".join(f"{name} {pct:.1f}%" for name, pct in used.items())
-    return max(used.values()), note
+    return max(used.values()), note, used
 
 
 def midnight_ms() -> int:

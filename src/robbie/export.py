@@ -227,8 +227,16 @@ def usage(db: Db) -> dict[str, Any]:
                 "pct": row["pct"],
                 "read_at": (row["read_at"] or 0) // 1000,
                 "error": row["error"],
+                "windows": {w: r["pct"] for w in ("session", "weekly")
+                            if (r := db.read_meter(f"{name}:{w}")) is not None},
             }
     return out
+
+
+def write_usage(cfg: Config, db: Db) -> dict[str, Any]:
+    data = usage(db)
+    write_json(export_dir(cfg) / "usage.json", data)
+    return data
 
 
 async def export_once(cfg: Config, db: Db) -> None:
@@ -242,7 +250,7 @@ async def export_once(cfg: Config, db: Db) -> None:
         for key, rows in part.items():
             lists.setdefault(key, []).extend(rows)
     write_json(export_dir(cfg) / "worklist.json", {"written_at": int(time.time()), **lists})
-    write_json(export_dir(cfg) / "usage.json", usage(db))
+    write_usage(cfg, db)
 
 
 def digest_due(cfg: Config, now: datetime | None = None) -> str | None:
